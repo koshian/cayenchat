@@ -2766,6 +2766,56 @@ fn server_numbers_still_count_only_real_servers() {
     assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
 }
 
+#[test]
+fn diagnostic_lines_join_the_server_log_in_time_order() {
+    let mut state = mock();
+    state.append_diagnostic_message(NetworkId(1), "[0.5s] connecting".into());
+    state.append_server_message(NetworkId(1), "notice".into());
+    state.append_diagnostic_message(NetworkId(1), "← :s 001 me :hi".into());
+    state.append_diagnostic_message(NetworkId(9), "unknown".into());
+    let log = state.server_messages(NetworkId(1));
+    let texts: Vec<_> = log.iter().map(|message| message.text.as_str()).collect();
+    assert_eq!(texts, ["[0.5s] connecting", "notice", "← :s 001 me :hi"]);
+    assert!(
+        log.windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    // Only the diagnostic lines tell themselves apart.
+    let senders: Vec<_> = log.iter().map(|message| message.sender.as_str()).collect();
+    assert_eq!(senders, [DIAGNOSTIC_SENDER, "server", DIAGNOSTIC_SENDER]);
+    // Other servers' logs and the combined log are untouched.
+    assert!(state.server_messages(NetworkId(2)).is_empty());
+    assert!(state.system_messages().is_empty());
+}
+
+#[test]
+fn diagnostic_lines_raise_no_unread_highlight_or_notification() {
+    let mut state = mock();
+    let unread = state.unread.clone();
+    let highlighted = state.highlighted.clone();
+    state.append_diagnostic_message(NetworkId(1), "← :s PRIVMSG #rust :me: hello".into());
+    assert_eq!(state.unread, unread);
+    assert_eq!(state.highlighted, highlighted);
+    assert!(state.attention.is_empty());
+    let line = &state.server_messages(NetworkId(1))[0];
+    assert!(line.highlights.as_slice().is_empty());
+}
+
+#[test]
+fn diagnostic_lines_share_the_server_log_limit_and_neutralize_bidi_controls() {
+    let mut state = mock();
+    state.append_diagnostic_message(NetworkId(1), "311 mal\u{202E}lory".into());
+    assert_eq!(
+        state.server_messages(NetworkId(1))[0].text,
+        "311 mal\u{200B}lory"
+    );
+    for n in 0..MAX_RETAINED + 5 {
+        state.append_diagnostic_message(NetworkId(1), format!("→ {n}"));
+    }
+    assert!(state.server_messages(NetworkId(1)).len() <= MAX_RETAINED);
+    assert!(state.server_messages(NetworkId(1)).len() > MAX_RETAINED / 2);
+}
+
 fn timed_line(text: &str, millis: Option<u64>) -> timeline::TimelineLine {
     line(text, millis, None)
 }

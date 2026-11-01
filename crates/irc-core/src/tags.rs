@@ -16,8 +16,8 @@ use irc::proto::{Message as IrcMessage, message::Tag};
 /// after the tags. The body keeps its own 512-byte limit.
 pub const MAX_TAG_BYTES: usize = irc::proto::message::MAX_TAG_BYTES;
 
-/// Tags longer than this are shortened in the diagnostic transcript, which
-/// keeps 1,000 lines per server.
+/// Tags longer than this are shortened in the diagnostic transcript before
+/// registration completes, when nobody asked for it.
 const TRANSCRIPT_TAG_BYTES: usize = 512;
 
 /// Longest batch reference followed. References are short opaque
@@ -86,15 +86,18 @@ pub fn untagged_line(message: &IrcMessage) -> String {
     }
 }
 
-/// A transcript line with the tag section shortened to a bounded size.
-pub fn transcript_line(message: &IrcMessage) -> String {
+/// A transcript line. A tag section over [`TRANSCRIPT_TAG_BYTES`] is
+/// shortened unless `full_tags`, which a reader asked for (the tags are
+/// what interoperability problems are told apart by); the protocol's own
+/// limit still bounds it.
+pub fn transcript_line(message: &IrcMessage, full_tags: bool) -> String {
     let line = message.to_string();
     let line = line.trim_end_matches(['\r', '\n']);
     let tag_end = match message.tags.as_deref() {
         Some(tags) if !tags.is_empty() => line.find(' ').unwrap_or(line.len()),
         _ => return line.to_owned(),
     };
-    if tag_end <= TRANSCRIPT_TAG_BYTES {
+    if full_tags || tag_end <= TRANSCRIPT_TAG_BYTES {
         return line.to_owned();
     }
     let mut cut = TRANSCRIPT_TAG_BYTES;
@@ -322,13 +325,22 @@ mod tests {
     fn transcript_shortens_only_long_tag_sections() {
         let short = parse("@time=2026-01-01T00:00:00.000Z :s PRIVMSG #c :hi");
         assert_eq!(
-            transcript_line(&short),
+            transcript_line(&short, false),
             "@time=2026-01-01T00:00:00.000Z :s PRIVMSG #c hi"
         );
         let long = parse(&format!("@k={} :s PRIVMSG #c :hi", "é".repeat(600)));
-        let line = transcript_line(&long);
+        let line = transcript_line(&long, false);
         assert!(line.len() < 600);
         assert!(line.contains("tag bytes omitted]"));
+        assert!(line.ends_with(" :s PRIVMSG #c hi"));
+    }
+
+    #[test]
+    fn transcript_keeps_long_tag_sections_when_asked() {
+        let long = parse(&format!("@k={} :s PRIVMSG #c :hi", "é".repeat(600)));
+        let line = transcript_line(&long, true);
+        assert!(line.starts_with(&format!("@k={} ", "é".repeat(600))));
+        assert!(!line.contains("omitted"));
         assert!(line.ends_with(" :s PRIVMSG #c hi"));
     }
 

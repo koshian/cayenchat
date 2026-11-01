@@ -9,7 +9,6 @@ use gpui::{Action, MenuItem, TestAppContext};
 fn view_menu_label(toolbar_shown: bool) -> String {
     let menus = app_menus(
         false,
-        Default::default(),
         toolbar_shown,
         false,
         &Localizer::new(Language::English),
@@ -38,7 +37,6 @@ fn the_view_menu_offers_the_menu_bar_apart_from_the_toolbar() {
     let label = |menu_bar_hidden, toolbar_shown| {
         let menus = app_menus(
             false,
-            Default::default(),
             toolbar_shown,
             menu_bar_hidden,
             &Localizer::new(Language::English),
@@ -430,4 +428,61 @@ fn double_clicking_a_server_leaves_one_waiting_to_retry_alone(cx: &mut TestAppCo
         assert!(session.retry_pending && !session.manual_disconnect);
         assert_eq!(session.retry_token, token);
     });
+}
+
+#[test]
+fn the_view_menu_offers_to_write_or_stop_writing_the_connection_diagnostics() {
+    let label = |on| {
+        app_menus(on, true, false, &Localizer::new(Language::English))
+            .iter()
+            .flat_map(|menu| &menu.items)
+            .find_map(|item| match item {
+                MenuItem::Action { name, action, .. }
+                    if action.name() == super::ToggleDebug.name() =>
+                {
+                    Some(name.to_string())
+                }
+                _ => None,
+            })
+            .expect("the View menu offers the connection diagnostics")
+    };
+    assert!(label(false).starts_with("Write Connection Diagnostics to Server Log"));
+    assert!(label(true).starts_with("Stop Writing Connection Diagnostics"));
+}
+
+#[gpui::test]
+fn a_saved_switch_starts_the_diagnostics_and_toggling_saves_it(cx: &mut TestAppContext) {
+    crate::support::install_test_globals(cx);
+    let mut settings = crate::settings_with_channels("#a");
+    settings.connection_diagnostics = true;
+    let file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    // Started on: the window and the state agree with the saved switch.
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.debug_enabled);
+        assert!(chat.saved.connection_diagnostics);
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        chat.toggle_debug(&super::ToggleDebug, window, cx);
+        assert!(!chat.debug_enabled);
+    });
+    assert!(
+        !crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .connection_diagnostics
+    );
+    chat.update_in(cx, |chat, window, cx| {
+        chat.toggle_debug(&super::ToggleDebug, window, cx);
+        assert!(chat.debug_enabled);
+    });
+    assert!(
+        crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .connection_diagnostics
+    );
+    drop(file);
 }

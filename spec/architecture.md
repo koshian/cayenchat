@@ -198,7 +198,7 @@ goes through its gate; a change that cannot should say why.
 | Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
 | Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
 | Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
-| Clipboard | Copies use the retained text and `sender_prefix`; the diagnostics copy is the raw transcript on purpose. Windows paste reads only `GlobalSize` bytes, requires an in-range UTF-16 NUL and an even, nonzero length, and caps text and metadata at 16 MiB | Done (#683) |
+| Clipboard | Copies use the retained text and `sender_prefix`; the connection diagnostics are server log lines and copy as such. Windows paste reads only `GlobalSize` bytes, requires an in-range UTF-16 NUL and an even, nonzero length, and caps text and metadata at 16 MiB | Done (#683) |
 
 ## Platform boundary
 
@@ -742,18 +742,25 @@ message goes out and the recipients may get its end cut off, as was always the
 case before this check existed; it is not handed back to the input.
 Splitting longer text into several lines and `draft/multiline` are not done.
 Connection-stage diagnostics and directional, decoded IRC lines flow as owned
-events from `irc-core` to the UI. The transcript includes message bodies, masks
-known credential commands, and retains the latest 1,000 entries in memory for
-display and clipboard export. Library-generated PONG and configured JOIN lines
-are reflected when their triggering server lines are processed. This is a parsed
-IRC transcript, not a byte-for-byte socket capture. The UI shows it automatically
-while registration is incomplete or after disconnection, including over a selected
-channel. The worker formats and sends IRC lines only while they can be shown:
-until registration completes, and afterwards while the debug transcript is on
-(`Connection::set_transcript`, set for every connection when it is toggled and
-for each new one). Stage diagnostics are always sent. A worker panic produces a disconnected event; the UI also handles a closed
-event channel with no terminal event. A terminal disconnection reason is included
-in the transcript and clipboard export.
+events from `irc-core` to the UI. The transcript includes message bodies and
+masks known credential commands (always, whatever the switch). The UI appends
+each stage note and each IRC line to the server log of its network
+(`AppState::append_diagnostic_message`, D080), in time order with the server's
+notices, drawn muted (`DIAGNOSTIC_SENDER`); the log is selected, copied and
+searched like any server log and keeps the server log's retention (2,000 lines
+per server, memory only, never a log file). Library-generated PONG and
+configured JOIN lines are reflected when their triggering server lines are
+processed. This is a parsed IRC transcript, not a byte-for-byte socket capture.
+The worker formats and sends IRC lines only while they are wanted: until
+registration completes, and afterwards while the connection diagnostics switch
+is on (`Connection::set_transcript`, set for every connection when it is
+toggled and for each new one). While the switch is on the worker keeps a tag
+section whole; before registration, with the switch off, a section over 512
+bytes is shortened. Stage diagnostics are always sent and always kept (the
+UI has no second gate), so a lost connection keeps its cause. A worker panic
+produces a disconnected event; the UI also handles a closed
+event channel with no terminal event. A terminal disconnection reason is
+written to the log as a stage note.
 The reason of a failed link (`Disconnected`, `Send failed`) is a short fixed
 sentence chosen from the error's types and kinds (connection lost, no response,
 certificate not verified, otherwise "A communication error occurred."), never the
@@ -764,12 +771,12 @@ a full outgoing queue keeps its own reason. Upload transport errors follow the s
 The reasons are fixed English constants (`REASON_*`, `NETWORK_*`); the UI translates
 them through `Localizer::reason` (`reason_*`, `upload_net_*` in `locales/`) where it
 shows them, and keeps the English text in the diagnostics.
-Connection diagnostics are reached through the View menu (Alt+V or hovering
-below the title bar reveals the menu bar on Linux/Windows; F10 only toggles whether it is hidden) or keyboard shortcuts. There are no permanent diagnostic
-buttons. Displaying diagnostics selects the server view, enables the transcript
-and scrolls to its start; copying exports the retained transcript regardless of
-the selected pane. An established session's traffic is in it only from when
-the transcript was turned on.
+The connection diagnostics switch is in the View menu (Alt+V or hovering
+below the title bar reveals the menu bar on Linux/Windows; F10 only toggles whether it is hidden) and on Ctrl/Cmd+Shift+D. There are no permanent diagnostic
+buttons. The switch is saved (`Settings::connection_diagnostics`, off by
+default, D080) and read at start; the log content is not. Turning it on writes
+all IRC traffic of established sessions from then on; it does not select the
+server or add a view. To hand the result over, select and copy the server log.
 
 ### Servers and sessions
 
@@ -779,8 +786,8 @@ connected or not, in the order added. With no servers the selection is
 and the first run shows the setup wizard (settings do not open at startup). `ui::session::ServerSession`
 holds everything per connection: the `Connection`, the configuration reused by
 reconnects, retry state, the current nickname and pending WHOIS nicknames.
-The connection diagnostics (1,000 lines per server and view) are kept in
-`app::AppState`, apart from the conversation logs (D077). The chat window keys sessions by
+The connection diagnostics are lines of the server log in
+`app::AppState` (D080). The chat window keys sessions by
 `NetworkId`; a profile keeps its network for the whole run. Events carry no
 network, so each event pump applies its batch to the network it was started
 for. Context menus, prompts and WHOIS windows remember their network and act
@@ -789,7 +796,7 @@ dialog, in arrival order: each row names the server, pre-fills the rejected
 nick plus `_`, and offers Retry or Disconnect; a repeated rejection updates
 the server's row and registration closes it. A new row takes focus unless
 another nickname field already has it, and Enter submits the focused row. Menu commands
-(Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server;
+(Disconnect, Reconnect) act on the selected server;
 Disconnect is available (in the menu bar and the server context menu) only
 while that server has a connection, including one still opening, or a
 scheduled reconnect to cancel. Holding the toolbar's Disconnect button for
@@ -1110,8 +1117,8 @@ connection ends with the reason, and the usual reconnect applies, so a
 server cannot make the receive buffer grow without bound. Unknown tags are ignored. Only the values
 this client uses are read; no tag map is retained. TAGMSG produces no event:
 no chat row, unread mark, notification or preview request; it remains in
-the diagnostic transcript, where long tag sections are shortened to 512
-bytes. Server log lines are shown without their tags.
+the diagnostic transcript, where a tag section over 512 bytes is shortened
+unless the connection diagnostics switch is on. Server log lines are shown without their tags.
 
 Legacy encodings: the line codec (vendored irc-proto, with `encoding_rs`;
 malformed bytes become U+FFFD) decodes a whole line with the connection's
@@ -1822,9 +1829,8 @@ row by sequence (GPUI's `ListState::splice` already shifts its scroll top by
 the rows inserted above, so this is a check rather than a correction).
 Rows above need no measured height, so images, avatars and wrapped text
 of any height above or below do not move the view; a list following the
-bottom keeps following it. With a status or diagnostics row at the very
-top (disconnected, or the debug transcript on) the row inserted below it
-still appears below it.
+bottom keeps following it. With a status row at the very
+top (disconnected) the row inserted below it still appears below it.
 
 ### Reconnect gap recovery
 
@@ -2396,22 +2402,10 @@ are not searched, but match ranges are mapped to the drawn text with
 `Compact::shown_range`, so the highlight lands on the right characters.
 Sender names are not searched.
 
-The connection diagnostics (D077) are a source too, `Source::Diagnostics(network,
-view)`, read as drawn (`DiagnosticLine::text`, formatted once when recorded: date, time, elapsed time and
-text) and only while the View menu's diagnostics are on, because they are not
-drawn otherwise. "This log" reads the selected server's log and, with the
-server selected, its diagnostics in the view being shown; "all" reads every
-server's diagnostics in both views. A diagnostic sequence comes from a counter
-that starts at 0 (`app::diagnostics::FIRST_SEQUENCE`; messages have their own
-counter), so a sequence names a line only together with its `LineKind`. `Hit`s
-and the UI's log selection are ordered by `LineKey = (LineKind, sequence)`, and
-the diagnostics sort before the messages: a search's first stop is still the
-newest message. `search::revision` counts the
-diagnostic lines only while they are searched. Going to a diagnostics hit
-selects the server, switches to the hit's view (the menu label follows) and
-scrolls the fixed row to the top; the row paints its highlights and the
-reveal probe like a message. A channel's own search does not read them (its
-view shows at most a few of the rows).
+The connection diagnostics (D080) are lines of the server log and are searched
+with it, like its other lines, whatever the switch; there is no scope of their
+own. They share the message sequence counter, so `search::revision` and the
+selection need nothing extra.
 
 `ui::log_search` owns the bar (`ChatWindow::search`, created on first open): a
 single row across the full content width above both columns (under the menu bar and toolbar), so the log is pushed down, not
