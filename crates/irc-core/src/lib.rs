@@ -1437,9 +1437,11 @@ fn without_authenticate_data(message: &IrcMessage) -> Option<IrcMessage> {
     Some(redacted)
 }
 
-fn redacted_wire_line(message: &IrcMessage) -> String {
+/// The transcript form of `message` with secrets masked; `full_tags` as for
+/// [`tags::transcript_line`]. The masking does not depend on it.
+fn redacted_wire_line(message: &IrcMessage, full_tags: bool) -> String {
     if let Some(redacted) = without_channel_key(message) {
-        return tags::transcript_line(&redacted);
+        return tags::transcript_line(&redacted, full_tags);
     }
     match &message.command {
         IrcCommand::PASS(_) => "PASS [redacted]".into(),
@@ -1490,7 +1492,7 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
         {
             format!("{verb} [redacted]")
         }
-        _ => tags::transcript_line(message),
+        _ => tags::transcript_line(message, full_tags),
     }
 }
 
@@ -1570,12 +1572,15 @@ impl Transcript {
 
     /// The line to record for `message`, if lines are recorded now.
     fn line(&self, message: &IrcMessage) -> Option<String> {
-        (!self.registered || self.requested.load(Ordering::Relaxed)).then(|| {
+        let requested = self.requested.load(Ordering::Relaxed);
+        (!self.registered || requested).then(|| {
             // Check the complete formatted line before transcript formatting
             // can trim its ending or shorten an oversized tag section.
             let raw_line = message.to_string();
             if irc::proto::line::is_single_line(&raw_line) {
-                redacted_wire_line(message)
+                // Tags are kept whole only while the transcript is asked
+                // for; the lines kept before registration stay short.
+                redacted_wire_line(message, requested)
             } else {
                 "[refused: line break or NUL]".into()
             }

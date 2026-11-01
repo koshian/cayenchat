@@ -124,9 +124,18 @@ fn service_credentials_are_not_echoed_into_conversations() {
     assert_eq!(echo_text("Q", "WHOIS #chan".into()), "WHOIS #chan");
 }
 
+/// The transcript line of `command`, which masks secrets the same whether
+/// or not the tags are kept whole.
+fn both_paths(command: IrcCommand) -> String {
+    let message = IrcMessage::from(command);
+    let shortened = redacted_wire_line(&message, false);
+    assert_eq!(redacted_wire_line(&message, true), shortened);
+    shortened
+}
+
 #[test]
 fn credentials_to_other_networks_services_stay_out_of_the_transcript() {
-    let line = |command| redacted_wire_line(&IrcMessage::from(command));
+    let line = both_paths;
     assert_eq!(
         line(IrcCommand::PRIVMSG(
             "Q@CServe.quakenet.org".into(),
@@ -864,7 +873,7 @@ fn taken_events_can_be_awaited_until_the_worker_ends() {
 
 #[test]
 fn diagnostic_wire_preserves_messages_and_redacts_credentials() {
-    let line = |command| redacted_wire_line(&IrcMessage::from(command));
+    let line = both_paths;
     assert_eq!(
         line(IrcCommand::PASS("server-secret".into())),
         "PASS [redacted]"
@@ -6384,7 +6393,8 @@ fn channel_keys_stay_out_of_the_transcript_and_mode_activity() {
         ),
         (":op!u@h MODE #chan +o bob", ":op!u@h MODE #chan +o bob"),
     ] {
-        let shown = redacted_wire_line(&parse(line));
+        let shown = redacted_wire_line(&parse(line), false);
+        assert_eq!(redacted_wire_line(&parse(line), true), shown, "{line}");
         assert_eq!(shown, expected, "{line}");
         assert!(!shown.contains("review-key"), "{line}");
     }
@@ -6392,7 +6402,8 @@ fn channel_keys_stay_out_of_the_transcript_and_mode_activity() {
         "MODE".into(),
         vec!["#chan".into(), "+k".into(), "review-key".into()],
     ));
-    assert_eq!(redacted_wire_line(&sent), "MODE #chan +k [redacted]");
+    assert_eq!(redacted_wire_line(&sent, false), "MODE #chan +k [redacted]");
+    assert_eq!(redacted_wire_line(&sent, true), "MODE #chan +k [redacted]");
     let modes = [
         Mode::Plus(ChannelMode::Oper, Some("bob".into())),
         Mode::Plus(ChannelMode::Key, Some("review-key".into())),
@@ -7460,6 +7471,42 @@ fn transcript_refuses_unsafe_bytes_before_trimming_or_shortening() {
         .collect();
     assert_eq!(recorded, vec!["[refused: line break or NUL]"; 4]);
     assert!(!format!("{recorded:?}").contains("private-secret"));
+}
+
+#[test]
+fn transcript_keeps_long_tags_only_while_requested() {
+    let (events, _receiver) = mpsc::channel(1);
+    let requested = Arc::new(AtomicBool::new(false));
+    let mut transcript = Transcript {
+        events: EventSender::new(events),
+        started: Instant::now(),
+        requested: requested.clone(),
+        registered: false,
+    };
+    let long: IrcMessage = format!("@k={} :s PRIVMSG #c :hi", "a".repeat(2000))
+        .parse()
+        .unwrap();
+    let secret = IrcMessage {
+        tags: long.tags.clone(),
+        ..IrcMessage::from(IrcCommand::PASS("server-secret".into()))
+    };
+    // Before registration and not asked for: shortened, as before.
+    let line = transcript.line(&long).unwrap();
+    assert!(line.contains("tag bytes omitted]"), "{line}");
+    // Asked for: whole, before and after registration.
+    requested.store(true, Ordering::Relaxed);
+    let line = transcript.line(&long).unwrap();
+    assert!(
+        line.starts_with(&format!("@k={} ", "a".repeat(2000))),
+        "{line}"
+    );
+    transcript.registered = true;
+    assert_eq!(transcript.line(&long).unwrap(), line);
+    // Secrets are masked on every path.
+    assert_eq!(transcript.line(&secret).unwrap(), "PASS [redacted]");
+    // Registered and not asked for: nothing is formatted.
+    requested.store(false, Ordering::Relaxed);
+    assert_eq!(transcript.line(&long), None);
 }
 
 #[test]
