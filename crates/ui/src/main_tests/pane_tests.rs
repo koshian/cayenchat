@@ -3214,8 +3214,6 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
         ]
     };
     chat.update(cx, |chat, cx| {
-        // The wire lines of registered connections are kept only on request.
-        chat.state.set_diagnostics_enabled(true);
         assert_eq!(chat.state.networks().len(), 2);
         assert_eq!(chat.sessions[&custom_net].profile_id, custom);
         chat.handle_events(

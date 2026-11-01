@@ -1443,8 +1443,7 @@ impl ChatWindow {
             .into_iter()
             .filter_map(|profile| network_of(&profile))
             .collect();
-        let mut state = AppState::with_networks(networks);
-        state.set_diagnostics_enabled(saved.connection_diagnostics);
+        let state = AppState::with_networks(networks);
         let mut inputs = HashMap::new();
         let placeholder = draft_placeholder(&i18n, saved.send_key);
         for key in std::iter::once(Selection::None)
@@ -4679,7 +4678,6 @@ impl ChatWindow {
     /// the server log after registration only while it is on.
     fn set_debug(&mut self, on: bool, cx: &mut Context<Self>) {
         self.debug_enabled = on;
-        self.state.set_diagnostics_enabled(on);
         self.refresh_menus(cx);
         for connection in self
             .sessions

@@ -321,8 +321,6 @@ fn run_with(
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
         chat.previews.use_fetcher(fetcher.clone());
         chat.avatars.use_fetcher(fetcher.clone());
-        // The costly case: every wire line reaches the server log.
-        chat.state.set_diagnostics_enabled(true);
         chat
     });
 

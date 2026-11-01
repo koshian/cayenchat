@@ -242,8 +242,6 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
     });
-    // The sleep notes of registered connections are kept only on request.
-    chat.update(cx, |chat, _| chat.state.set_diagnostics_enabled(true));
     let listeners: Vec<_> = (0..3)
         .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
         .collect();

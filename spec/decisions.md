@@ -3559,6 +3559,7 @@ the start of the session.
   `Experimental::debug_logging`, which writes the toolkit's stderr to a file.
   The settings window follows the file's value (`follow_file_flag`) so that
   its save does not undo the menu's choice.
-- **Accepted.** With the switch off and a registered connection, a stage note
-  (a sleep note, a refused send) is not kept; turning the switch on later does
-  not show what happened before.
+- **Accepted.** Stage notes are always kept, also with the switch off, so the
+  cause of a lost connection stays in the log. Only the per-line wire lines
+  depend on the switch (the transcript gate in irc-core); the UI adds no
+  second gate.

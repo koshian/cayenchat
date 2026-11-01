@@ -174,7 +174,6 @@ fn copy_selection_takes_diagnostic_lines_with_the_server_log_in_time_order(
     chat.update_in(cx, |chat, window, cx| {
         let network = NetworkId(1);
         chat.debug_enabled = true;
-        chat.state.set_diagnostics_enabled(true);
         chat.state.dispatch(Command::SelectServer(network));
         chat.state
             .append_diagnostic_message(network, "[0.1s] stage".into());
@@ -205,5 +204,52 @@ fn copy_selection_takes_diagnostic_lines_with_the_server_log_in_time_order(
         assert!(lines[0].ends_with("[0.1s] stage"), "{copied:?}");
         assert!(lines[1].ends_with("notice"), "{copied:?}");
         assert!(lines[2].ends_with("← :s NOTICE * :hi"), "{copied:?}");
+    });
+}
+
+#[gpui::test]
+fn stage_notes_of_a_lost_registered_connection_stay_with_diagnostics_off(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::Worker;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use std::time::{Duration, SystemTime};
+
+    crate::support::install_test_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        super::ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        let network = NetworkId(1);
+        assert!(!chat.debug_enabled);
+        chat.state
+            .set_status(network, cayenchat_app::ConnectionStatus::Registered);
+        chat.handle_events(
+            network,
+            vec![
+                Event::Diagnostic {
+                    at: SystemTime::now(),
+                    elapsed: Duration::from_secs(1),
+                    message: "IRC stream failed: broken pipe".into(),
+                },
+                Event::Disconnected("gone".into()),
+            ],
+            Worker::Running,
+            cx,
+        );
+        let log = chat.state.server_messages(network);
+        assert!(
+            log.iter()
+                .any(|line| line.text.contains("IRC stream failed: broken pipe")),
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|line| line.sender == cayenchat_app::DIAGNOSTIC_SENDER
+                    && line.text.contains("Disconnected")),
+            "{log:?}"
+        );
     });
 }

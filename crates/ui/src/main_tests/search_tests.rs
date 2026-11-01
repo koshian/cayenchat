@@ -506,7 +506,6 @@ fn the_toolbar_magnifier_toggles_the_bar(cx: &mut TestAppContext) {
 fn with_diagnostics(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
     chat.update(cx, |chat, cx| {
         chat.debug_enabled = true;
-        chat.state.set_diagnostics_enabled(true);
         chat.state
             .append_diagnostic_message(NetworkId(1), "[1.0s] Sleep notice: idle".into());
         chat.state

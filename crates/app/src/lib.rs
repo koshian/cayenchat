@@ -170,9 +170,6 @@ pub struct AppState {
     /// Server lines that are also shown in the combined log (CTCP requests
     /// and replies), oldest first; the same lines stay in `server_messages`.
     system_messages: VecDeque<(NetworkId, Message)>,
-    /// The user asked for the connection diagnostics: they are written to
-    /// the server logs of established connections too.
-    diagnostics_enabled: bool,
     next_message_sequence: u64,
     /// Counts every access that may change a conversation's lines, so a view
     /// derived from them can tell it must be rebuilt.
@@ -301,7 +298,6 @@ impl AppState {
             statuses: HashMap::new(),
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
-            diagnostics_enabled: false,
             next_message_sequence: SEQUENCE_ORIGIN,
             log_revision: 0,
             next_conversation_id: 1,
@@ -747,25 +743,16 @@ impl AppState {
         push_bounded(self.server_messages.entry(id).or_default(), message);
     }
 
-    /// Whether connection diagnostics reach the server logs of established
-    /// connections (see [`AppState::append_diagnostic_message`]).
-    pub fn set_diagnostics_enabled(&mut self, enabled: bool) {
-        self.diagnostics_enabled = enabled;
-    }
-
     /// Adds a connection diagnostic line (a stage note or an IRC line) to
-    /// `id`'s server log, stamped now. It is kept while the diagnostics are
-    /// enabled and until the connection registers, as the lines recorded
-    /// before registration explain a connection that does not come up. It
-    /// is drawn apart from the server's notices (`DIAGNOSTIC_SENDER`) and,
+    /// `id`'s server log, stamped now. Whether an IRC line is sent at all is
+    /// decided by the connection's transcript gate (registration, or the
+    /// user's request); a stage note is always kept, as it explains why a
+    /// connection did not come up or was lost. It is drawn apart from the server's notices (`DIAGNOSTIC_SENDER`) and,
     /// like every server line, marks nothing unread, highlights nothing,
     /// notifies no one and is not in the combined log. It shares the server
     /// log's retention limit.
     pub fn append_diagnostic_message(&mut self, id: NetworkId, text: String) {
         if !self.networks.iter().any(|network| network.id == id) {
-            return;
-        }
-        if !self.diagnostics_enabled && self.active_servers.contains(&id) {
             return;
         }
         let mut message = new_message(
