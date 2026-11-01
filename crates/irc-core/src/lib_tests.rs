@@ -3459,6 +3459,26 @@ fn plain_config(port: u16, ircv3: Ircv3Options) -> ConnectionConfig {
     config
 }
 
+/// The history lines streamed for `channel` (older page `request`, or the
+/// latest lines), in the order they arrived.
+fn streamed_history<'a>(
+    events: &'a [Event],
+    channel: &str,
+    request: Option<u64>,
+) -> Vec<&'a HistoryMessage> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::HistoryLine {
+                channel: c,
+                request: r,
+                message,
+            } if c == channel && *r == request => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
 fn channel_messages(events: &[Event]) -> Vec<(String, Option<SystemTime>)> {
     events
         .iter()
@@ -3612,15 +3632,23 @@ fn chathistory_requests_latest_lines_and_contains_over_nested_batches() {
         .filter_map(|event| match event {
             Event::ChannelHistory {
                 channel,
-                messages,
                 incomplete: false,
-            } => Some((channel, messages)),
+            } => Some(channel),
             _ => None,
         })
         .collect();
-    assert_eq!(history.len(), 1);
-    let (channel, messages) = history[0];
-    assert_eq!(channel, "#test");
+    assert_eq!(history.len(), 1, "the end is reported once");
+    assert_eq!(history[0], "#test");
+    let messages = streamed_history(&events, "#test", None);
+    let end = events
+        .iter()
+        .position(|e| matches!(e, Event::ChannelHistory { .. }))
+        .unwrap();
+    let last_line = events
+        .iter()
+        .rposition(|e| matches!(e, Event::HistoryLine { .. }))
+        .unwrap();
+    assert!(last_line < end, "the lines come before the end");
     let lines: Vec<_> = messages
         .iter()
         .map(|m| (m.text.as_str(), m.msgid.as_deref()))
@@ -4227,15 +4255,7 @@ fn targets_discover_direct_messages_and_their_latest_lines_follow() {
         })
         .collect();
     assert_eq!(requested, [("#test", false), ("Bob", false)]);
-    let dm = events
-        .iter()
-        .find_map(|event| match event {
-            Event::ChannelHistory {
-                channel, messages, ..
-            } if channel == "Bob" => Some(messages),
-            _ => None,
-        })
-        .unwrap();
+    let dm = streamed_history(&events, "Bob", None);
     let lines: Vec<_> = dm
         .iter()
         .map(|m| (m.sender.as_str(), m.text.as_str(), m.msgid.as_deref()))
@@ -4377,16 +4397,16 @@ fn older_history_asks_before_the_oldest_message_and_reports_the_page_once() {
             Event::OlderChannelHistory {
                 channel,
                 request,
-                messages,
                 status,
-            } => Some((channel, *request, messages, *status)),
+            } => Some((channel, *request, *status)),
             _ => None,
         })
         .collect();
     assert_eq!(pages.len(), 1);
-    let (channel, request, messages, status) = &pages[0];
+    let (channel, request, status) = &pages[0];
     assert_eq!((channel.as_str(), *request), ("#test", 42));
     assert_eq!(*status, OlderHistoryStatus::Beginning);
+    let messages = streamed_history(&events, "#test", Some(42));
     let lines: Vec<_> = messages
         .iter()
         .map(|m| (m.text.as_str(), m.notice, m.msgid.as_deref()))
@@ -4439,9 +4459,15 @@ fn older_history_fails_at_once_without_chathistory() {
             .iter()
             .any(|e| matches!(e, Event::HistoryAvailable(_)))
     );
-    assert!(events.iter().any(|e| matches!(e,
-            Event::OlderChannelHistory { request: 7, status: OlderHistoryStatus::Failed, messages, .. }
-            if messages.is_empty())));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::OlderChannelHistory {
+            request: 7,
+            status: OlderHistoryStatus::Failed,
+            ..
+        }
+    )));
+    assert!(streamed_history(&events, "#test", Some(7)).is_empty());
 }
 
 #[test]
@@ -4491,17 +4517,16 @@ fn a_reconnect_asks_only_for_the_lines_after_the_cut() {
     server.join().unwrap();
     assert!(events.iter().any(|event| matches!(event,
             Event::HistoryRequested { channel, resumed: true } if channel == "#test")));
-    let Some(Event::ChannelHistory {
-        messages,
-        incomplete,
-        ..
-    }) = events
+    let Some(Event::ChannelHistory { incomplete, .. }) = events
         .iter()
         .find(|event| matches!(event, Event::ChannelHistory { .. }))
     else {
         unreachable!()
     };
-    let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
+    let texts: Vec<_> = streamed_history(&events, "#test", None)
+        .iter()
+        .map(|m| m.text.as_str())
+        .collect();
     assert_eq!(texts, ["missed", "live"]);
     assert!(
         *incomplete,
@@ -4547,7 +4572,7 @@ fn chathistory_is_not_requested_from_servers_without_it() {
 }
 
 #[test]
-fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
+fn a_reply_cut_off_by_a_disconnect_keeps_the_lines_shown() {
     let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
         let FakeServerIo {
             mut socket,
@@ -4600,6 +4625,13 @@ fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
             .iter()
             .any(|event| matches!(event, Event::HistoryRequested { .. }))
     );
+    // The line that arrived was shown; the reply never ended, so no end is
+    // reported, and the line never became live traffic.
+    let texts: Vec<_> = streamed_history(&events, "#test", None)
+        .iter()
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(texts, ["partial"]);
     assert!(!events.iter().any(|event| matches!(
         event,
         Event::ChannelHistory { .. } | Event::ChannelMessage { .. }

@@ -2765,3 +2765,187 @@ fn server_numbers_still_count_only_real_servers() {
     state.dispatch(Command::SelectServerAt(2));
     assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
 }
+
+fn timed_line(text: &str, millis: Option<u64>) -> timeline::TimelineLine {
+    line(text, millis, None)
+}
+
+#[test]
+fn history_lines_show_as_they_arrive_and_are_ordered_when_the_reply_ends() {
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
+    let network = NetworkId(1);
+    let id = ConversationId(1);
+    state.append_channel_message_at(
+        network,
+        "#a",
+        "me",
+        "my own",
+        Kind::Message,
+        meta(Some(5_000), None, Provenance::Live),
+    );
+    state.history_requested(network, "#a");
+    // Live lines while the reply is on its way: a clock-skewed one too.
+    state.append_channel_message_at(
+        network,
+        "#a",
+        "carol",
+        "live",
+        Kind::Message,
+        meta(Some(1), None, Provenance::Live),
+    );
+    let sequences = |state: &AppState, text: &str| {
+        state.conversations()[0]
+            .messages
+            .iter()
+            .find(|m| m.text == text)
+            .map(|m| m.sequence)
+            .unwrap()
+    };
+    let (own, live) = (sequences(&state, "my own"), sequences(&state, "live"));
+
+    // The reply comes newest first.
+    assert!(state.push_history_line(id, timed_line("c", Some(30))));
+    assert_eq!(texts(&state, 0), ["my own", "c", "live"], "shown at once");
+    assert!(state.push_history_line(id, timed_line("b", Some(20))));
+    assert!(state.push_history_line(id, timed_line("a", Some(10))));
+    assert_eq!(texts(&state, 0), ["my own", "c", "b", "a", "live"]);
+
+    assert_eq!(state.finish_history_for(id, None), 3);
+    assert_eq!(texts(&state, 0), ["my own", "a", "b", "c", "live"]);
+    assert!(ascending(&state, 0));
+    // Nothing outside the block moved.
+    assert_eq!(sequences(&state, "my own"), own);
+    assert_eq!(sequences(&state, "live"), live);
+    // The end is reported once; a second one changes nothing.
+    assert_eq!(state.finish_history_for(id, None), 0);
+    assert!(!state.push_history_line(id, timed_line("late", Some(1))));
+    assert!(!state.is_unread(id), "history is not news");
+}
+
+#[test]
+fn lines_of_equal_or_missing_time_keep_their_arrival_order() {
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
+    let network = NetworkId(1);
+    let id = ConversationId(1);
+    state.history_requested(network, "#a");
+    for (text, millis) in [
+        ("untimed first", None),
+        ("t30", Some(30)),
+        ("untimed after t30", None),
+        ("t10", Some(10)),
+        ("same a", Some(20)),
+        ("same b", Some(20)),
+        ("untimed after same b", None),
+        ("t5", Some(5)),
+    ] {
+        state.push_history_line(id, timed_line(text, millis));
+    }
+    state.finish_history_for(id, None);
+    assert_eq!(
+        texts(&state, 0),
+        [
+            // No time yet: before every timed line, in arrival order.
+            "untimed first",
+            "t5",
+            "t10",
+            "same a",
+            "same b",
+            "untimed after same b",
+            "t30",
+            "untimed after t30",
+        ]
+    );
+}
+
+#[test]
+fn a_reply_that_fails_keeps_its_lines_and_a_gap_note_goes_first() {
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
+    let network = NetworkId(1);
+    let id = ConversationId(1);
+    state.history_requested(network, "#a");
+    state.push_history_line(id, timed_line("later", Some(20)));
+    state.push_history_line(id, timed_line("earlier", Some(10)));
+    state.finish_history_for(id, Some("gap".into()));
+    assert_eq!(texts(&state, 0), ["gap", "earlier", "later"]);
+    assert!(ascending(&state, 0));
+    assert!(state.pending_history.is_empty() && state.history_blocks.is_empty());
+}
+
+#[test]
+fn older_pages_show_as_they_arrive_and_are_ordered_above_the_log() {
+    let (mut state, _network, id) = paging_channel();
+    let before = texts(&state, 0)
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let sequences: Vec<u64> = state.conversations()[0]
+        .messages
+        .iter()
+        .map(|m| m.sequence)
+        .collect();
+    let request = state.request_older_history(id).expect("a page").request;
+
+    assert!(state.push_older_history_line(id, request, line("p3", Some(300), Some("m300"))));
+    assert_eq!(texts(&state, 0)[0], "p3", "shown at once");
+    assert!(state.push_older_history_line(id, request, line("p1", Some(100), Some("m100"))));
+    assert!(state.push_older_history_line(id, request, line("p2", Some(200), Some("m200"))));
+    // Repeated lines (msgid and timestamp) are skipped while streaming, and
+    // so is a line the log already has near its top.
+    assert!(!state.push_older_history_line(id, request, line("p2", Some(200), Some("m200"))));
+    assert!(!state.push_older_history_line(id, request, line("h1", Some(500), Some("m500"))));
+    assert_eq!(state.older_history_in_flight(id), Some(request), "not over");
+
+    assert_eq!(state.finish_older_history(id, request, false), 3);
+    assert_eq!(state.older_history_in_flight(id), None);
+    let after = texts(&state, 0);
+    assert_eq!(after[..3], ["p1", "p2", "p3"]);
+    assert_eq!(after[3..], before[..]);
+    assert!(ascending(&state, 0));
+    let kept: Vec<u64> = state.conversations()[0]
+        .messages
+        .iter()
+        .skip(3)
+        .map(|m| m.sequence)
+        .collect();
+    assert_eq!(kept, sequences, "nothing already shown moved");
+}
+
+#[test]
+fn a_failed_older_page_keeps_the_lines_it_brought() {
+    let (mut state, _network, id) = paging_channel();
+    let request = state.request_older_history(id).expect("a page").request;
+    state.push_older_history_line(id, request, line("p2", Some(200), Some("m200")));
+    state.push_older_history_line(id, request, line("p1", Some(100), Some("m100")));
+    state.older_history_failed(id, request);
+    assert_eq!(texts(&state, 0)[..2], ["p1", "p2"]);
+    assert!(ascending(&state, 0));
+    assert_eq!(state.older_history_in_flight(id), None);
+    assert!(
+        state.request_older_history(id).is_none(),
+        "paging stops after a failure"
+    );
+    // A line of the ended request changes nothing.
+    assert!(!state.push_older_history_line(id, request, line("p0", Some(50), Some("m50"))));
+}
+
+#[test]
+fn notified_history_lines_follow_their_line_when_the_block_is_ordered() {
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
+    let network = NetworkId(1);
+    let id = ConversationId(1);
+    state.history_requested(network, "#a");
+    let mut newer = timed_line("newer", Some(20));
+    newer.attention = true;
+    state.push_history_line(id, newer);
+    state.push_history_line(id, timed_line("older", Some(10)));
+    state.finish_history_for(id, None);
+    state.dispatch(Command::NextNotifiedMessage);
+    let (revealed, sequence) = state.take_reveal().expect("a notified line");
+    assert_eq!(revealed, id);
+    let line = state.conversations()[0]
+        .messages
+        .iter()
+        .find(|m| m.sequence == sequence)
+        .unwrap();
+    assert_eq!(line.text, "newer");
+}
