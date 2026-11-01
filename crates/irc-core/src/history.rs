@@ -50,6 +50,7 @@ use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix, Response}
 use tokio::time::Instant;
 
 use cayenchat_model::names::CaseMapping;
+use encoding_rs::Encoding;
 
 use crate::tags;
 
@@ -298,12 +299,63 @@ pub(crate) struct HistoryRequests {
     discarding: Vec<String>,
     /// How the server compares channel names.
     casemapping: CaseMapping,
+    /// The connection's encoding when it is not UTF-8: a server that folds
+    /// the bytes of a name in that encoding returns a target that the
+    /// decoded name only matches through the same bytes.
+    wire: Option<&'static Encoding>,
 }
 
 impl HistoryRequests {
     /// Compares the channels of requests with `casemapping` from now on.
     pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
         self.casemapping = casemapping;
+    }
+
+    /// Reads the connection's encoding (a WHATWG label); UTF-8 and unknown
+    /// labels need no wire-side comparison.
+    pub(crate) fn with_wire_encoding(mut self, label: &str) -> Self {
+        self.wire = Encoding::for_label(label.as_bytes()).filter(|e| *e != encoding_rs::UTF_8);
+        self
+    }
+
+    /// Whether `target`, as decoded from a reply's `BATCH` line, is
+    /// `channel` as the server would return it. Some servers (soju) fold
+    /// the case of the encoded bytes of a name, which breaks the escapes
+    /// and double-byte codes of ISO-2022-JP: the decoded target is then
+    /// not the name in any case. So the name is encoded, folded byte by
+    /// byte and decoded again, which gives the same text for the same
+    /// bytes. Only for names that are not ASCII, where the plain
+    /// comparison cannot apply.
+    fn same_on_wire(&self, channel: &str, target: &str) -> bool {
+        let Some(encoding) = self.wire else {
+            return false;
+        };
+        if channel.is_ascii() {
+            return false;
+        }
+        let (bytes, _, unmappable) = encoding.encode(channel);
+        if unmappable {
+            return false;
+        }
+        // Letters only, or the connection's mapping with `[]\~` too: the
+        // server's own folding is not known for bytes of the encoding.
+        [CaseMapping::Ascii, self.casemapping]
+            .into_iter()
+            .any(|mapping| {
+                let folded: Vec<u8> = bytes
+                    .iter()
+                    .map(|&byte| match byte {
+                        0x00..=0x7f => mapping.fold_char(char::from(byte)) as u8,
+                        _ => byte,
+                    })
+                    .collect();
+                encoding.decode_without_bom_handling(&folded).0 == target
+            })
+    }
+
+    /// Whether `target` of a reply's `BATCH` line names `channel`.
+    fn names(&self, channel: &str, target: &str) -> bool {
+        self.casemapping.same(channel, target) || self.same_on_wire(channel, target)
     }
 
     /// Requests for a connection that resumes `resume` (at most
@@ -669,6 +721,7 @@ impl HistoryRequests {
             server_limit: self.server_limit,
             reference_types: self.reference_types,
             casemapping: self.casemapping,
+            wire: self.wire,
             resume: std::mem::take(&mut self.resume),
             ..Self::default()
         };
@@ -866,11 +919,12 @@ impl HistoryRequests {
         let Some(target) = params.as_ref().and_then(|params| params.first()) else {
             return Observed::Unrelated;
         };
-        let mapping = self.casemapping;
-        if let Some(outstanding) = self.outstanding.as_mut()
-            && outstanding.reference.is_none()
-            && mapping.same(&outstanding.channel, target)
+        if self
+            .outstanding
+            .as_ref()
+            .is_some_and(|o| o.reference.is_none() && self.names(&o.channel, target))
         {
+            let outstanding = self.outstanding.as_mut().expect("outstanding request");
             outstanding.reference = Some(reference.to_owned());
             outstanding.end = end;
             return Observed::Consumed;
@@ -878,7 +932,7 @@ impl HistoryRequests {
         if let Some(index) = self
             .abandoned
             .iter()
-            .position(|channel| mapping.same(channel, target))
+            .position(|channel| self.names(channel, target))
         {
             self.abandoned.remove(index);
             self.discarding.push(reference.to_owned());
@@ -2078,5 +2132,76 @@ mod tests {
             .collect();
         assert_eq!(lines, [("bob", "hi"), ("alice", "yo")]);
         assert_eq!(finished(observed.into_iter().last().unwrap()).lines, 2);
+    }
+
+    /// The line a server sends when it folds the bytes of `channel` in
+    /// `label`'s encoding, decoded like the line codec does.
+    fn folded_batch_line(label: &str, channel: &str) -> String {
+        let encoding = Encoding::for_label(label.as_bytes()).unwrap();
+        let (bytes, _, _) = encoding.encode(channel);
+        let mut line = b"@draft/chathistory-end :srv BATCH +r1 chathistory ".to_vec();
+        line.extend(bytes.iter().map(u8::to_ascii_lowercase));
+        line.extend(b"\r\n");
+        irc::proto::charsets::decode_line(&line, encoding, None)
+    }
+
+    #[test]
+    fn a_reply_with_the_target_folded_on_the_wire_is_recognised() {
+        const CHANNEL: &str = "!AB12日本語:*.jp";
+        let mut requests = HistoryRequests::default().with_wire_encoding("ISO-2022-JP");
+        requests.isupport(&parse(":srv 005 me CHATHISTORY=50 :are supported"));
+        requests.enqueue(CHANNEL);
+        sent(&mut requests, Instant::now());
+        let line = folded_batch_line("ISO-2022-JP", CHANNEL);
+        assert!(!line.contains("日本語"), "the target is broken: {line}");
+        let observed = feed(
+            &mut requests,
+            &[
+                line.trim_end(),
+                "@batch=r1 :bob!u@h PRIVMSG !AB12日本語:*.jp :one",
+                ":srv BATCH -r1",
+            ],
+        );
+        assert_eq!(observed[0], Observed::Consumed);
+        assert_eq!(streamed(&observed).len(), 1);
+        assert!(matches!(
+            &observed[2],
+            Observed::Finished(Finished {
+                lines: 1,
+                failed: false,
+                ..
+            })
+        ));
+        assert!(requests.next_deadline().is_none(), "no timeout is left");
+    }
+
+    #[test]
+    fn a_folded_target_without_a_request_stays_a_replay() {
+        let mut requests = HistoryRequests::default().with_wire_encoding("ISO-2022-JP");
+        let line = folded_batch_line("ISO-2022-JP", "!AB12日本語:*.jp");
+        assert_eq!(
+            feed(&mut requests, &[line.trim_end()])[0],
+            Observed::Unrelated
+        );
+        // Another channel's folded target is not this request's.
+        requests.enqueue("!AB12日本:*.jp");
+        sent(&mut requests, Instant::now());
+        assert_eq!(
+            feed(&mut requests, &[line.trim_end()])[0],
+            Observed::Unrelated
+        );
+    }
+
+    #[test]
+    fn plain_comparison_is_unchanged_for_every_encoding() {
+        for label in ["UTF-8", "ISO-2022-JP"] {
+            let mut requests = HistoryRequests::default().with_wire_encoding(label);
+            requests.enqueue("#Café");
+            sent(&mut requests, Instant::now());
+            let observed = feed(&mut requests, &[":srv BATCH +r1 chathistory #Cafe"]);
+            assert_eq!(observed[0], Observed::Unrelated, "{label}");
+            let observed = feed(&mut requests, &[":srv BATCH +r2 chathistory #cAFé"]);
+            assert_eq!(observed[0], Observed::Consumed, "{label}");
+        }
     }
 }
