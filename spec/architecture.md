@@ -738,8 +738,8 @@ registration completes, and afterwards while the connection diagnostics switch
 is on (`Connection::set_transcript`, set for every connection when it is
 toggled and for each new one). While the switch is on the worker keeps a tag
 section whole; before registration, with the switch off, a section over 512
-bytes is shortened. Stage diagnostics are always sent, and the UI keeps them
-until registration and afterwards while the switch is on. A worker panic
+bytes is shortened. Stage diagnostics are always sent and always kept (the
+UI has no second gate), so a lost connection keeps its cause. A worker panic
 produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is
 written to the log as a stage note.
