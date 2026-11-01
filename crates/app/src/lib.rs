@@ -189,6 +189,10 @@ pub struct AppState {
     /// Conversations waiting for requested history, with the first of their
     /// reserved sequences. A reply without an entry is stale and ignored.
     pending_history: HashMap<ConversationId, u64>,
+    /// Replies being answered line by line: where the next line of each
+    /// goes (see [`HistoryBlock`]). One that no longer matches its request
+    /// is stale and replaced by the next line.
+    history_blocks: HashMap<ConversationId, HistoryBlock>,
     /// Networks whose backend can page back through history now.
     history_paging: HashSet<NetworkId>,
     /// Older-page state of conversations that asked for one this session.
@@ -243,6 +247,40 @@ pub struct HistoryResume {
     pub name: String,
     pub native_id: Option<NativeMessageId>,
     pub timestamp: Option<Timestamp>,
+}
+
+/// The sequences a reply to a history request fills as its lines arrive:
+/// `start..start + HISTORY_RESERVE`, set aside when it was requested (a
+/// page of older history: when its first line arrived). When the reply
+/// ends, the lines inside are put in server-time order and nothing outside
+/// moves.
+#[derive(Debug)]
+struct HistoryBlock {
+    start: u64,
+    /// The sequence of the next line.
+    next: u64,
+    /// The older-page request it answers; `None` for recent history.
+    request: Option<u64>,
+    /// Most lines the block takes.
+    room: usize,
+    /// The top of the log when an older page started, for overlap.
+    near_top: Option<DuplicateFilter>,
+}
+
+/// A line of requested history as a log message.
+fn requested_message(line: timeline::TimelineLine) -> Message {
+    let mut message = new_message(
+        line.sender,
+        line.text,
+        Line::Text,
+        MessageMeta {
+            provenance: Provenance::Requested,
+            ..line.meta
+        },
+    );
+    message.notice = line.notice;
+    message.action = line.action;
+    message
 }
 
 /// Paging back through one conversation's history.
@@ -310,6 +348,7 @@ impl AppState {
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
             pending_history: HashMap::new(),
+            history_blocks: HashMap::new(),
             history_paging: HashSet::new(),
             older_history: HashMap::new(),
             next_history_request: 0,
@@ -442,6 +481,7 @@ impl AppState {
         for id in &removed {
             self.duplicates.remove(id);
             self.pending_history.remove(id);
+            self.history_blocks.remove(id);
             self.older_history.remove(id);
             self.resume_points.remove(id);
             self.join_reserves.remove(id);
@@ -928,6 +968,7 @@ impl AppState {
         let network = self.conversations.remove(index).network;
         self.duplicates.remove(&id);
         self.pending_history.remove(&id);
+        self.history_blocks.remove(&id);
         self.older_history.remove(&id);
         self.resume_points.remove(&id);
         self.join_reserves.remove(&id);
@@ -1592,13 +1633,80 @@ impl AppState {
         self.insert_history_for(id, lines, gap_note)
     }
 
-    /// [`AppState::insert_resumed_history`] for any conversation.
+    /// [`AppState::insert_resumed_history`] for any conversation: the whole
+    /// reply at once, as [`AppState::push_history_line`] for each line and
+    /// [`AppState::finish_history_for`].
     pub fn insert_history_for(
         &mut self,
         id: ConversationId,
         lines: Vec<timeline::TimelineLine>,
         gap_note: Option<String>,
     ) -> usize {
+        if !self.pending_history.contains_key(&id) {
+            return 0;
+        }
+        for line in lines {
+            self.push_history_line(id, line);
+        }
+        self.finish_history_for(id, gap_note)
+    }
+
+    /// One line of the reply to [`AppState::history_requested`] arrived: it
+    /// is shown at once, after the lines of the reply before it and before
+    /// every line that is not part of the reply. Lines the conversation
+    /// already has are skipped by the duplicate filter, lines beyond
+    /// [`HISTORY_RESERVE`] are dropped, and nothing is marked unread or
+    /// highlighted. A line without a pending request (a reset, a
+    /// disconnect, another connection) changes nothing. Returns whether the
+    /// line was added.
+    pub fn push_history_line(&mut self, id: ConversationId, line: timeline::TimelineLine) -> bool {
+        let Some(&start) = self.pending_history.get(&id) else {
+            return false;
+        };
+        let Some(position) = self
+            .conversations
+            .iter()
+            .position(|conversation| conversation.id == id)
+        else {
+            return false;
+        };
+        let block = self
+            .history_blocks
+            .get(&id)
+            .filter(|block| block.request.is_none() && block.start == start);
+        let next = block.map_or(start, |block| block.next);
+        if next >= start + HISTORY_RESERVE as u64 {
+            return false;
+        }
+        let attention = line.attention;
+        let mut message = requested_message(line);
+        if (message.native_id.is_some() || message.timestamp.is_some())
+            && !self.duplicates.entry(id).or_default().admit(&message)
+        {
+            return false;
+        }
+        message.sequence = next;
+        self.history_blocks.insert(
+            id,
+            HistoryBlock {
+                start,
+                next: next + 1,
+                request: None,
+                room: HISTORY_RESERVE,
+                near_top: None,
+            },
+        );
+        self.place_streamed(id, position, message, attention);
+        true
+    }
+
+    /// The reply to [`AppState::history_requested`] ended (also when it
+    /// failed or timed out): the lines it brought are put in server-time
+    /// order among themselves (see [`AppState::settle_block`]), `gap_note`
+    /// (an activity line) goes first where the reply says lines may be
+    /// missing, and the request is over. Returns how many lines the reply
+    /// holds, the note included.
+    pub fn finish_history_for(&mut self, id: ConversationId, gap_note: Option<String>) -> usize {
         let Some(start) = self.pending_history.remove(&id) else {
             return 0;
         };
@@ -1609,6 +1717,10 @@ impl AppState {
         {
             self.resume_points.remove(&id);
         }
+        let streamed = self
+            .history_blocks
+            .remove(&id)
+            .is_some_and(|block| block.request.is_none() && block.start == start);
         let Some(position) = self
             .conversations
             .iter()
@@ -1616,11 +1728,8 @@ impl AppState {
         else {
             return 0;
         };
-        let end = start + HISTORY_RESERVE as u64;
-        let mut block = Vec::with_capacity(lines.len().min(HISTORY_RESERVE) + 1);
-        let mut next = start;
-        if let Some(note) = gap_note {
-            let mut message = new_message(
+        let note = gap_note.map(|note| {
+            new_message(
                 String::new(),
                 note,
                 Line::Activity,
@@ -1628,52 +1737,106 @@ impl AppState {
                     provenance: Provenance::Requested,
                     ..MessageMeta::live()
                 },
-            );
-            message.sequence = next;
-            next += 1;
-            block.push(message);
+            )
+        });
+        if !streamed && note.is_none() {
+            return 0;
         }
-        let mut notable = Vec::new();
-        for line in lines {
-            if next >= end {
-                break;
-            }
-            let attention = line.attention;
-            let mut message = new_message(
-                line.sender,
-                line.text,
-                Line::Text,
-                MessageMeta {
-                    provenance: Provenance::Requested,
-                    ..line.meta
-                },
-            );
-            message.notice = line.notice;
-            message.action = line.action;
-            if (message.native_id.is_some() || message.timestamp.is_some())
-                && !self.duplicates.entry(id).or_default().admit(&message)
-            {
-                continue;
-            }
-            message.sequence = next;
-            if attention {
-                notable.push(next);
-            }
-            next += 1;
-            block.push(message);
-        }
-        let added = block.len();
+        let end = start + HISTORY_RESERVE as u64;
+        self.settle_block(id, position, start, end, note)
+    }
+
+    /// Inserts a streamed line at its place in the block it belongs to.
+    fn place_streamed(
+        &mut self,
+        id: ConversationId,
+        position: usize,
+        message: Message,
+        attention: bool,
+    ) {
+        let sequence = message.sequence;
         self.log_revision += 1;
         let messages = &mut self.conversations[position].messages;
-        let at = messages.partition_point(|message| message.sequence < start);
-        messages.splice(at..at, block);
+        let at = messages.partition_point(|other| other.sequence < sequence);
+        messages.insert(at, message);
         let trimmed = trim_retained(messages);
-        for sequence in notable {
+        if attention {
             self.note_attention_at(id, sequence);
         }
         if trimmed {
             self.prune_attention(id);
         }
+    }
+
+    /// Puts the lines of a reply block (the sequences `first..end`) in
+    /// server-time order, keeping lines of equal time in arrival order. A
+    /// line without a time counts as having its predecessor's time (one at
+    /// the start has none and stays before every timed line), so it stays
+    /// where it arrived relative to it. The sequences of the block are
+    /// handed out again in the new order; nothing outside the block moves.
+    /// `note` goes first. Returns how many lines the block holds.
+    fn settle_block(
+        &mut self,
+        id: ConversationId,
+        position: usize,
+        first: u64,
+        end: u64,
+        note: Option<Message>,
+    ) -> usize {
+        let messages = &mut self.conversations[position].messages;
+        let low = messages.partition_point(|message| message.sequence < first);
+        let high = messages.partition_point(|message| message.sequence < end);
+        let arrived: Vec<Message> = messages.drain(low..high).collect();
+        let mut time = None;
+        let times: Vec<Option<Timestamp>> = arrived
+            .iter()
+            .map(|message| {
+                time = message.timestamp.or(time);
+                time
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..arrived.len()).collect();
+        order.sort_by_key(|&index| times[index]);
+        let shift = usize::from(note.is_some());
+        let reordered = shift == 1 || order.iter().enumerate().any(|(at, &from)| at != from);
+        let old: Vec<u64> = arrived.iter().map(|message| message.sequence).collect();
+        let mut slots: Vec<Option<Message>> = arrived.into_iter().map(Some).collect();
+        let mut block: Vec<Message> = note.into_iter().collect();
+        block.extend(
+            order
+                .iter()
+                .map(|&index| slots[index].take().expect("each line once")),
+        );
+        block.truncate((end - first) as usize);
+        for (offset, message) in block.iter_mut().enumerate() {
+            message.sequence = first + offset as u64;
+        }
+        let added = block.len();
+        if reordered {
+            // Where each arrived line went; lines cut off the end are gone.
+            let mut moved = HashMap::new();
+            for (at, &from) in order.iter().enumerate() {
+                let to = at + shift;
+                moved.insert(old[from], (to < added).then(|| first + to as u64));
+            }
+            self.attention.retain_mut(|(conversation, sequence)| {
+                if *conversation != id || !(first..end).contains(sequence) {
+                    return true;
+                }
+                match moved.get(sequence) {
+                    Some(Some(to)) => {
+                        *sequence = *to;
+                        true
+                    }
+                    Some(None) => false,
+                    None => true,
+                }
+            });
+            self.log_revision += 1;
+        }
+        self.conversations[position]
+            .messages
+            .splice(low..low, block);
         added
     }
 
@@ -1747,23 +1910,120 @@ impl AppState {
             .and_then(|state| state.in_flight)
     }
 
-    /// Puts the answer to older-history request `request` before everything
-    /// conversation `id` holds, oldest first, and returns how many lines
-    /// were added. Lines the conversation already has near its top (a
-    /// repeated or overlapping page, recent history, playback) or recently
-    /// received are skipped; the rest fills the log up to its bound, the
-    /// oldest lines of the page giving way. Nothing is marked unread or
-    /// highlighted (lines flagged `attention` can be jumped to, though) and
-    /// nothing already shown moves or is renumbered. An
-    /// answer to another request (a stale one: the session ended, the
-    /// channel was left, the conversation was removed) changes nothing.
-    /// `beginning` says the source has nothing older; a page that adds
-    /// nothing new ends paging as well, so the same request is not repeated.
+    /// Puts the answer to older-history request `request` for conversation
+    /// `id` before everything it holds, oldest first, and returns how many
+    /// lines were added: the whole page at once, as
+    /// [`AppState::push_older_history_line`] for each line and
+    /// [`AppState::finish_older_history`].
     pub fn insert_older_history(
         &mut self,
         id: ConversationId,
         request: u64,
         lines: Vec<timeline::TimelineLine>,
+        beginning: bool,
+    ) -> usize {
+        for line in lines {
+            self.push_older_history_line(id, request, line);
+        }
+        self.finish_older_history(id, request, beginning)
+    }
+
+    /// One line of the answer to older-history request `request` arrived:
+    /// it is shown at once, above everything the conversation holds and
+    /// below the lines of the page that came before it. Lines the
+    /// conversation already has near its top (a repeated or overlapping
+    /// page, recent history, playback) or recently received are skipped, and
+    /// the page stops filling the log at its bound. Nothing is marked unread
+    /// or highlighted (lines flagged `attention` can be jumped to, though)
+    /// and nothing outside the page moves or is renumbered. A line of
+    /// another request (a stale one: the session ended, the channel was
+    /// left, the conversation was removed) changes nothing. Returns whether
+    /// the line was added.
+    pub fn push_older_history_line(
+        &mut self,
+        id: ConversationId,
+        request: u64,
+        line: timeline::TimelineLine,
+    ) -> bool {
+        if self
+            .older_history
+            .get(&id)
+            .is_none_or(|state| state.in_flight != Some(request))
+        {
+            return false;
+        }
+        let Some(position) = self.conversations.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        if !self
+            .history_blocks
+            .get(&id)
+            .is_some_and(|block| block.request == Some(request))
+        {
+            // The first line of the page: set its sequences aside, below
+            // everything given out so far. A temporary window over the top
+            // of the log (topmost last, so it is the last to be forgotten)
+            // catches overlap; the conversation's own filter catches lines
+            // received recently. Neither grows: older lines are not
+            // recorded in the conversation's filter, which is kept for
+            // what arrives live.
+            let messages = &self.conversations[position].messages;
+            let mut near_top = DuplicateFilter::default();
+            for message in messages[..messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)]
+                .iter()
+                .rev()
+            {
+                near_top.admit(message);
+            }
+            let start = self.older_sequence_floor - HISTORY_RESERVE as u64;
+            self.older_sequence_floor = start;
+            self.history_blocks.insert(
+                id,
+                HistoryBlock {
+                    start,
+                    next: start,
+                    request: Some(request),
+                    room: MAX_RETAINED
+                        .saturating_sub(messages.len())
+                        .min(HISTORY_RESERVE),
+                    near_top: Some(near_top),
+                },
+            );
+        }
+        let recent = self.duplicates.get(&id);
+        let Some(block) = self.history_blocks.get_mut(&id) else {
+            return false;
+        };
+        if (block.next - block.start) as usize >= block.room {
+            return false;
+        }
+        let attention = line.attention;
+        let mut message = requested_message(line);
+        let admitted = !recent.is_some_and(|filter| filter.contains(&message))
+            && block
+                .near_top
+                .as_mut()
+                .is_none_or(|near_top| near_top.admit(&message));
+        if !admitted {
+            return false;
+        }
+        message.sequence = block.next;
+        block.next += 1;
+        self.place_streamed(id, position, message, attention);
+        true
+    }
+
+    /// The answer to older-history request `request` for conversation `id`
+    /// ended: the page's lines are put in server-time order among
+    /// themselves (see [`AppState::settle_block`]) and the request is over.
+    /// Returns how many lines the page added. `beginning` says the source
+    /// has nothing older; a page that adds nothing new ends paging as well,
+    /// so the same request is not repeated. An answer to another request
+    /// changes nothing.
+    pub fn finish_older_history(
+        &mut self,
+        id: ConversationId,
+        request: u64,
         beginning: bool,
     ) -> usize {
         let Some(state) = self.older_history.get_mut(&id) else {
@@ -1773,64 +2033,13 @@ impl AppState {
             return 0;
         }
         state.in_flight = None;
-        let Some(position) = self.conversations.iter().position(|c| c.id == id) else {
-            return 0;
-        };
-        let messages = &self.conversations[position].messages;
-        // A temporary window over the top of the log (topmost last, so it
-        // is the last to be forgotten) catches overlap; the conversation's
-        // own filter catches lines received recently. Neither grows: older
-        // lines are not recorded in the conversation's filter, which is
-        // kept for what arrives live.
-        let mut near_top = DuplicateFilter::default();
-        for message in messages[..messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)]
-            .iter()
-            .rev()
+        let mut added = 0;
+        if let Some(block) = self.history_blocks.remove(&id)
+            && block.request == Some(request)
+            && let Some(position) = self.conversations.iter().position(|c| c.id == id)
         {
-            near_top.admit(message);
-        }
-        let recent = self.duplicates.get(&id);
-        let mut block: Vec<(bool, Message)> = lines
-            .into_iter()
-            .map(|line| {
-                let attention = line.attention;
-                let mut message = new_message(
-                    line.sender,
-                    line.text,
-                    Line::Text,
-                    MessageMeta {
-                        provenance: Provenance::Requested,
-                        ..line.meta
-                    },
-                );
-                message.notice = line.notice;
-                message.action = line.action;
-                (attention, message)
-            })
-            .filter(|(_, message)| {
-                !recent.is_some_and(|filter| filter.contains(message)) && near_top.admit(message)
-            })
-            .collect();
-        let room = MAX_RETAINED.saturating_sub(messages.len());
-        if block.len() > room {
-            block.drain(..block.len() - room);
-        }
-        let added = block.len();
-        let first = self.older_sequence_floor - added as u64;
-        let mut notable = Vec::new();
-        for (offset, (attention, message)) in block.iter_mut().enumerate() {
-            message.sequence = first + offset as u64;
-            if *attention {
-                notable.push(message.sequence);
-            }
-        }
-        self.older_sequence_floor = first;
-        self.log_revision += 1;
-        self.conversations[position]
-            .messages
-            .splice(0..0, block.into_iter().map(|(_, message)| message));
-        for sequence in notable {
-            self.note_attention_at(id, sequence);
+            let end = block.start + HISTORY_RESERVE as u64;
+            added = self.settle_block(id, position, block.start, end, None);
         }
         if beginning || added == 0 {
             self.older_history.insert(
@@ -1844,18 +2053,12 @@ impl AppState {
         added
     }
 
-    /// Older-history request `request` for conversation `id` ended without
-    /// lines (it failed, timed out, or could not be sent). Paging stops for
-    /// this session, so a failing request is not repeated on every scroll.
+    /// Older-history request `request` for conversation `id` failed, timed
+    /// out, or could not be sent. Lines it already brought stay (in
+    /// server-time order). Paging stops for this session, so a failing
+    /// request is not repeated on every scroll.
     pub fn older_history_failed(&mut self, id: ConversationId, request: u64) {
-        if let Some(state) = self.older_history.get_mut(&id)
-            && state.in_flight == Some(request)
-        {
-            *state = OlderHistory {
-                in_flight: None,
-                finished: true,
-            };
-        }
+        self.finish_older_history(id, request, true);
     }
 
     /// Sequence of the newest message in any log. It changes whenever a
