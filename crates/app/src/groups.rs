@@ -24,6 +24,17 @@ pub const MAX_GROUP_NAME_CHARS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GroupId(pub u32);
 
+/// What a heading (a server or a group) shows of the conversations under it,
+/// also when it is collapsed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeadingMarks {
+    /// Any conversation under it is unread: the heading is bold.
+    pub unread: bool,
+    /// Any conversation under it holds a mention: the heading takes the
+    /// highlight color.
+    pub highlighted: bool,
+}
+
 /// Where a channel is shown: under a real server or under a group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Parent {
@@ -357,15 +368,16 @@ impl AppState {
             .is_some_and(|c| self.group_index_of(c).is_some())
     }
 
-    /// Whether any channel of the group is unread, and whether any of them
-    /// holds a mention: what a collapsed heading shows.
-    /// `children` are the group's conversations from the display tree the
-    /// caller already has.
-    pub fn group_unread(&self, children: &[ConversationId]) -> (bool, bool) {
-        (
-            children.iter().any(|c| self.is_unread(*c)),
-            children.iter().any(|c| self.is_highlighted(*c)),
-        )
+    /// Whether any conversation under a heading (a server or a group) is
+    /// unread, and whether any holds a mention: what a collapsed heading
+    /// shows. `children` are the conversations the display tree lists under
+    /// that heading, which the caller already has; a channel moved into a
+    /// group counts for the group only.
+    pub fn heading_marks(&self, children: &[ConversationId]) -> HeadingMarks {
+        HeadingMarks {
+            unread: children.iter().any(|c| self.is_unread(*c)),
+            highlighted: children.iter().any(|c| self.is_highlighted(*c)),
+        }
     }
 
     /// The conversations the numbered shortcuts reach: those shown under the
@@ -477,6 +489,13 @@ mod tests {
             config(2, "friend", &["#a", "#c"]),
             config(3, "work", &["#w"]),
         ])
+    }
+
+    fn marks(unread: bool, highlighted: bool) -> HeadingMarks {
+        HeadingMarks {
+            unread,
+            highlighted,
+        }
     }
 
     fn id(state: &AppState, network: u32, name: &str) -> ConversationId {
@@ -720,9 +739,9 @@ mod tests {
         state.mark_unread(a);
         let children =
             |state: &AppState| state.display_tree().children(Parent::Group(group)).to_vec();
-        assert_eq!(state.group_unread(&children(&state)), (true, false));
+        assert_eq!(state.heading_marks(&children(&state)), marks(true, false));
         state.mark_highlighted(NetworkId(2), "#c");
-        assert_eq!(state.group_unread(&children(&state)), (true, true));
+        assert_eq!(state.heading_marks(&children(&state)), marks(true, true));
     }
 
     #[test]
@@ -754,18 +773,52 @@ mod tests {
     }
 
     #[test]
-    fn group_unread_agrees_with_the_tree() {
+    fn heading_marks_agree_with_the_tree() {
         let mut state = state();
         let group = mixed(&mut state);
         state.dispatch(crate::Command::SelectServer(NetworkId(3)));
         let children =
             |state: &AppState| state.display_tree().children(Parent::Group(group)).to_vec();
-        assert_eq!(state.group_unread(&children(&state)), (false, false));
+        assert_eq!(state.heading_marks(&children(&state)), marks(false, false));
         state.mark_unread(id(&state, 2, "#a"));
-        assert_eq!(state.group_unread(&children(&state)), (true, false));
+        assert_eq!(state.heading_marks(&children(&state)), marks(true, false));
         state.mark_highlighted(NetworkId(1), "#a");
-        assert_eq!(state.group_unread(&children(&state)), (true, true));
-        assert_eq!(state.group_unread(&[]), (false, false));
+        assert_eq!(state.heading_marks(&children(&state)), marks(true, true));
+        assert_eq!(state.heading_marks(&[]), marks(false, false));
+    }
+
+    #[test]
+    fn heading_marks_count_a_mention_without_unread() {
+        let mut state = state();
+        let group = mixed(&mut state);
+        state.dispatch(crate::Command::SelectServer(NetworkId(3)));
+        state.mark_highlighted(NetworkId(1), "#a");
+        let children = state.display_tree().children(Parent::Group(group)).to_vec();
+        assert_eq!(state.heading_marks(&children), marks(false, true));
+    }
+
+    #[test]
+    fn a_server_heading_counts_only_what_is_listed_under_it() {
+        let mut state = state();
+        let group = mixed(&mut state);
+        state.dispatch(crate::Command::SelectServer(NetworkId(3)));
+        let server = |state: &AppState| {
+            state
+                .display_tree()
+                .children(Parent::Server(NetworkId(1)))
+                .to_vec()
+        };
+        // ircnet/#a sits in the group: its marks are the group's alone.
+        state.mark_unread(id(&state, 1, "#a"));
+        state.mark_highlighted(NetworkId(1), "#a");
+        assert_eq!(state.heading_marks(&server(&state)), marks(false, false));
+        let grouped = state.display_tree().children(Parent::Group(group)).to_vec();
+        assert_eq!(state.heading_marks(&grouped), marks(true, true));
+        // ircnet/#b is listed under the server.
+        state.mark_unread(id(&state, 1, "#b"));
+        assert_eq!(state.heading_marks(&server(&state)), marks(true, false));
+        state.mark_highlighted(NetworkId(1), "#b");
+        assert_eq!(state.heading_marks(&server(&state)), marks(true, true));
     }
 
     #[test]

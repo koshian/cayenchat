@@ -7,7 +7,7 @@
 //! operation, and the connection, the log and the unread state of a channel
 //! stay with its real server.
 
-use cayenchat_app::{GroupId, GroupMember, GroupSpec, Parent};
+use cayenchat_app::{GroupId, GroupMember, GroupSpec, HeadingMarks, Parent};
 use cayenchat_model::{ConversationId, NetworkId, display};
 use cayenchat_storage::order::{StoredGroup, StoredMember};
 use gpui::{prelude::*, *};
@@ -489,7 +489,10 @@ impl ChatWindow {
     pub(crate) fn render_group_row(
         &mut self,
         id: GroupId,
-        (unread, highlighted): (bool, bool),
+        HeadingMarks {
+            unread,
+            highlighted,
+        }: HeadingMarks,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);

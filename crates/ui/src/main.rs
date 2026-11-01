@@ -76,8 +76,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, Kind, LineKey, LineKind,
-    MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
+    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, HeadingMarks, Kind, LineKey,
+    LineKind, MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -7082,7 +7082,7 @@ impl ChatWindow {
             .collect();
         let selected = self.state.selection();
         for (group, children) in &display.groups {
-            let marks = self.state.group_unread(children);
+            let marks = self.state.heading_marks(children);
             self.tree_rows.push(TreeRow::Group(*group, marks));
             keys.push(GROUP_KEY | u64::from(group.0));
             let collapsed = self.state.group(*group).is_some_and(|g| g.collapsed);
@@ -7108,8 +7108,8 @@ impl ChatWindow {
             let base = (index as u64) << 32;
             // Only what is listed under the server counts; channels moved
             // into a group show their unread on the group heading.
-            let unread = children.iter().any(|id| self.state.is_unread(*id));
-            self.tree_rows.push(TreeRow::Server(*network, unread));
+            let marks = self.state.heading_marks(children);
+            self.tree_rows.push(TreeRow::Server(*network, marks));
             keys.push(base);
             let collapsed = self.server_collapsed(*network);
             for (position, id) in children.iter().enumerate() {
@@ -7211,7 +7211,7 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let selection = self.state.selection();
         match self.tree_rows.get(row).copied() {
-            Some(TreeRow::Server(server_id, unread)) => {
+            Some(TreeRow::Server(server_id, marks)) => {
                 let Some(network) = self
                     .state
                     .networks()
@@ -7239,7 +7239,7 @@ impl ChatWindow {
                     .px_2()
                     .pt_2()
                     .pb_1()
-                    .when(unread, |d| d.font_weight(FontWeight::BOLD))
+                    .when(marks.unread, |d| d.font_weight(FontWeight::BOLD))
                     .cursor_pointer()
                     .when(selection == Selection::Server(server_id), |d| {
                         d.bg(theme.selected)
@@ -7249,6 +7249,7 @@ impl ChatWindow {
                         self.drop_heading == Some(HeadingTarget::Server(server_id)),
                         |d| d.bg(theme.selected),
                     )
+                    .when(marks.highlighted, |d| d.text_color(theme.panes.highlight))
                     .flex()
                     .child(
                         // The arrow alone folds the server; a click on it
@@ -8778,13 +8779,12 @@ const NEW_GROUP_KEY: u64 = 1 << 40;
 /// A row of the channel tree.
 #[derive(Clone, Copy)]
 enum TreeRow {
-    /// With whether any conversation listed under it is unread, which
-    /// makes the heading bold.
-    Server(NetworkId, bool),
+    /// With the marks of the conversations listed under it, which a
+    /// collapsed heading shows.
+    Server(NetworkId, HeadingMarks),
     /// The heading of a group (D075).
-    /// With whether any of its channels is unread and whether any holds a
-    /// mention, which a collapsed heading shows.
-    Group(GroupId, (bool, bool)),
+    /// With the marks of its channels, which a collapsed heading shows.
+    Group(GroupId, HeadingMarks),
     /// The row where the name of a group being created is typed.
     NewGroup,
     /// The conversation and its position within its server's channels (D009).
