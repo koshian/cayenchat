@@ -37,8 +37,9 @@ pub struct CacheLimits {
     pub max_waiters: usize,
     /// A transient failure may be retried once this long after it happened.
     pub retry_after: Duration,
-    /// Loads per record, including the first.
-    pub max_attempts: u8,
+    /// Loads per record, including the first; `None` retries a transient
+    /// failure every `retry_after` without a limit.
+    pub max_attempts: Option<u8>,
 }
 
 impl Default for CacheLimits {
@@ -50,7 +51,7 @@ impl Default for CacheLimits {
             budget_bytes: 32 * 1024 * 1024,
             max_waiters: 4,
             retry_after: Duration::from_secs(300),
-            max_attempts: 2,
+            max_attempts: Some(2),
         }
     }
 }
@@ -188,7 +189,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
                     State::Queued | State::Loading(..) => true,
                     State::Failed { at, transient } => {
                         let retry = *transient
-                            && record.attempts < limits.max_attempts
+                            && limits.max_attempts.is_none_or(|max| record.attempts < max)
                             && now.saturating_duration_since(*at) >= limits.retry_after;
                         if retry {
                             record.state = State::Queued;
@@ -304,6 +305,30 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             applied: true,
             waiters,
         }
+    }
+
+    /// The earliest moment after `now` at which a transient failure may be
+    /// retried by a request. Failures already retryable are not counted:
+    /// they wait for a row that is drawn, so nothing polls for rows off
+    /// screen.
+    pub fn next_retry(&self, now: Instant) -> Option<Instant> {
+        self.records
+            .values()
+            .filter_map(|record| match record.state {
+                State::Failed {
+                    at,
+                    transient: true,
+                } if self
+                    .limits
+                    .max_attempts
+                    .is_none_or(|max| record.attempts < max) =>
+                {
+                    Some(at + self.limits.retry_after)
+                }
+                _ => None,
+            })
+            .filter(|&due| due > now)
+            .min()
     }
 
     /// Forgets rows that no longer exist (removed servers, dropped
@@ -532,6 +557,57 @@ mod tests {
         );
         assert!(cache.next_job().is_none());
         assert_eq!(cache.stats().jobs_started, 3);
+    }
+
+    #[test]
+    fn unlimited_attempts_retry_transient_failures_every_interval() {
+        let mut cache = cache(CacheLimits {
+            max_attempts: None,
+            ..CacheLimits::default()
+        });
+        let start = Instant::now();
+        let mut now = start;
+        cache.request(&link(1), 0, now);
+        cache.request(&link(2), 0, now);
+        for _ in 0..5 {
+            for _ in 0..(if now == start { 2 } else { 1 }) {
+                let job = cache.next_job().unwrap();
+                let error = if job.source == link(1) {
+                    LoadError::Network
+                } else {
+                    LoadError::Status(404)
+                };
+                cache.finish(job, Err(error), now);
+            }
+            assert_eq!(cache.next_retry(now), Some(now + Duration::from_secs(300)));
+            assert_eq!(cache.request(&link(1), 0, now), Lookup::None);
+            now += Duration::from_secs(300);
+            assert_eq!(cache.request(&link(2), 0, now), Lookup::None, "permanent");
+            assert_eq!(cache.request(&link(1), 0, now), Lookup::Pending);
+        }
+        let job = cache.next_job().unwrap();
+        assert_eq!(job.source, link(1));
+        assert!(cache.next_job().is_none());
+        cache.finish(job, Ok(("image".into(), 10)), now);
+        assert_eq!(cache.next_retry(now), None);
+        assert_eq!(
+            cache.request(&link(1), 0, now),
+            Lookup::Ready(&"image".to_string())
+        );
+    }
+
+    #[test]
+    fn next_retry_ignores_failures_already_due() {
+        let mut cache = cache(CacheLimits::default());
+        let start = Instant::now();
+        cache.request(&link(1), 0, start);
+        let job = cache.next_job().unwrap();
+        cache.finish(job, Err(LoadError::Network), start);
+        assert_eq!(
+            cache.next_retry(start),
+            Some(start + Duration::from_secs(300))
+        );
+        assert_eq!(cache.next_retry(start + Duration::from_secs(300)), None);
     }
 
     #[test]
