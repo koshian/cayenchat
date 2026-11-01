@@ -14,6 +14,16 @@ In `src/platform/windows/events.rs`:
   leave IME-owned keys to the IME.
 - Translate unhandled system keydown messages as `WM_SYSKEYDOWN` so Win32 can
   produce the appropriate system-character message.
+- In `handle_ime_composition_inner`, handle `GCS_RESULTSTR` before `GCS_COMPSTR`
+  (CayenChat #880). IMEs send both in one `WM_IME_COMPOSITION` when a key
+  commits the current conversion and starts the next one (e.g. typing `、` while
+  「追う」 is unconfirmed). Upstream 0.2.2 applied COMPSTR first, so RESULTSTR
+  (range `None` = the marked range) then overwrote the new composition and
+  the new conversion never appeared. Zed mainline
+  (`crates/gpui_windows/src/events.rs`) already uses this order. The early
+  `return Some(0)` moved after both blocks (`handled` flag; `Some(0)` if either
+  was handled). To re-apply: swap the two `if` blocks and move the return; change
+  nothing else. Drop this patch once a GPUI release contains that order.
 
 In `src/platform/windows/window.rs`, `WindowsWindow`'s drop skips
 `RevokeDragDrop`/`DestroyWindow` when `IsWindow` reports the handle is gone.
