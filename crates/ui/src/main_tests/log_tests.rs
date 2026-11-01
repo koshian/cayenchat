@@ -81,30 +81,6 @@ fn channel_activity_uses_english_phrases_with_optional_details() {
 }
 
 #[test]
-fn log_selection_leaves_out_diagnostics_recorded_after_it() {
-    use cayenchat_app::LineKind::{Diagnostic, Message};
-    let selection = LogSelection {
-        source: cayenchat_app::Selection::Server(cayenchat_model::NetworkId(1)),
-        anchor: LogPosition {
-            row: (Diagnostic, 1),
-            byte: 0,
-        },
-        cursor: LogPosition {
-            row: (Message, 2),
-            byte: 3,
-        },
-        // Lines 0 to 2 existed when it was made.
-        diagnostics_end: 3,
-    };
-    assert_eq!(selection.range((Diagnostic, 2), 5), Some(0..5));
-    // Newer diagnostics lie between the ends but are not selected.
-    assert_eq!(selection.range((Diagnostic, 3), 5), None);
-    assert!(!selection.covers((Diagnostic, 40)));
-    // Messages in the range are, with any sequence.
-    assert_eq!(selection.range((Message, 0), 5), Some(0..5));
-}
-
-#[test]
 fn log_selection_spans_partial_messages() {
     use cayenchat_app::LineKind::Message;
     let selection = LogSelection {
@@ -117,7 +93,6 @@ fn log_selection_spans_partial_messages() {
             row: (Message, 0),
             byte: 2,
         },
-        diagnostics_end: u64::MAX,
     };
     assert_eq!(selection.range((Message, 0), 5), Some(2..5));
     assert_eq!(selection.range((Message, 1), 5), Some(0..5));
@@ -185,10 +160,10 @@ fn link_colors_apply_to_log_urls_only_and_default_to_the_old_look() {
 }
 
 #[gpui::test]
-fn copy_selection_excludes_diagnostics_recorded_after_the_selection_started(
+fn copy_selection_takes_diagnostic_lines_with_the_server_log_in_time_order(
     cx: &mut gpui::TestAppContext,
 ) {
-    use cayenchat_app::{Command, DiagnosticsView, LineKind, Selection};
+    use cayenchat_app::{Command, LineKind, Selection};
     use cayenchat_model::NetworkId;
 
     crate::support::install_test_globals(cx);
@@ -198,37 +173,26 @@ fn copy_selection_excludes_diagnostics_recorded_after_the_selection_started(
     });
     chat.update_in(cx, |chat, window, cx| {
         let network = NetworkId(1);
-        let record = |chat: &mut super::ChatWindow, text: &str| {
-            chat.state.record_diagnostic(
-                network,
-                DiagnosticsView::Overview,
-                std::time::SystemTime::UNIX_EPOCH,
-                None,
-                text.into(),
-            );
-        };
         chat.debug_enabled = true;
         chat.state.dispatch(Command::SelectServer(network));
-        chat.state.append_server_message(network, "message".into());
-        record(chat, "old one");
-        record(chat, "old two");
-        let first = (
-            LineKind::Diagnostic,
-            chat.state.diagnostics(network, chat.diagnostics_view)[0].sequence,
-        );
-        let message = (
-            LineKind::Message,
-            chat.state.server_messages(network).last().unwrap().sequence,
-        );
+        chat.state
+            .append_diagnostic_message(network, "[0.1s] stage".into());
+        chat.state.append_server_message(network, "notice".into());
+        chat.state
+            .append_diagnostic_message(network, "← :s NOTICE * :hi".into());
+        let rows: Vec<_> = chat
+            .state
+            .server_messages(network)
+            .iter()
+            .map(|message| (LineKind::Message, message.sequence))
+            .collect();
 
-        // The selection starts here; this diagnostic comes after it.
         let source = Selection::Server(network);
-        chat.start_log_selection(source, first, 0, window, cx);
-        record(chat, "new one");
+        chat.start_log_selection(source, rows[0], 0, window, cx);
         let selection = chat.log_selection.as_mut().unwrap();
         selection.cursor = LogPosition {
-            row: message,
-            byte: 7,
+            row: rows[2],
+            byte: 100,
         };
 
         chat.copy_selected_log(cx);
@@ -237,9 +201,55 @@ fn copy_selection_excludes_diagnostics_recorded_after_the_selection_started(
         // Lines carry a time prefix, so check order by content.
         let lines: Vec<&str> = copied.lines().collect();
         assert_eq!(lines.len(), 3, "{copied:?}");
-        assert!(lines[0].ends_with("old one"), "{copied:?}");
-        assert!(lines[1].ends_with("old two"), "{copied:?}");
-        assert!(lines[2].ends_with("message"), "{copied:?}");
-        assert!(!copied.contains("new one"), "{copied:?}");
+        assert!(lines[0].ends_with("[0.1s] stage"), "{copied:?}");
+        assert!(lines[1].ends_with("notice"), "{copied:?}");
+        assert!(lines[2].ends_with("← :s NOTICE * :hi"), "{copied:?}");
+    });
+}
+
+#[gpui::test]
+fn stage_notes_of_a_lost_registered_connection_stay_with_diagnostics_off(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::Worker;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use std::time::{Duration, SystemTime};
+
+    crate::support::install_test_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        super::ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        let network = NetworkId(1);
+        assert!(!chat.debug_enabled);
+        chat.state
+            .set_status(network, cayenchat_app::ConnectionStatus::Registered);
+        chat.handle_events(
+            network,
+            vec![
+                Event::Diagnostic {
+                    at: SystemTime::now(),
+                    elapsed: Duration::from_secs(1),
+                    message: "IRC stream failed: broken pipe".into(),
+                },
+                Event::Disconnected("gone".into()),
+            ],
+            Worker::Running,
+            cx,
+        );
+        let log = chat.state.server_messages(network);
+        assert!(
+            log.iter()
+                .any(|line| line.text.contains("IRC stream failed: broken pipe")),
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|line| line.sender == cayenchat_app::DIAGNOSTIC_SENDER
+                    && line.text.contains("Disconnected")),
+            "{log:?}"
+        );
     });
 }

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use super::{
-    ChannelDragPreview, ChatWindow, MemberPromptKind, diagnostic_text, member_prompt_title,
-};
+use super::{ChannelDragPreview, ChatWindow, MemberPromptKind, member_prompt_title};
 use crate::localization::Localizer;
 use cayenchat_storage::Language;
 
@@ -32,14 +30,6 @@ fn not_found_and_rejected_headings_neutralize_the_nickname() {
         assert!(text.contains(SAFE), "{text}");
         assert!(!text.contains('\u{202E}'), "{text}");
     }
-}
-
-#[test]
-fn diagnostic_lines_neutralize_bidi_controls() {
-    assert_eq!(
-        diagnostic_text("311 mal\u{202E}lory"),
-        "311 mal\u{200B}lory"
-    );
 }
 
 #[test]

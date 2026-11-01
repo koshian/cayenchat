@@ -3,7 +3,6 @@
 pub mod amazon;
 pub mod attachments;
 pub mod avatars;
-pub mod diagnostics;
 pub mod groups;
 pub mod links;
 pub mod notifications;
@@ -13,14 +12,13 @@ pub mod timeline;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Highlights, Links, Message, NativeMessageId,
     Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
-pub use diagnostics::{DIAGNOSTIC_LIMIT, DiagnosticLine, DiagnosticsView};
 pub use groups::{
     ChannelGroup, DisplayTree, GroupId, GroupMember, GroupSpec, HeadingMarks, Parent,
 };
@@ -85,11 +83,14 @@ const OLDER_PAGE_OVERLAP_WINDOW: usize = HISTORY_RESERVE;
 /// renumbering what is already shown.
 const SEQUENCE_ORIGIN: u64 = 1 << 62;
 
-/// What a log line is. The diagnostics sort before the messages, as on
-/// screen; each kind has its own sequence counter.
+/// The sender of a connection diagnostic line in a server log
+/// ([`AppState::append_diagnostic_message`]), which tells it from a notice
+/// of the server.
+pub const DIAGNOSTIC_SENDER: &str = "diagnostic";
+
+/// What a log line is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LineKind {
-    Diagnostic,
     Message,
 }
 
@@ -169,11 +170,6 @@ pub struct AppState {
     /// Server lines that are also shown in the combined log (CTCP requests
     /// and replies), oldest first; the same lines stay in `server_messages`.
     system_messages: VecDeque<(NetworkId, Message)>,
-    /// Connection diagnostics per network; not conversation logs.
-    diagnostics: HashMap<NetworkId, diagnostics::ServerDiagnostics>,
-    /// Sequence source of the diagnostic lines. Kept apart from
-    /// `next_message_sequence`, which detects changes to the message logs.
-    next_diagnostic_sequence: u64,
     next_message_sequence: u64,
     /// Counts every access that may change a conversation's lines, so a view
     /// derived from them can tell it must be rebuilt.
@@ -340,8 +336,6 @@ impl AppState {
             statuses: HashMap::new(),
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
-            diagnostics: HashMap::new(),
-            next_diagnostic_sequence: diagnostics::FIRST_SEQUENCE,
             next_message_sequence: SEQUENCE_ORIGIN,
             log_revision: 0,
             next_conversation_id: 1,
@@ -400,7 +394,6 @@ impl AppState {
             removed.extend(self.remove_conversations(id));
             self.statuses.remove(&id);
             self.server_messages.remove(&id);
-            self.diagnostics.remove(&id);
             self.system_messages.retain(|(network, _)| *network != id);
             self.active_servers.remove(&id);
             self.avatars.remove_network(id);
@@ -790,49 +783,26 @@ impl AppState {
         push_bounded(self.server_messages.entry(id).or_default(), message);
     }
 
-    /// Adds a connection diagnostic line to `id`'s `view`, stamped `at`,
-    /// keeping the newest `DIAGNOSTIC_LIMIT`. It is not a conversation line:
-    /// no log file, unread mark, notification or combined log.
-    pub fn record_diagnostic(
-        &mut self,
-        id: NetworkId,
-        view: DiagnosticsView,
-        at: SystemTime,
-        elapsed: Option<Duration>,
-        text: String,
-    ) {
+    /// Adds a connection diagnostic line (a stage note or an IRC line) to
+    /// `id`'s server log, stamped now. Whether an IRC line is sent at all is
+    /// decided by the connection's transcript gate (registration, or the
+    /// user's request); a stage note is always kept, as it explains why a
+    /// connection did not come up or was lost. It is drawn apart from the server's notices (`DIAGNOSTIC_SENDER`) and,
+    /// like every server line, marks nothing unread, highlights nothing,
+    /// notifies no one and is not in the combined log. It shares the server
+    /// log's retention limit.
+    pub fn append_diagnostic_message(&mut self, id: NetworkId, text: String) {
         if !self.networks.iter().any(|network| network.id == id) {
             return;
         }
-        let sequence = self.next_diagnostic_sequence;
-        self.next_diagnostic_sequence += 1;
-        self.diagnostics.entry(id).or_default().push(
-            view,
-            DiagnosticLine {
-                sequence,
-                text: diagnostics::format_line(at, elapsed, &text),
-            },
+        let mut message = new_message(
+            DIAGNOSTIC_SENDER.into(),
+            text,
+            Line::Activity,
+            MessageMeta::live(),
         );
-    }
-
-    /// The sequence the next diagnostic line will get: lines already
-    /// recorded, in any view, are below it.
-    pub fn next_diagnostic_sequence(&self) -> u64 {
-        self.next_diagnostic_sequence
-    }
-
-    /// `id`'s connection diagnostic lines in `view`, oldest first.
-    pub fn diagnostics(&self, id: NetworkId, view: DiagnosticsView) -> &VecDeque<DiagnosticLine> {
-        static NONE: VecDeque<DiagnosticLine> = VecDeque::new();
-        self.diagnostics
-            .get(&id)
-            .map_or(&NONE, |diagnostics| diagnostics.lines(view))
-    }
-
-    /// Forgets `id`'s diagnostic lines of both views, as a new connection
-    /// attempt begins.
-    pub fn clear_diagnostics(&mut self, id: NetworkId) {
-        self.diagnostics.remove(&id);
+        message.sequence = self.next_sequence();
+        push_bounded(self.server_messages.entry(id).or_default(), message);
     }
 
     /// System lines for the combined log, oldest first.

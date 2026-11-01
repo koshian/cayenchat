@@ -106,7 +106,6 @@ fn opening_the_menu_keeps_the_selection_and_copy_uses_it(cx: &mut TestAppContext
             source: cayenchat_app::Selection::Channel(channel),
             anchor: LogPosition { row, byte: 6 },
             cursor: LogPosition { row, byte: 11 },
-            diagnostics_end: u64::MAX,
         };
         chat.log_selection = Some(selection);
         cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
@@ -295,7 +294,6 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
                 row: second,
                 byte: 6,
             },
-            diagnostics_end: u64::MAX,
         });
         assert!(chat.has_log_selection(source));
         cx.write_to_clipboard(ClipboardItem::new_string("old".into()));

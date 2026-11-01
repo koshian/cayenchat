@@ -8,13 +8,23 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 
-use cayenchat_app::{AppState, DiagnosticsView, Kind, Selection, own_avatar::OwnAvatar};
+use cayenchat_app::{AppState, Kind, Selection, own_avatar::OwnAvatar};
 use cayenchat_irc_core::{Connection, ConnectionConfig};
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::Secret;
+
+/// A connection stage note as written to the server log: the time since the
+/// attempt began in brackets (if known), then the text. The log line's own
+/// time stamps the line.
+pub(crate) fn stage_line(elapsed: Option<std::time::Duration>, text: &str) -> String {
+    match elapsed {
+        Some(elapsed) => format!("[{:.1}s] {text}", elapsed.as_secs_f32()),
+        None => text.to_owned(),
+    }
+}
 
 /// What a typed `/join` waits for before it selects a channel. Only the
 /// user's own `/join` creates one; auto-joins, rejoins and replayed history
@@ -169,17 +179,11 @@ impl ServerSession {
         };
     }
 
-    /// A note of the UI itself on `network`, stamped now with the time since
-    /// the connection attempt began.
+    /// A note of the UI itself in `network`'s server log, with the time
+    /// since the connection attempt began.
     pub fn push_diagnostic(&self, state: &mut AppState, network: NetworkId, text: String) {
         let elapsed = self.connection_started.map(|started| started.elapsed());
-        state.record_diagnostic(
-            network,
-            DiagnosticsView::Overview,
-            SystemTime::now(),
-            elapsed,
-            text,
-        );
+        state.append_diagnostic_message(network, stage_line(elapsed, &text));
     }
 
     /// Whether this server was connected or tried to connect in this run;

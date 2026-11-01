@@ -612,17 +612,14 @@ mod tests {
                 let content = div()
                     .key_context("ChatWindow")
                     .child(self.input.clone())
-                    .on_action(|_: &crate::CopyDiagnostics, _, _| {})
+                    .on_action(|_: &crate::ToggleDebug, _, _| {})
                     .into_any_element();
                 super::wrap_in_window(
                     &self.menu,
                     vec![
                         Menu {
                             name: "View".into(),
-                            items: vec![MenuItem::action(
-                                "Copy diagnostics",
-                                crate::CopyDiagnostics,
-                            )],
+                            items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             menu_type: None,
                         }
                         .owned(),
@@ -735,10 +732,7 @@ mod tests {
                     vec![
                         Menu {
                             name: "View".into(),
-                            items: vec![MenuItem::action(
-                                "Copy diagnostics",
-                                crate::CopyDiagnostics,
-                            )],
+                            items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             menu_type: None,
                         }
                         .owned(),
@@ -821,17 +815,14 @@ mod tests {
                 let content = div()
                     .key_context("ChatWindow")
                     .child(self.input.clone())
-                    .on_action(|_: &crate::CopyDiagnostics, _, _| {})
+                    .on_action(|_: &crate::ToggleDebug, _, _| {})
                     .into_any_element();
                 super::wrap_in_window(
                     &self.menu,
                     vec![
                         Menu {
                             name: "View".into(),
-                            items: vec![MenuItem::action(
-                                "Copy diagnostics",
-                                crate::CopyDiagnostics,
-                            )],
+                            items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             menu_type: None,
                         }
                         .owned(),
@@ -876,7 +867,7 @@ mod tests {
         cx.simulate_modifiers_change(Modifiers::default());
         assert!(!view.read_with(cx, |view, _| view.menu.visible));
         cx.update(|window, cx| {
-            assert!(window.is_action_available(&crate::CopyDiagnostics, cx));
+            assert!(window.is_action_available(&crate::ToggleDebug, cx));
         });
         // F10 toggles the bar setting; it never reveals the bar itself.
         cx.simulate_keystrokes("f10");
@@ -901,9 +892,7 @@ mod tests {
             "v"
         );
         // A shortcut on the same chord is used instead of the menu.
-        cx.update(|_, cx| {
-            cx.bind_keys([gpui::KeyBinding::new("alt-v", crate::CopyDiagnostics, None)])
-        });
+        cx.update(|_, cx| cx.bind_keys([gpui::KeyBinding::new("alt-v", crate::ToggleDebug, None)]));
         cx.simulate_keystrokes("alt-v");
         assert!(view.read_with(cx, |view, _| !view.menu.open));
 

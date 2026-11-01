@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant};
 
-use cayenchat_app::{Command, DiagnosticsView};
+use cayenchat_app::Command;
 use cayenchat_irc_core::{Event, WireDirection};
 use cayenchat_model::NetworkId;
 use gpui::{Focusable, TestAppContext};
@@ -386,11 +386,7 @@ fn run_with(
                 .sum::<usize>(),
             chat.sessions
                 .keys()
-                .map(|&network| {
-                    chat.state
-                        .diagnostics(network, DiagnosticsView::Overview)
-                        .len()
-                })
+                .map(|&network| chat.state.server_messages(network).len())
                 .sum::<usize>(),
         )
     });
