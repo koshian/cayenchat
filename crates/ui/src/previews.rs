@@ -13,9 +13,10 @@ use std::{cell::RefCell, ops::Range, sync::Arc, time::Instant};
 use cayenchat_app::Selection;
 use cayenchat_media::{
     Fetcher, HttpFetcher, Limits, LoadError, Thumbnail,
-    cache::{CacheLimits, Job, Lookup, PreviewCache},
+    cache::{CacheLimits, Confirmation, Job, Lookup, PreviewCache},
     decode, policy,
 };
+use futures_util::StreamExt;
 use gpui::{Context, RenderImage, Window};
 
 use crate::ChatWindow;
@@ -61,7 +62,12 @@ pub struct Previews {
 impl Previews {
     pub fn new(enabled: bool) -> Self {
         let mut previews = Self {
-            cache: RefCell::new(PreviewCache::new(CacheLimits::default())),
+            cache: RefCell::new(PreviewCache::new(CacheLimits {
+                // No box until the fetcher knows the link is an image, so a
+                // link that fails (login page, 403) never flickers one.
+                pending_after_confirmation: true,
+                ..CacheLimits::default()
+            })),
             limits: Limits {
                 thumbnail_width: BOX_WIDTH * 2,
                 thumbnail_height: BOX_HEIGHT * 2,
@@ -127,6 +133,11 @@ impl Previews {
     /// reused from its cache.
     pub fn in_flight(&self) -> usize {
         self.cache.borrow().in_flight()
+    }
+
+    /// Requests waiting for a load slot.
+    pub fn queued(&self) -> usize {
+        self.cache.borrow().queued()
     }
 
     pub fn release(&self, window: &mut Window) {
@@ -239,6 +250,20 @@ pub(crate) mod fixture {
             }
             std::fs::read(path).map_err(|_| LoadError::Status(404))
         }
+
+        /// Confirms once the file is found and within the limit, as a
+        /// server answering 200 with an image type would.
+        fn fetch_confirmed(
+            &self,
+            source: &MediaRef,
+            limits: &Limits,
+            cancel: &CancelFlag,
+            confirmed: &dyn Fn(),
+        ) -> Result<Vec<u8>, LoadError> {
+            let body = self.fetch(source, limits, cancel)?;
+            confirmed();
+            Ok(body)
+        }
     }
 }
 
@@ -256,10 +281,33 @@ impl ChatWindow {
             };
             let (source, cancel, fetcher) =
                 (job.source.clone(), job.cancel.clone(), fetcher.clone());
+            // The fetcher reports from its thread; the cache is updated here.
+            let (confirmed_tx, mut confirmed_rx) = futures_channel::mpsc::unbounded();
+            let confirmation = job.confirmation();
             let work = cx.background_executor().spawn(async move {
-                cayenchat_media::load_thumbnail(&source, fetcher.as_ref(), &limits, &cancel)
-                    .map(to_preview)
+                cayenchat_media::load_thumbnail_confirmed(
+                    &source,
+                    fetcher.as_ref(),
+                    &limits,
+                    &cancel,
+                    &|| {
+                        let _ = confirmed_tx.unbounded_send(());
+                    },
+                )
+                .map(to_preview)
             });
+            cx.spawn(async move |this, cx| {
+                // Ends when the load returns and drops its sender.
+                while confirmed_rx.next().await.is_some() {
+                    if this
+                        .update(cx, |chat, cx| chat.preview_confirmed(&confirmation, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
             cx.spawn(async move |this, cx| {
                 let result = work.await;
                 this.update(cx, |chat, cx| chat.preview_finished(job, result, cx))
@@ -267,6 +315,21 @@ impl ChatWindow {
             })
             .detach();
         }
+    }
+
+    /// The link is an image: its rows now reserve the placeholder, so rows
+    /// that were drawn as plain text (and measured so) are remeasured.
+    fn preview_confirmed(&mut self, confirmation: &Confirmation, cx: &mut Context<Self>) {
+        let waiters = self.previews.cache.get_mut().confirm(confirmation);
+        if waiters.is_empty() {
+            return;
+        }
+        for row in waiters {
+            if let Some(list) = self.main_lists.get_mut(&row.selection) {
+                list.invalidate(row.sequence);
+            }
+        }
+        cx.notify();
     }
 
     fn preview_finished(
@@ -285,7 +348,8 @@ impl ChatWindow {
             // Rows that showed the full-height placeholder change height.
             // Rows off screen keep a measured height in their list; replace
             // it so scrolling back does not jump.
-            if height != Some(BOX_HEIGHT as f32) {
+            // Rows never confirmed were measured as plain text.
+            if finished.measured_as_text || height != Some(BOX_HEIGHT as f32) {
                 for row in finished.waiters {
                     if let Some(list) = self.main_lists.get_mut(&row.selection) {
                         list.invalidate(row.sequence);
@@ -509,6 +573,92 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_box_is_reserved_only_after_the_link_is_known_to_be_an_image(cx: &mut TestAppContext) {
+        let fetcher = fetcher();
+        let (chat, cx) = open(cx, "#a", true, &fetcher);
+        chat.update(cx, |chat, _| {
+            let row = super::RowRef {
+                selection: chat.state.selection(),
+                sequence: 1,
+            };
+            let urls = cayenchat_app::links::find(A);
+            // Queued, then loading: plain text link, but the load goes on.
+            assert!(chat.previews.lookup(&urls, row).is_none());
+            let job = chat.previews.cache.get_mut().next_job().unwrap();
+            assert!(chat.previews.lookup(&urls, row).is_none());
+            assert_eq!(chat.previews.cache().in_flight(), 1);
+            // Confirmed: the box appears; ready: the image.
+            let waiters = chat.previews.cache.get_mut().confirm(&job.confirmation());
+            assert_eq!(waiters, [row]);
+            assert!(matches!(
+                chat.previews.lookup(&urls, row),
+                Some((_, super::Shown::Pending))
+            ));
+            let image = cayenchat_media::load_thumbnail(
+                &cayenchat_media::policy::image_link(A).unwrap(),
+                fetcher.as_ref(),
+                &cayenchat_media::Limits::default(),
+                &CancelFlag::default(),
+            )
+            .map(super::to_preview);
+            chat.previews
+                .cache
+                .get_mut()
+                .finish(job, image, std::time::Instant::now());
+            assert!(matches!(
+                chat.previews.lookup(&urls, row),
+                Some((_, super::Shown::Image(_)))
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn confirmation_from_the_fetcher_reaches_the_cache_on_the_ui_thread(cx: &mut TestAppContext) {
+        /// Confirms, then fails like a body that cannot be read.
+        struct ConfirmsThenFails;
+        impl Fetcher for ConfirmsThenFails {
+            fn fetch(
+                &self,
+                _: &MediaRef,
+                _: &Limits,
+                _: &CancelFlag,
+            ) -> Result<Vec<u8>, LoadError> {
+                Err(LoadError::Network)
+            }
+            fn fetch_confirmed(
+                &self,
+                _: &MediaRef,
+                _: &Limits,
+                _: &CancelFlag,
+                confirmed: &dyn Fn(),
+            ) -> Result<Vec<u8>, LoadError> {
+                confirmed();
+                Err(LoadError::TooLarge)
+            }
+        }
+        let fetcher = fetcher();
+        let (chat, cx) = open(cx, "#a", true, &fetcher);
+        chat.update(cx, |chat, _| {
+            chat.previews.use_fetcher(Arc::new(ConfirmsThenFails))
+        });
+        say(&chat, cx, "bob", A);
+        chat.read_with(cx, |chat, _| {
+            let stats = chat.previews.cache().stats();
+            assert_eq!((stats.failed, stats.ready), (1, 0));
+            // The failure is recorded; no box remains.
+            let row = super::RowRef {
+                selection: chat.state.selection(),
+                sequence: 1,
+            };
+            assert!(
+                chat.previews
+                    .lookup(&cayenchat_app::links::find(A), row)
+                    .is_none()
+            );
+        });
+    }
+
+    #[gpui::test]
     fn typing_reuses_panes_while_previews_are_shown(cx: &mut TestAppContext) {
         let fetcher = fetcher();
         let (chat, cx) = open(cx, "#a", true, &fetcher);
@@ -537,10 +687,8 @@ mod tests {
                 sequence: 1,
             };
             let urls = cayenchat_app::links::find(A);
-            assert!(matches!(
-                chat.previews.lookup(&urls, row),
-                Some((_, super::Shown::Pending))
-            ));
+            // Not known to be an image yet: no box.
+            assert!(chat.previews.lookup(&urls, row).is_none());
             chat.pump_previews(cx);
             assert_eq!(chat.previews.cache().in_flight(), 1);
             // Off and on again before the load returns.

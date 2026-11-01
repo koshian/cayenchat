@@ -9172,7 +9172,9 @@ impl ChatWindow {
                 },
             )
         };
-        if matches!(preview, Some((_, previews::Shown::Pending))) {
+        // A request that is not yet known to be an image shows no preview but
+        // still starts its load.
+        if self.previews.queued() > 0 {
             self.pump_previews(cx);
         }
         // Drawn text may differ from the message's; positions map back.

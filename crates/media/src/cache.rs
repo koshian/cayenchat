@@ -40,6 +40,10 @@ pub struct CacheLimits {
     /// Loads per record, including the first; `None` retries a transient
     /// failure every `retry_after` without a limit.
     pub max_attempts: Option<u8>,
+    /// Report a load as [`Lookup::Pending`] only once its fetcher has
+    /// confirmed that the source is an image ([`PreviewCache::confirm`]);
+    /// until then the lookup is [`Lookup::None`] while the load goes on.
+    pub pending_after_confirmation: bool,
 }
 
 impl Default for CacheLimits {
@@ -52,6 +56,7 @@ impl Default for CacheLimits {
             max_waiters: 4,
             retry_after: Duration::from_secs(300),
             max_attempts: Some(2),
+            pending_after_confirmation: false,
         }
     }
 }
@@ -60,7 +65,8 @@ impl Default for CacheLimits {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Lookup<'a, T> {
     Ready(&'a T),
-    /// Queued or loading.
+    /// Queued or loading (with `pending_after_confirmation`: loading an
+    /// image that was confirmed).
     Pending,
     /// No preview: failed, or previews are off. Show only the text link.
     None,
@@ -75,11 +81,33 @@ pub struct Job<K = MediaRef> {
     serial: u64,
 }
 
+impl<K: Clone> Job<K> {
+    /// Names this load for [`PreviewCache::confirm`], from any thread.
+    pub fn confirmation(&self) -> Confirmation<K> {
+        Confirmation {
+            source: self.source.clone(),
+            generation: self.generation,
+            serial: self.serial,
+        }
+    }
+}
+
+/// A fetcher's report that one load's source is an image.
+#[derive(Clone, Debug)]
+pub struct Confirmation<K = MediaRef> {
+    source: K,
+    generation: u64,
+    serial: u64,
+}
+
 /// The outcome of [`PreviewCache::finish`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct Finished<R> {
     /// Whether the record changed (false for stale or unknown jobs).
     pub applied: bool,
+    /// Whether the waiting rows were drawn without the placeholder: the
+    /// cache reserves room only after confirmation and none came.
+    pub measured_as_text: bool,
     /// Rows that showed the record while it was pending.
     pub waiters: Vec<R>,
 }
@@ -87,9 +115,16 @@ pub struct Finished<R> {
 #[derive(Debug)]
 enum State<T> {
     Queued,
-    Loading(CancelFlag, u64),
-    Ready { value: T, bytes: usize },
-    Failed { at: Instant, transient: bool },
+    /// Cancel flag, job serial and whether the source was confirmed an image.
+    Loading(CancelFlag, u64, bool),
+    Ready {
+        value: T,
+        bytes: usize,
+    },
+    Failed {
+        at: Instant,
+        transient: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -163,7 +198,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         self.queue = VecDeque::new();
         for (_, record) in std::mem::take(&mut self.records) {
             match record.state {
-                State::Loading(cancel, _) => cancel.cancel(),
+                State::Loading(cancel, ..) => cancel.cancel(),
                 State::Ready { value, .. } => self.released.push(value),
                 State::Queued | State::Failed { .. } => {}
             }
@@ -232,13 +267,46 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             }
             self.evict(Some(source));
         }
+        let wait_for_confirmation = self.limits.pending_after_confirmation;
         match self.records.get(source) {
             Some(Record {
                 state: State::Ready { value, .. },
                 ..
             }) => Lookup::Ready(value),
+            Some(Record {
+                state: State::Queued,
+                ..
+            }) if wait_for_confirmation => Lookup::None,
+            Some(Record {
+                state: State::Loading(_, _, false),
+                ..
+            }) if wait_for_confirmation => Lookup::None,
             Some(_) if pending => Lookup::Pending,
             _ => Lookup::None,
+        }
+    }
+
+    /// Records that the fetcher found the load's source to be an image, so
+    /// rows may reserve room for it. Returns the rows to update; empty when
+    /// the load is stale or was confirmed already. Nothing else changes: a
+    /// failure after this is recorded and retried as before.
+    pub fn confirm(&mut self, confirmation: &Confirmation<K>) -> Vec<R>
+    where
+        R: Clone,
+    {
+        if !self.enabled || confirmation.generation != self.generation {
+            return Vec::new();
+        }
+        match self.records.get_mut(&confirmation.source) {
+            Some(Record {
+                state: State::Loading(_, serial, confirmed @ false),
+                waiters,
+                ..
+            }) if *serial == confirmation.serial => {
+                *confirmed = true;
+                waiters.clone()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -252,7 +320,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         let cancel = CancelFlag::default();
         self.jobs += 1;
         let serial = self.jobs;
-        record.state = State::Loading(cancel.clone(), serial);
+        record.state = State::Loading(cancel.clone(), serial, false);
         record.attempts = record.attempts.saturating_add(1);
         self.in_flight += 1;
         self.stats.jobs_started += 1;
@@ -276,15 +344,18 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         self.in_flight = self.in_flight.saturating_sub(1);
         let current = self.enabled && job.generation == self.generation;
         let record = self.records.get_mut(&job.source).filter(|record| {
-            current && matches!(record.state, State::Loading(_, serial) if serial == job.serial)
+            current && matches!(record.state, State::Loading(_, serial, _) if serial == job.serial)
         });
         let Some(record) = record else {
             self.stats.stale += 1;
             return Finished {
                 applied: false,
+                measured_as_text: false,
                 waiters: Vec::new(),
             };
         };
+        let measured_as_text = self.limits.pending_after_confirmation
+            && matches!(record.state, State::Loading(_, _, false));
         let waiters = std::mem::take(&mut record.waiters);
         match result {
             Ok((value, bytes)) => {
@@ -303,6 +374,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         }
         Finished {
             applied: true,
+            measured_as_text,
             waiters,
         }
     }
@@ -358,7 +430,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             .collect();
         for source in gone {
             match self.records.remove(&source).map(|record| record.state) {
-                Some(State::Loading(cancel, _)) => cancel.cancel(),
+                Some(State::Loading(cancel, ..)) => cancel.cancel(),
                 Some(State::Ready { value, bytes }) => {
                     self.ready_bytes -= bytes;
                     self.released.push(value);
@@ -451,6 +523,122 @@ mod tests {
         let mut cache = PreviewCache::new(limits);
         cache.set_enabled(true);
         cache
+    }
+
+    fn confirming() -> CacheLimits {
+        CacheLimits {
+            pending_after_confirmation: true,
+            ..CacheLimits::default()
+        }
+    }
+
+    #[test]
+    fn a_load_reserves_room_only_once_confirmed_to_be_an_image() {
+        let mut cache = cache(confirming());
+        let now = Instant::now();
+        assert_eq!(cache.request(&link(1), 1, now), Lookup::None, "queued");
+        let job = cache.next_job().unwrap();
+        assert_eq!(cache.request(&link(1), 2, now), Lookup::None, "unconfirmed");
+        assert_eq!(cache.in_flight(), 1, "the load goes on");
+
+        assert_eq!(cache.confirm(&job.confirmation()), [1, 2]);
+        assert_eq!(cache.request(&link(1), 2, now), Lookup::Pending);
+        assert!(cache.confirm(&job.confirmation()).is_empty(), "only once");
+
+        let finished = cache.finish(job, Ok(("image".into(), 10)), now);
+        assert!(finished.applied);
+        assert_eq!(
+            cache.request(&link(1), 1, now),
+            Lookup::Ready(&"image".to_string())
+        );
+    }
+
+    #[test]
+    fn a_load_without_confirmation_still_becomes_ready() {
+        let mut cache = cache(confirming());
+        let now = Instant::now();
+        cache.request(&link(1), 1, now);
+        let job = cache.next_job().unwrap();
+        cache.finish(job, Ok(("image".into(), 10)), now);
+        assert!(matches!(cache.request(&link(1), 1, now), Lookup::Ready(_)));
+    }
+
+    #[test]
+    fn failures_keep_their_rules_whether_or_not_confirmed() {
+        let limits = CacheLimits {
+            max_attempts: None,
+            ..confirming()
+        };
+        let mut cache = cache(limits);
+        let start = Instant::now();
+        // Failed before confirmation: never a box, recorded as failed.
+        cache.request(&link(1), 1, start);
+        let job = cache.next_job().unwrap();
+        cache.finish(job, Err(LoadError::Status(401)), start);
+        assert_eq!(cache.request(&link(1), 1, start), Lookup::None);
+        assert_eq!(cache.stats().failed, 1);
+        let later = start + limits.retry_after;
+        assert_eq!(cache.request(&link(1), 1, later), Lookup::None);
+        assert!(cache.next_job().is_none(), "final failures are not retried");
+
+        // Failed after confirmation: the box goes; only a transient failure
+        // is retried, after `retry_after`.
+        for (n, error, retried) in [
+            (2, LoadError::TooLarge, false),
+            (3, LoadError::Network, true),
+        ] {
+            cache.request(&link(n), 1, start);
+            let job = cache.next_job().unwrap();
+            assert_eq!(cache.confirm(&job.confirmation()), [1]);
+            assert_eq!(cache.request(&link(n), 1, start), Lookup::Pending);
+            cache.finish(job, Err(error), start);
+            assert_eq!(cache.request(&link(n), 1, start), Lookup::None);
+            assert_eq!(cache.request(&link(n), 1, later), Lookup::None);
+            assert_eq!(cache.next_job().is_some(), retried, "link {n}");
+        }
+    }
+
+    #[test]
+    fn a_stale_confirmation_changes_nothing() {
+        let mut cache = cache(confirming());
+        let now = Instant::now();
+        cache.request(&link(1), 1, now);
+        let job = cache.next_job().unwrap();
+        let confirmation = job.confirmation();
+        cache.set_enabled(false);
+        cache.set_enabled(true);
+        assert!(cache.confirm(&confirmation).is_empty());
+        // The same link loading again is a different load.
+        cache.request(&link(1), 1, now);
+        let second = cache.next_job().unwrap();
+        assert!(cache.confirm(&confirmation).is_empty());
+        assert_eq!(cache.request(&link(1), 1, now), Lookup::None);
+        assert_eq!(cache.confirm(&second.confirmation()), [1]);
+    }
+
+    #[test]
+    fn finishing_unconfirmed_reports_rows_measured_as_text() {
+        let now = Instant::now();
+        for (confirm, expected) in [(false, true), (true, false)] {
+            let mut cache = cache(confirming());
+            cache.request(&link(1), 1, now);
+            let job = cache.next_job().unwrap();
+            if confirm {
+                cache.confirm(&job.confirmation());
+            }
+            let finished = cache.finish(job, Ok(("image".into(), 10)), now);
+            assert!(finished.applied);
+            assert_eq!(finished.measured_as_text, expected);
+        }
+        // Without the confirmation rule the placeholder was always there.
+        let mut cache = cache(CacheLimits::default());
+        cache.request(&link(1), 1, now);
+        let job = cache.next_job().unwrap();
+        assert!(
+            !cache
+                .finish(job, Ok(("image".into(), 10)), now)
+                .measured_as_text
+        );
     }
 
     #[test]

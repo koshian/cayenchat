@@ -56,7 +56,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | QUIT/NICK republish rosters only for channels that contained the user; roster sort keys computed once per member | `irc-core` `RosterTracker`, `app` `sorted_members` | Large channels. |
 | Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
 | Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Links are found once when a message's text is set (`app::links`); requesting, fetching and decoding image previews costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
-| A pending preview reserves its full height; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
+| A preview reserves its full height only once the fetcher has confirmed an image (final 200 with an image type other than SVG); until then, and after a failure, the row is a plain text link; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
 | Avatars are requested only by drawn main-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
 | Avatar references live once per network in `app::avatars`, keyed by user, not in messages | `app::avatars` | `model::Message` stays 64 bytes plus sender and text. |
 
@@ -1477,3 +1477,22 @@ release build, medians in µs, three runs each (main with only the test added
   channel's leads once (about the same 130 µs, not measured separately). It
   is not narrowed further; the batch above shows no visible cost.
 - Limits: no-op text system, no Windows/macOS run.
+
+## Preview room reserved after confirmation (#890)
+
+`perf_baseline_previews` (release, headless, one server), medians in µs,
+alternating master / the branch, two runs each, in the Linux cloud container.
+The fixture fetcher confirms before returning the body, so the run goes
+through the production order (text row, confirmation, placeholder, image).
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch |
+| --- | --- | --- | --- |
+| 353 / 315, 310 / 320 | 1,827 / 2,132, 2,177 / 2,161 | 1,628 / 1,421, 1,338 / 1,438 | 2,097 / 2,067, 1,710 / 1,962 |
+
+- All four match master within the run-to-run noise (about 15 %).
+- Loads rise from 96 to 106 and evictions from 44 to 54 for the same
+  scripted scrolling (cause not investigated; probably rows drawn shorter as
+  text first let more rows pass the viewport while loads are queued). Records
+  stay at 52, ready bytes and queue
+  bounds are unchanged.
+- Limits: no Windows/macOS run; the no-op text system.
