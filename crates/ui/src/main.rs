@@ -4976,16 +4976,23 @@ impl ChatWindow {
         self.copy_selected_log(cx);
     }
 
+    /// The draft row's height: the standard one, taller for a large input text.
+    fn draft_row_height(&self) -> f32 {
+        let size = pane_text_size(self.appearance.input_font_size, None).map_or(13., f32::from);
+        DRAFT_ROW_HEIGHT + input::extra_line_height(size)
+    }
+
     /// Moves the split so the draft row's bottom edge follows the pointer.
     fn drag_log_split(&mut self, pointer_y: Pixels, cx: &mut Context<Self>) {
         let Some(bounds) = self.left_column_bounds.get() else {
             return;
         };
-        let flexible = f32::from(bounds.size.height) - DRAFT_ROW_HEIGHT;
+        let draft_row_height = self.draft_row_height();
+        let flexible = f32::from(bounds.size.height) - draft_row_height;
         if flexible <= 0. {
             return;
         }
-        let channel_log_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
+        let channel_log_height = f32::from(pointer_y - bounds.top()) - draft_row_height;
         self.log_split =
             (channel_log_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
         self.schedule_layout_save(cx);
@@ -6578,7 +6585,7 @@ fn set_window_always_on_top(window: &Window, enabled: bool) -> Result<(), String
 
 /// Standard text size of the channel tree and member list, one step below
 /// the other panes' (the list panes are for overview, #927).
-const LIST_PANE_TEXT_SIZE: f32 = 14.;
+const LIST_PANE_TEXT_SIZE: f32 = 12.;
 
 /// The text size a pane sets: the saved size clamped to the allowed range,
 /// or `standard` (None keeps the inherited size) when none is saved.
@@ -7705,6 +7712,12 @@ impl ChatWindow {
         };
         let border = theme.border;
         let appearance = &self.appearance;
+        let draft_row_height = self.draft_row_height();
+        let input_size = pane_text_size(appearance.input_font_size, None);
+        // The input draws its own text size, so the pane's size goes to it.
+        self.inputs[&selection].update(cx, |input, _| {
+            input.set_font_size(input_size.map(f32::from));
+        });
         let channel_log_bg = theme.panes.channel_log;
         let combined_bg = theme.panes.combined_log;
 
@@ -7838,7 +7851,7 @@ impl ChatWindow {
         let editor = div()
             .flex()
             .items_center()
-            .h(px(DRAFT_ROW_HEIGHT))
+            .h(px(draft_row_height))
             .flex_shrink_0()
             .px_1()
             .border_t_1()
@@ -8649,7 +8662,8 @@ impl ChatWindow {
             .flex()
             .flex_col()
             .text_size(px(13.))
-            .line_height(px(20.))
+            // Relative, so a pane's own text size (#927) scales the line too.
+            .line_height(relative(20. / 13.))
             .text_color(theme.text)
             .bg(theme.surface)
             .on_action(cx.listener(Self::navigate))
@@ -8982,9 +8996,16 @@ impl LogStyle {
         }
     }
 
+    /// Width of the time column: grows with a time size above the standard.
+    fn time_width(&self) -> f32 {
+        self.time_size.map_or(TIME_WIDTH, |size| {
+            TIME_WIDTH * (f32::from(size) / 13.).max(1.)
+        })
+    }
+
     fn time(&self, time: TimeOfDay) -> Div {
         div()
-            .w(px(TIME_WIDTH))
+            .w(px(self.time_width()))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
             .when_some(self.time_size, |d, size| d.text_size(size))
@@ -9516,9 +9537,9 @@ impl ChatWindow {
         // another minute, or blank. It is as wide as a time (`StyleCtx::time`)
         // at least, which the avatar alone is not.
         let lead_width = if avatars_on {
-            (avatars::SLOT * 2.).max(TIME_WIDTH)
+            (avatars::SLOT * 2.).max(style.time_width())
         } else {
-            TIME_WIDTH
+            style.time_width()
         };
         let row = if reiwa {
             let column = |width: f32| div().w(px(width)).flex_shrink_0();
