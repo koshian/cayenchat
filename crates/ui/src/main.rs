@@ -7170,22 +7170,18 @@ impl ChatWindow {
                 else {
                     return div().into_any_element();
                 };
-                let used = self
-                    .sessions
-                    .get(&server_id)
-                    .is_some_and(|session| session.used() || session.starting);
-                let status_icon = match self.state.status(server_id) {
-                    // Servers not connected in this run show no icon.
-                    _ if !used => None,
-                    Some(ConnectionStatus::Registered) => Some("link"),
+                // Every server shows its state, also before any connection.
+                let (status_icon, status_color) = match self.state.status(server_id) {
+                    Some(ConnectionStatus::Registered) => ("link", theme.status_connected),
                     Some(ConnectionStatus::Connecting | ConnectionStatus::TransportConnected) => {
-                        Some("ellipsis")
+                        ("ellipsis", theme.text_secondary)
                     }
-                    Some(ConnectionStatus::Disconnected(_)) => Some("unlink"),
-                    _ => None,
+                    _ => ("unlink", theme.text_muted),
                 };
-                let status_tip: Option<SharedString> =
-                    status_icon.map(|_| self.status_text(self.state.status(server_id)).into());
+                let status_tip: SharedString = match self.state.status(server_id) {
+                    None => self.i18n.text("status_not_connected").into(),
+                    status => self.status_text(status).into(),
+                };
                 div()
                     .id(("server", server_id.0))
                     .px_2()
@@ -7221,25 +7217,23 @@ impl ChatWindow {
                                 this.toggle_server(server_id, cx);
                             })),
                     )
-                    .when_some(status_icon.zip(status_tip), |d, (icon, tip)| {
+                    .child(
                         // State only: it takes no click of its own.
-                        d.child(
-                            div()
-                                .id(("server-status", server_id.0))
-                                .flex_shrink_0()
-                                .pr_1()
-                                .child(
-                                    svg()
-                                        .path(format!("icons/ui/{icon}.svg"))
-                                        .size(px(13.))
-                                        .text_color(theme.text),
-                                )
-                                .tooltip(move |_, cx| {
-                                    let tip = tip.clone();
-                                    cx.new(|_| tooltip::TextTooltip(tip)).into()
-                                }),
-                        )
-                    })
+                        div()
+                            .id(("server-status", server_id.0))
+                            .flex_shrink_0()
+                            .pr_1()
+                            .child(
+                                svg()
+                                    .path(format!("icons/ui/{status_icon}.svg"))
+                                    .size(px(13.))
+                                    .text_color(status_color),
+                            )
+                            .tooltip(move |_, cx| {
+                                let tip = status_tip.clone();
+                                cx.new(|_| tooltip::TextTooltip(tip)).into()
+                            }),
+                    )
                     .child(
                         div()
                             .min_w_0()

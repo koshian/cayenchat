@@ -3365,8 +3365,10 @@ there is no network, bouncer or connection behind it.
 - **Connection state icon (#895).** A real server heading shows its state as a
   13px Lucide icon between the arrow and the name (arrow, icon, name), not as
   text marks after the name: `link` registered, `ellipsis` connecting or
-  registering, `unlink` disconnected. A server not used in this run shows none.
-  The icon is display only (no click or drag of its own) and its hover text is
+  registering, `unlink` not connected. Every server shows one from the start (#902):
+  at launch, after a manual disconnect and after a failure it is `unlink`
+  (light grey, "Not connected" before any connection); `link` is a calm green,
+  `ellipsis` neutral grey, all from the theme. The icon is display only (no click or drag of its own) and its hover text is
   the status text of the status bar. The conditions that pick the state are
   unchanged. The name is truncated to the row so a long name keeps the icon
   visible.

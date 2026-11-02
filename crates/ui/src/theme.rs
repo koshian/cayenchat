@@ -47,6 +47,8 @@ pub struct Theme {
     pub nickname: Rgba,
     pub link: Rgba,
     pub warning: Rgba,
+    /// Server heading icon: registered.
+    pub status_connected: Rgba,
     pub border: Rgba,
     pub separator: Rgba,
     /// Settings and WHOIS window background.
@@ -94,6 +96,7 @@ impl Theme {
             nickname: rgb(0x315b83),
             link: rgb(0x0645ad),
             warning: rgb(0x9a4b28),
+            status_connected: rgb(0x3d8a4f),
             border: rgb(0xb7bdc4),
             separator: rgb(0xd8dde3),
             window: rgb(0xf5f6f8),
@@ -137,6 +140,7 @@ impl Theme {
             nickname: rgb(0x86b4e3),
             link: rgb(0x78aaff),
             warning: rgb(0xe39a66),
+            status_connected: rgb(0x6cb67c),
             border: rgb(0x3d434b),
             separator: rgb(0x353a41),
             window: rgb(0x202225),

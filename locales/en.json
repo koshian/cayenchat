@@ -397,6 +397,7 @@
   "status_connected": "Connected",
   "status_disconnected": "Disconnected: {reason}",
   "status_unknown": "Unknown connection state",
+  "status_not_connected": "Not connected",
   "title_not_connected": "Not connected",
   "event_transport_connected": "Connection established; registering.",
   "event_registered": "Registered as {nickname}.",

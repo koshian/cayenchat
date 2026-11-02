@@ -397,6 +397,7 @@
   "status_connected": "接続済み",
   "status_disconnected": "切断: {reason}",
   "status_unknown": "接続状態が不明です",
+  "status_not_connected": "未接続",
   "title_not_connected": "未接続",
   "event_transport_connected": "接続しました。登録中です。",
   "event_registered": "{nickname} として登録しました。",
