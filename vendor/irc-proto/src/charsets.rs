@@ -122,6 +122,81 @@ fn text_span(line: &[u8]) -> Option<TextSpan> {
     })
 }
 
+/// Decodes `bytes` with `encoding`. ISO-2022-JP additionally reads a raw
+/// JIS X 0201 katakana byte (0xA1-0xDF, "8bit JIS") that stands outside any
+/// designation as the half-width katakana it means, as nkf does, instead of
+/// U+FFFD; see [`wrap_raw_katakana`].
+fn decode_bytes<'a>(encoding: &'static Encoding, bytes: &'a [u8]) -> Cow<'a, str> {
+    if encoding == encoding_rs::ISO_2022_JP {
+        if let Cow::Owned(wrapped) = wrap_raw_katakana(bytes) {
+            return Cow::Owned(
+                encoding
+                    .decode_without_bom_handling(&wrapped)
+                    .0
+                    .into_owned(),
+            );
+        }
+    }
+    encoding.decode_without_bom_handling(bytes).0
+}
+
+/// The designation state of an ISO-2022-JP byte stream.
+#[derive(Clone, Copy, PartialEq)]
+enum JisState {
+    Ascii,
+    Roman,
+    Katakana,
+    /// JIS X 0208 (or anything else two-byte).
+    Kanji,
+}
+
+/// Rewrites each run of raw 0xA1-0xDF bytes found in the ASCII or Roman state
+/// as ESC ( I, the same bytes with the high bit cleared, and the escape that
+/// restores the state, so the existing decoder reads them as JIS X 0201
+/// katakana. Bytes inside a katakana or two-byte designation are left as they
+/// are (U+FFFD, as before), and so is everything else. Borrows the input when
+/// there is nothing to rewrite.
+fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
+    const ESC: u8 = 0x1b;
+    if !bytes.iter().any(|byte| (0xa1..=0xdf).contains(byte)) {
+        return Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len() + 8);
+    let mut state = JisState::Ascii;
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        if byte == ESC {
+            let next = match bytes[at + 1..] {
+                [b'(', b'B', ..] => Some((JisState::Ascii, 3)),
+                [b'(', b'J', ..] => Some((JisState::Roman, 3)),
+                [b'(', b'I', ..] => Some((JisState::Katakana, 3)),
+                [b'$', b'@' | b'B', ..] => Some((JisState::Kanji, 3)),
+                _ => None,
+            };
+            if let Some((new_state, len)) = next {
+                state = new_state;
+                out.extend_from_slice(&bytes[at..at + len]);
+                at += len;
+                continue;
+            }
+        }
+        if matches!(state, JisState::Ascii | JisState::Roman) && (0xa1..=0xdf).contains(&byte) {
+            out.extend_from_slice(&[ESC, b'(', b'I']);
+            while let Some(&raw) = bytes.get(at).filter(|raw| (0xa1..=0xdf).contains(*raw)) {
+                out.push(raw & 0x7f);
+                at += 1;
+            }
+            let restore = if state == JisState::Roman { b'J' } else { b'B' };
+            out.extend_from_slice(&[ESC, b'(', restore]);
+            continue;
+        }
+        out.push(byte);
+        at += 1;
+    }
+    Cow::Owned(out)
+}
+
 /// Decodes a received line (without malformed bytes failing): the connection's
 /// `encoding` for the whole of it, except the text of a `PRIVMSG` or
 /// `NOTICE` to a target with its own decoder.
@@ -132,15 +207,15 @@ pub fn decode_line(
 ) -> String {
     if let Some(charsets) = charsets.filter(|charsets| !charsets.is_empty()) {
         if let Some(span) = text_span(line) {
-            let (target, _) = encoding.decode_without_bom_handling(&line[span.target.clone()]);
+            let target = decode_bytes(encoding, &line[span.target.clone()]);
             if let Some(text_encoding) = charsets.decoder(&target) {
-                let (head, _) = encoding.decode_without_bom_handling(&line[..span.text]);
-                let (text, _) = text_encoding.decode_without_bom_handling(&line[span.text..]);
+                let head = decode_bytes(encoding, &line[..span.text]);
+                let text = decode_bytes(text_encoding, &line[span.text..]);
                 return format!("{head}{text}");
             }
         }
     }
-    encoding.decode_without_bom_handling(line).0.into_owned()
+    decode_bytes(encoding, line).into_owned()
 }
 
 /// Encodes a line to send, in the same split as [`decode_line`]. The second
@@ -238,11 +313,77 @@ mod tests {
         }
     }
 
+    fn jis(bytes: &[u8]) -> String {
+        decode_line(bytes, encoding_rs::ISO_2022_JP, None)
+    }
+
+    fn plain(bytes: &[u8]) -> String {
+        encoding_rs::ISO_2022_JP
+            .decode_without_bom_handling(bytes)
+            .0
+            .into_owned()
+    }
+
+    #[test]
+    fn raw_katakana_outside_a_designation_is_half_width() {
+        assert_eq!(jis(b"\xc9\xbc"), "\u{ff89}\u{ff7c}");
+        assert_eq!(jis(b"a\xc9\xbcb c"), "a\u{ff89}\u{ff7c}b c");
+        assert_eq!(jis(b"\xa1\xdf\xa0\xe0"), "\u{ff61}\u{ff9f}\u{fffd}\u{fffd}");
+        // The Roman state is kept around the run.
+        assert_eq!(jis(b"\x1b(J~\xc9~"), "\u{203e}\u{ff89}\u{203e}");
+        // Also as the text of a message with its own decoder.
+        let mut wire = b"PRIVMSG #jp :".to_vec();
+        wire.extend_from_slice(b"\xc9\xbc");
+        assert_eq!(
+            decode_line(&wire, encoding_rs::UTF_8, Some(&Fixed)),
+            "PRIVMSG #jp :\u{ff89}\u{ff7c}"
+        );
+    }
+
+    #[test]
+    fn designated_input_decodes_as_before() {
+        for bytes in [
+            &b"\x1b(I\x49\x3c\x1b(B"[..],
+            JIS,
+            b"\x1b$@$3\x1b(B",
+            b"\x1b$(B$3\x1b(B",
+            b"a\x1b(Jb\x1b(Bc",
+            // Raw bytes in a two-byte or katakana designation, and unclosed.
+            b"\x1b$B\xc9\xbc$3",
+            b"\x1b(I\xc9\xbc\x1b(B",
+            b"\x1b$B$3",
+            b"\x1b(I1",
+            b"\x1b(",
+            b"\x1b",
+            b"\xff\xa0\xe0",
+        ] {
+            assert_eq!(jis(bytes), plain(bytes), "{bytes:?}");
+        }
+        assert_eq!(jis(b"\x1b$B\xc9\xbc\x1b(B"), "\u{fffd}\u{fffd}");
+    }
+
+    #[test]
+    fn other_encodings_keep_raw_katakana_bytes_as_they_were() {
+        assert_eq!(
+            decode_line(b"\xc9\xbc", encoding_rs::SHIFT_JIS, None),
+            "\u{ff89}\u{ff7c}"
+        );
+        assert_eq!(decode_line(b"\xc9 ", encoding_rs::UTF_8, None), "\u{fffd} ");
+    }
+
     #[test]
     fn unrepresentable_text_is_reported() {
-        let (_, lost) = encode_line("PRIVMSG #jp :\u{1f352}\r\n", encoding_rs::UTF_8, Some(&Fixed));
+        let (_, lost) = encode_line(
+            "PRIVMSG #jp :\u{1f352}\r\n",
+            encoding_rs::UTF_8,
+            Some(&Fixed),
+        );
         assert_eq!(lost, Some(encoding_rs::ISO_2022_JP));
-        let (_, lost) = encode_line("PRIVMSG #other :\u{1f352}\r\n", encoding_rs::SHIFT_JIS, Some(&Fixed));
+        let (_, lost) = encode_line(
+            "PRIVMSG #other :\u{1f352}\r\n",
+            encoding_rs::SHIFT_JIS,
+            Some(&Fixed),
+        );
         assert_eq!(lost, Some(encoding_rs::SHIFT_JIS));
     }
 }
