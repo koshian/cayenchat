@@ -312,6 +312,27 @@ pub fn encode_line<'a>(
     connection: Charset,
     charsets: Option<&dyn BodyCharsets>,
 ) -> (Cow<'a, [u8]>, Option<&'static Encoding>) {
+    // The line end is added after encoding: a stateful encoding (ISO-2022-JP
+    // after a yen sign) writes the escape that returns to ASCII at the end of
+    // its input, which must come before the CR LF, not after it.
+    let (body, end) = match line.strip_suffix("\r\n") {
+        Some(body) => (body, "\r\n"),
+        None => (line, ""),
+    };
+    let (bytes, failed) = encode_body(body, connection, charsets);
+    if end.is_empty() {
+        return (bytes, failed);
+    }
+    let mut bytes = bytes.into_owned();
+    bytes.extend_from_slice(end.as_bytes());
+    (Cow::Owned(bytes), failed)
+}
+
+fn encode_body<'a>(
+    line: &'a str,
+    connection: Charset,
+    charsets: Option<&dyn BodyCharsets>,
+) -> (Cow<'a, [u8]>, Option<&'static Encoding>) {
     let charsets = charsets.filter(|charsets| !charsets.is_empty());
     if connection.keep_kana || charsets.is_some() {
         if let Some(span) = text_span(line.as_bytes()) {
@@ -475,6 +496,19 @@ mod tests {
         let (encoded, lost) = encode_line(&decoded, UTF8, Some(&Fixed));
         assert_eq!(lost, None);
         assert_eq!(&*encoded, &wire[..]);
+    }
+
+    #[test]
+    fn the_escape_back_to_ascii_comes_before_the_line_end() {
+        for (line, want) in [
+            ("PRIVMSG #a :abc \u{a5}\r\n", &b"PRIVMSG #a :abc \x1b(J\\\x1b(B\r\n"[..]),
+            ("PRIVMSG #a :\u{203e} x\r\n", b"PRIVMSG #a :\x1b(J~ x\x1b(B\r\n"),
+        ] {
+            let (bytes, lost) = encode_line(line, Charset::plain(encoding_rs::ISO_2022_JP), None);
+            assert_eq!((&*bytes, lost), (want, None), "{line:?}");
+        }
+        let (bytes, _) = encode_line("PRIVMSG #jp :a\u{a5}\r\n", UTF8, Some(&Fixed));
+        assert_eq!(&*bytes, b"PRIVMSG #jp :a\x1b(J\\\x1b(B\r\n");
     }
 
     #[test]
