@@ -46,18 +46,18 @@ Do not build a second mechanism for any of these; extend them instead.
 | Per-channel log cap: 2,000 lines, trimmed to 1,000 when exceeded; server log the same | `app` `push_bounded` | Memory per log is bounded; trimming in chunks amortizes the shift. |
 | Diagnostics transcript: lines of the server log, whose limit it shares (`MAX_RETAINED`, 2,000 per server) | `AppState::append_diagnostic_message`, `push_bounded` | While the connection diagnostics are on every IRC line is recorded, so it must be bounded; the oldest 1,000 are dropped in one step past the limit. Wire lines may push out older server notices (D080). |
 | IRC lines reach the transcript only during registration or while the debug transcript is on | `irc-core` `Transcript`, `Connection::set_transcript` | An established session does no per-line formatting, allocation or extra event for the transcript, which halves the worker→UI events of incoming traffic. |
-| Combined subwindow: newest 1,000 lines held by other channels (any provenance or activity), rebuilt only when the last message sequence, the log revision (history insertions and edits) or the selection changes, by merging conversation tails newest-first | `ui` `SUB_LOG_LIMIT`, `sync_log_lists`, `newest_lines` | Keystrokes do not rebuild it, and the rebuild does not grow with every retained line when there are many conversations. |
+| combined log: newest 1,000 lines held by other channels (any provenance or activity), rebuilt only when the last message sequence, the log revision (history insertions and edits) or the selection changes, by merging conversation tails newest-first | `ui` `SUB_LOG_LIMIT`, `sync_log_lists`, `newest_lines` | Keystrokes do not rebuild it, and the rebuild does not grow with every retained line when there are many conversations. |
 | At most 1,000 conversations per network; messages for unknown channels go to the bounded server log | `app` `MAX_CONVERSATIONS_PER_NETWORK` | A hostile server or bouncer cannot grow memory without limit. |
 | WHOIS collection capped (32 pending nicknames, 512 items each); rosters cached only for joined channels | `irc-core` `MAX_PENDING_WHOIS`, `MAX_WHOIS_ITEMS` | Same. |
-| Virtualized panes: both logs, user list and channel tree use GPUI `list`/`uniform_list` with 400 px overdraw | `ui::log_list` | Only rows near the viewport are laid out. |
+| Virtualized panes: both logs, member list and channel tree use GPUI `list`/`uniform_list` with 400 px overdraw | `ui::log_list` | Only rows near the viewport are laid out. |
 | `LogList::sync` splices only rows whose sequences appeared or disappeared | `ui::log_list` | Measured row heights and scroll position survive appends, trims and channel switches. |
 | The four panes are separate views drawn with `AnyView::cached` | `ui` `ChatPane`, `ChatPanes` | A keystroke redraws only the window shell and the draft; a GPUI test (`typing_reuses_panes_and_new_messages_redraw_them`) asserts it. State changes that affect panes must `cx.notify()` the chat window. |
 | Message times stored as minutes (`TimeOfDay`); a retained `Message` is 64 bytes plus its sender and text | `model` | Smaller logs, one fewer allocation per line. |
 | QUIT/NICK republish rosters only for channels that contained the user; roster sort keys computed once per member | `irc-core` `RosterTracker`, `app` `sorted_members` | Large channels. |
 | Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
-| Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Links are found once when a message's text is set (`app::links`); requesting, fetching and decoding image previews costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
+| Image previews are requested only by channel-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Links are found once when a message's text is set (`app::links`); requesting, fetching and decoding image previews costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
 | A preview reserves its full height only once the fetcher has confirmed an image (final 200 with an image type other than SVG); until then, and after a failure, the row is a plain text link; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
-| Avatars are requested only by drawn main-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
+| Avatars are requested only by drawn channel-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
 | Avatar references live once per network in `app::avatars`, keyed by user, not in messages | `app::avatars` | `model::Message` stays 64 bytes plus sender and text. |
 
 ## Resource bounds today
@@ -68,7 +68,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Server log | 2,000 messages, trimmed to 1,000 | per network | |
 | Conversations | 1,000 | per network | |
 | Diagnostics transcript | in the server log's 2,000 lines | per server | IRC lines are formatted and sent to the UI only during registration and while the connection diagnostics switch is on (saved in the settings, off by default); with it on, the cost of formatting and sending every line is accepted, and a tag section is kept whole. A registered connection with the switch off formats nothing. No application-wide bound beyond the servers' own. |
-| Combined subwindow | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
+| combined log | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
 | Received IRC line | 16 KiB including the line ending | per connection | Enforced by the vendored irc-proto codec while reading; a longer line ends the connection. Also bounds the text of every message. |
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
@@ -305,7 +305,7 @@ machine, and add these:
 - UI test extended to 4 servers × 10 channels: typing must still leave the
   panes cached (`pane_renders` unchanged) and switching across servers should
   cost about the same as within one.
-- Combined subwindow rebuild with 40 conversations (done in the multi-server
+- combined log rebuild with 40 conversations (done in the multi-server
   change; see below).
 - Diagnostics: per-server transcripts must stay bounded and the app-wide total
   must be bounded too.
@@ -327,7 +327,7 @@ server):
 | Multi-server, 4 servers (80,000 lines) | 447–454 | 1,715–1,875 | 2,026–2,344 |
 | Multi-server before the combined-log merge, 4 servers | 458–469 | 2,971–3,034 | 3,198–3,455 |
 
-Typing still re-renders no pane. The combined subwindow's collect-and-sort
+Typing still re-renders no pane. The combined log's collect-and-sort
 made switching and batches grow with conversations (+33 % and +43 % at four
 servers); merging tails newest-first removed that and also made one server
 faster than the parent.
@@ -593,7 +593,7 @@ state is allocated and the wire is unchanged.
 No measured hot path changed; bounds by construction, checked by tests
 (`older_pages_stay_within_the_log_bound`,
 `prepended_rows_of_any_height_do_not_move_the_viewport`). A page is asked
-for only from a user's scroll event near the top of the main log; no timer
+for only from a user's scroll event near the top of the channel log; no timer
 or polling exists, and an idle or merely open channel sends nothing. Per
 conversation: one request on its way and a two-field state (created by the
 first page, dropped with the session, the channel or the conversation). A
@@ -1054,7 +1054,7 @@ Observed while measuring; each is a separate task if pursued:
 - Coalesce redraws triggered by incoming traffic (see the redraw candidate
   above).
 - Format wire diagnostics lazily.
-- Make the combined-subwindow rebuild incremental (the heap merge already
+- Make the combined log rebuild incremental (the heap merge already
   bounds it by the rows shown; an incremental update would avoid it too).
 - Send roster deltas instead of full NAMES snapshots on JOIN/PART in large
   channels (#266; the duplicate copies were removed, see "Member list
@@ -1295,7 +1295,7 @@ the queue (at most 200 entries) once per trim, and removing a network or a
 private conversation filters it. No timer, thread or per-frame work was
 added; the highlight is one task started by a jump: it sleeps 1 s, then repaints
 every 16 ms for the 0.8 s fade and stops (#665). Each repaint invalidates
-only the cached main log pane (not the window, so not the all-log, members or
+only the cached channel log pane (not the window, so not the all-log, members or
 channel tree), and only while that conversation is selected; the fade itself
 adds no per-row cost beyond one colour mix for the emphasized line. The
 baseline does not exercise a jump, so no before/after table applies; the
@@ -1363,7 +1363,7 @@ mentioned.
 The search bar adds no work while it is closed: no scan, task or highlight
 exists, and the per-row hook (`ChatWindow::search_ranges`) returns an empty
 list without matching anything. While it is open and has a term, each drawn
-main-log row matches the term once (only the rows near the viewport are
+channel-log row matches the term once (only the rows near the viewport are
 drawn), `render_chat` compares a revision (a sum over the conversations'
 lengths, or one log's ends for the "this channel" scope), and a scan reads the
 logs in slices of 20,000 cost units (a message costs 1 plus its bytes / 64) on

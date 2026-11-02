@@ -26,7 +26,7 @@ pub type Overrides = BTreeMap<String, String>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Command(Command),
-    /// Scroll the main log to its newest line.
+    /// Scroll the channel log to its newest line.
     ScrollToLatest,
 }
 

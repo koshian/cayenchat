@@ -391,7 +391,7 @@ pub enum LinuxDisplay {
     X11,
 }
 
-/// Where the main log is scrolled when the user selects a channel or DM that
+/// Where the channel log is scrolled when the user selects a channel or DM that
 /// is unread at that moment (#545). Read conversations always keep their
 /// position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,16 +594,20 @@ const MAX_CHARSET_CHANNEL_BYTES: usize = 200;
 pub struct Appearance {
     #[serde(alias = "background")]
     pub member_list_background: String,
-    pub main_log_background: String,
-    pub main_log_alternate: String,
+    #[serde(alias = "main_log_background")]
+    pub channel_log_background: String,
+    #[serde(alias = "main_log_alternate")]
+    pub channel_log_alternate: String,
     pub channel_event_color: String,
     /// Text of NOTICE messages in the logs. Added after version 15 without a
     /// version change; files without it read as the default.
     pub notice_color: String,
     /// Mentions and keywords in logs, and channels where they arrived.
     pub highlight_color: String,
-    pub sub_log_background: String,
-    pub sub_log_alternate: String,
+    #[serde(alias = "sub_log_background")]
+    pub combined_log_background: String,
+    #[serde(alias = "sub_log_alternate")]
+    pub combined_log_alternate: String,
     /// Background of the hover popups in the logs, shared by the full URL of
     /// a shortened one and the original of a decoded character reference
     /// (the `url_tooltip_` keys predate the second). Added after version 15
@@ -628,7 +632,7 @@ pub struct Appearance {
     /// Added after version 15 without a version change.
     pub link_background: String,
     pub alternate_rows: bool,
-    /// Inline thumbnails of direct image links in the main channel log
+    /// Inline thumbnails of direct image links in the channel log
     /// (version 14). Off by default, also for settings saved before it existed.
     pub image_previews: bool,
     /// Show long URLs in the channel log in a short form; the text, links
@@ -649,10 +653,14 @@ pub struct Appearance {
     /// version change; files without it read as off.
     #[serde(alias = "header_line_messages")]
     pub reiwa_mode: bool,
-    pub main_log_font: String,
-    pub sub_log_font: String,
-    pub member_font: String,
-    pub channel_font: String,
+    #[serde(alias = "main_log_font")]
+    pub channel_log_font: String,
+    #[serde(alias = "sub_log_font")]
+    pub combined_log_font: String,
+    #[serde(alias = "member_font")]
+    pub member_list_font: String,
+    #[serde(alias = "channel_font")]
+    pub channel_tree_font: String,
     pub input_font: String,
     pub time_font: String,
     /// Pane colors used while the dark theme is active; the flat fields above
@@ -682,13 +690,17 @@ pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
 #[serde(default)]
 pub struct DarkColors {
     pub member_list_background: String,
-    pub main_log_background: String,
-    pub main_log_alternate: String,
+    #[serde(alias = "main_log_background")]
+    pub channel_log_background: String,
+    #[serde(alias = "main_log_alternate")]
+    pub channel_log_alternate: String,
     pub channel_event_color: String,
     pub notice_color: String,
     pub highlight_color: String,
-    pub sub_log_background: String,
-    pub sub_log_alternate: String,
+    #[serde(alias = "sub_log_background")]
+    pub combined_log_background: String,
+    #[serde(alias = "sub_log_alternate")]
+    pub combined_log_alternate: String,
     pub url_tooltip_color: String,
     pub link_color: String,
     pub link_background: String,
@@ -700,13 +712,13 @@ impl Default for DarkColors {
     fn default() -> Self {
         Self {
             member_list_background: "#1F2124".into(),
-            main_log_background: "#1F2124".into(),
-            main_log_alternate: "#272B31".into(),
+            channel_log_background: "#1F2124".into(),
+            channel_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
             notice_color: "#8C949C".into(),
             highlight_color: "#EFA0BE".into(),
-            sub_log_background: "#24272B".into(),
-            sub_log_alternate: "#2C3036".into(),
+            combined_log_background: "#24272B".into(),
+            combined_log_alternate: "#2C3036".into(),
             url_tooltip_color: HOVER_POPUP_COLOR.into(),
             link_color: "#78AAFF".into(),
             link_background: String::new(),
@@ -720,13 +732,13 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             member_list_background: "#FFFFFF".into(),
-            main_log_background: "#FFFFFF".into(),
-            main_log_alternate: "#F2F5FF".into(),
+            channel_log_background: "#FFFFFF".into(),
+            channel_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
             notice_color: "#7A838C".into(),
             highlight_color: "#D46A8E".into(),
-            sub_log_background: "#F9FAFB".into(),
-            sub_log_alternate: "#F2F5FF".into(),
+            combined_log_background: "#F9FAFB".into(),
+            combined_log_alternate: "#F2F5FF".into(),
             url_tooltip_color: HOVER_POPUP_COLOR.into(),
             url_tooltip_link_color: HOVER_POPUP_LINK_COLOR.into(),
             url_tooltip_text_color: HOVER_POPUP_TEXT_COLOR.into(),
@@ -738,10 +750,10 @@ impl Default for Appearance {
             compact_urls: false,
             decode_char_refs: true,
             reiwa_mode: false,
-            main_log_font: String::new(),
-            sub_log_font: String::new(),
-            member_font: String::new(),
-            channel_font: String::new(),
+            channel_log_font: String::new(),
+            combined_log_font: String::new(),
+            member_list_font: String::new(),
+            channel_tree_font: String::new(),
             input_font: String::new(),
             time_font: String::new(),
             dark: DarkColors::default(),
@@ -792,13 +804,13 @@ impl Appearance {
     pub fn validate(&self) -> Result<(), String> {
         for (label, value) in [
             ("Member list", &self.member_list_background),
-            ("Main log", &self.main_log_background),
-            ("Main alternate", &self.main_log_alternate),
+            ("Channel log", &self.channel_log_background),
+            ("Channel log alternate", &self.channel_log_alternate),
             ("System message", &self.channel_event_color),
             ("Notice", &self.notice_color),
             ("Highlight", &self.highlight_color),
-            ("Sub log", &self.sub_log_background),
-            ("Sub alternate", &self.sub_log_alternate),
+            ("Combined log", &self.combined_log_background),
+            ("Combined log alternate", &self.combined_log_alternate),
             ("URL tooltip", &self.url_tooltip_color),
             ("Dark URL tooltip", &self.dark.url_tooltip_color),
             ("Link", &self.link_color),
@@ -808,13 +820,19 @@ impl Appearance {
             ("URL tooltip text", &self.url_tooltip_text_color),
             ("Dark URL tooltip text", &self.dark.url_tooltip_text_color),
             ("Dark member list", &self.dark.member_list_background),
-            ("Dark main log", &self.dark.main_log_background),
-            ("Dark main alternate", &self.dark.main_log_alternate),
+            ("Dark channel log", &self.dark.channel_log_background),
+            (
+                "Dark channel log alternate",
+                &self.dark.channel_log_alternate,
+            ),
             ("Dark system message", &self.dark.channel_event_color),
             ("Dark notice", &self.dark.notice_color),
             ("Dark highlight", &self.dark.highlight_color),
-            ("Dark sub log", &self.dark.sub_log_background),
-            ("Dark sub alternate", &self.dark.sub_log_alternate),
+            ("Dark combined log", &self.dark.combined_log_background),
+            (
+                "Dark combined log alternate",
+                &self.dark.combined_log_alternate,
+            ),
         ] {
             if color_value(value).is_none() {
                 return Err(format!("{label} color must be #RRGGBB."));
@@ -930,7 +948,7 @@ pub struct ServerProfile {
     pub sasl_username: String,
     #[serde(default)]
     pub connect_on_startup: bool,
-    /// Show small user avatars beside main-log messages and in the member
+    /// Show small user avatars beside channel-log messages and in the member
     /// list of this server, with client-drawn defaults for users without
     /// one (D023). Independent per server and of `image_previews`; there is
     /// no application-wide switch. Added after version 15 without a version
@@ -3083,6 +3101,48 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_former_pane_names_and_saves_the_new_ones() {
+        let mut saved = serde_json::to_value(Appearance::default()).unwrap();
+        let object = saved.as_object_mut().unwrap();
+        for (new, old, value) in [
+            ("channel_log_font", "main_log_font", "A"),
+            ("combined_log_font", "sub_log_font", "B"),
+            ("member_list_font", "member_font", "C"),
+            ("channel_tree_font", "channel_font", "D"),
+            ("channel_log_background", "main_log_background", "#111111"),
+            ("combined_log_alternate", "sub_log_alternate", "#222222"),
+        ] {
+            object.remove(new);
+            object.insert(old.into(), value.into());
+        }
+        let dark = object.get_mut("dark").unwrap().as_object_mut().unwrap();
+        dark.remove("channel_log_alternate");
+        dark.insert("main_log_alternate".into(), "#333333".into());
+        let loaded: Appearance = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.channel_log_font, "A");
+        assert_eq!(loaded.combined_log_font, "B");
+        assert_eq!(loaded.member_list_font, "C");
+        assert_eq!(loaded.channel_tree_font, "D");
+        assert_eq!(loaded.channel_log_background, "#111111");
+        assert_eq!(loaded.combined_log_alternate, "#222222");
+        assert_eq!(loaded.dark.channel_log_alternate, "#333333");
+        let written = serde_json::to_value(&loaded).unwrap();
+        let written = written.as_object().unwrap();
+        for old in [
+            "main_log_font",
+            "sub_log_font",
+            "member_font",
+            "channel_font",
+            "main_log_background",
+            "sub_log_alternate",
+        ] {
+            assert!(!written.contains_key(old), "{old} is written again");
+        }
+        assert_eq!(written["channel_tree_font"], "D");
+        assert_eq!(written["channel_log_font"], "A");
+    }
+
+    #[test]
     fn ignores_the_removed_combined_log_name_width() {
         let mut saved = serde_json::to_value(Appearance::default()).unwrap();
         saved
@@ -3106,8 +3166,8 @@ mod tests {
         assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
-        settings.appearance.main_log_background = "#123ABC".into();
-        settings.appearance.main_log_font = "Menlo".into();
+        settings.appearance.channel_log_background = "#123ABC".into();
+        settings.appearance.channel_log_font = "Menlo".into();
         settings.appearance.validate().unwrap();
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));

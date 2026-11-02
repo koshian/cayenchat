@@ -3,7 +3,7 @@
 //! application holds in memory.
 //!
 //! The data walk is `cayenchat_app::search`; this module owns what the user
-//! sees and does: the bar above the main log, the keys, the scan being
+//! sees and does: the bar above the channel log, the keys, the scan being
 //! driven in slices from the executor (never one long stretch on the UI
 //! thread), and moving to a hit, in another conversation if need be. A hit is
 //! a log and a message sequence, so lines that arrive, are trimmed or are
@@ -471,7 +471,7 @@ impl ChatWindow {
             self.dispatch_keeping_focus(command, window, cx);
         }
         self.sync_log_lists();
-        if let Some(list) = self.main_lists.get_mut(&selection) {
+        if let Some(list) = self.channel_log_lists.get_mut(&selection) {
             // The hit's own row goes to the top: rows above it may be taller
             // than the log and would push the match out of view. If the row
             // itself is taller than the log, `search_reveal_step` moves on to
@@ -535,7 +535,7 @@ impl ChatWindow {
         let Some(mut reveal) = search.reveal else {
             return;
         };
-        let Some(list) = self.main_lists.get(&selection) else {
+        let Some(list) = self.channel_log_lists.get(&selection) else {
             search.reveal = None;
             return;
         };

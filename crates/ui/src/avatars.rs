@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! User avatars beside main-log messages and in the member list.
+//! User avatars beside channel-log messages and in the member list.
 //!
 //! Which avatar a user or message has comes from `app::avatars` (protocol
 //! independent; IRC fills it from `draft/metadata-2`). This module turns the
@@ -158,8 +158,8 @@ fn cache_limits() -> CacheLimits {
 /// The two cached panes that draw avatars.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
-    MainLog,
-    Members,
+    ChannelLog,
+    MemberList,
 }
 
 /// What a row's avatar slot shows.
@@ -176,8 +176,8 @@ pub enum Shown {
 /// only after both panes have been drawn again.
 struct Released {
     image: Arc<RenderImage>,
-    main_log: bool,
-    members: bool,
+    channel_log: bool,
+    member_list: bool,
 }
 
 pub struct Avatars {
@@ -330,18 +330,18 @@ impl Avatars {
                 .into_iter()
                 .map(|image| Released {
                     image,
-                    main_log: false,
-                    members: false,
+                    channel_log: false,
+                    member_list: false,
                 }),
         );
         for entry in released.iter_mut() {
             match pane {
-                Pane::MainLog => entry.main_log = true,
-                Pane::Members => entry.members = true,
+                Pane::ChannelLog => entry.channel_log = true,
+                Pane::MemberList => entry.member_list = true,
             }
         }
         released.retain(|entry| {
-            let done = entry.main_log && entry.members;
+            let done = entry.channel_log && entry.member_list;
             if done {
                 let _ = window.drop_image(entry.image.clone());
             }
@@ -650,7 +650,7 @@ mod tests {
     /// Heights of the rows laid out on screen, by row index.
     fn row_heights(chat: &Entity<ChatWindow>, cx: &VisualTestContext) -> Vec<(usize, Pixels)> {
         chat.read_with(cx, |chat, _| {
-            let list = &chat.main_lists[&chat.state.selection()].state;
+            let list = &chat.channel_log_lists[&chat.state.selection()].state;
             (0..list.item_count())
                 .filter_map(|index| Some((index, list.bounds_for_item(index)?.size.height)))
                 .collect()
@@ -749,7 +749,7 @@ mod tests {
         // A bottom-following list reports no rows; look at a scrolled-up
         // window of rows instead.
         chat.update(cx, |chat, cx| {
-            let list = &chat.main_lists[&chat.state.selection()].state;
+            let list = &chat.channel_log_lists[&chat.state.selection()].state;
             list.scroll_to(gpui::ListOffset {
                 item_ix: 4,
                 offset_in_item: gpui::px(0.),

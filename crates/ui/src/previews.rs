@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Inline image previews in the main channel log.
+//! Inline image previews in the channel log.
 //!
 //! `cayenchat-media` decides which links are previewed, loads and decodes
 //! them and keeps the bounded cache; this module draws the thumbnails and
@@ -129,7 +129,7 @@ impl Previews {
 
     /// Frees the GPU textures of images that left the cache. Only images the
     /// cache no longer holds are released, so nothing drawn later uses them.
-    /// Call it while the main log pane redraws, never while that pane may be
+    /// Call it while the channel log pane redraws, never while that pane may be
     /// reused from its cache.
     pub fn in_flight(&self) -> usize {
         self.cache.borrow().in_flight()
@@ -325,7 +325,7 @@ impl ChatWindow {
             return;
         }
         for row in waiters {
-            if let Some(list) = self.main_lists.get_mut(&row.selection) {
+            if let Some(list) = self.channel_log_lists.get_mut(&row.selection) {
                 list.invalidate(row.sequence);
             }
         }
@@ -351,12 +351,12 @@ impl ChatWindow {
             // Rows never confirmed were measured as plain text.
             if finished.measured_as_text || height != Some(BOX_HEIGHT as f32) {
                 for row in finished.waiters {
-                    if let Some(list) = self.main_lists.get_mut(&row.selection) {
+                    if let Some(list) = self.channel_log_lists.get_mut(&row.selection) {
                         list.invalidate(row.sequence);
                     }
                 }
             }
-            // The main log is a cached pane.
+            // The channel log is a cached pane.
             cx.notify();
         }
         self.pump_previews(cx);
@@ -742,7 +742,7 @@ mod tests {
         // A wide image is shorter than the placeholder: its row was
         // remeasured without resetting the list.
         chat.read_with(cx, |chat, _| {
-            let list = &chat.main_lists[&Selection::Channel(a)];
+            let list = &chat.channel_log_lists[&Selection::Channel(a)];
             assert_eq!(list.state.item_count(), 1);
         });
 
@@ -818,7 +818,7 @@ mod tests {
             next.selected_server = next.servers[1].id.clone();
             next.remove_selected_server();
             chat.apply_servers(next, cx);
-            assert!(!chat.main_lists.keys().any(|s| matches!(s, Selection::Channel(id) if chat.state.conversations().iter().all(|c| c.id != *id))));
+            assert!(!chat.channel_log_lists.keys().any(|s| matches!(s, Selection::Channel(id) if chat.state.conversations().iter().all(|c| c.id != *id))));
             if let Selection::Channel(id) = first {
                 chat.state.dispatch(cayenchat_app::Command::SelectChannel(id));
             }

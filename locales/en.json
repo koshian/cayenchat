@@ -317,7 +317,7 @@
   "unread_log_position_hint": "Applies only when you select a channel or DM that is unread. \"Previous position\" keeps where you left the log (the bottom, if you were following it); \"Latest message\" jumps to the end and follows the bottom again. Conversations you have already read always keep their position.",
   "user_avatars_hint": "Shows a small picture beside nicknames in this server's channel log and member list when the server supplies one. While on, CayenChat downloads the pictures of the users on screen from their servers. Applies when you save, without reconnecting.",
   "member_list": "Member list",
-  "channel_list": "Channel list",
+  "channel_tree": "Channel tree",
   "draft_input": "Draft input",
   "timestamp_monospace": "Timestamp (monospace)",
   "language": "Language",

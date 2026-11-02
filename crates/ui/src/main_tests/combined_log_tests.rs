@@ -78,7 +78,7 @@ fn merged_tails_match_collecting_and_sorting() {
 
 #[test]
 fn system_lines_merge_with_conversation_lines_by_sequence() {
-    use super::{SubRow, sub_rows};
+    use super::{CombinedRow, combined_rows};
     let system: std::collections::VecDeque<_> = [2u64, 5]
         .into_iter()
         .map(|sequence| {
@@ -104,15 +104,15 @@ fn system_lines_merge_with_conversation_lines_by_sequence() {
         })
         .collect();
     let lines = vec![(1, ConversationId(1), 0), (3, ConversationId(1), 1)];
-    let rows = sub_rows(lines.clone(), &system, 10);
+    let rows = combined_rows(lines.clone(), &system, 10);
     assert_eq!(
         rows,
         [
-            (1, SubRow::Line(ConversationId(1), 0)),
-            (2, SubRow::System(0)),
-            (3, SubRow::Line(ConversationId(1), 1)),
-            (5, SubRow::System(1)),
+            (1, CombinedRow::Line(ConversationId(1), 0)),
+            (2, CombinedRow::System(0)),
+            (3, CombinedRow::Line(ConversationId(1), 1)),
+            (5, CombinedRow::System(1)),
         ]
     );
-    assert_eq!(sub_rows(lines, &system, 2), rows[2..]);
+    assert_eq!(combined_rows(lines, &system, 2), rows[2..]);
 }

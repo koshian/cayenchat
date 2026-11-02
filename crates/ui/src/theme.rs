@@ -13,13 +13,13 @@ use gpui::{App, Global, Hsla, Rgba, WindowAppearance, hsla, rgb, rgba};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneColors {
     pub member_list: Rgba,
-    pub main_log: Rgba,
-    pub main_alternate: Rgba,
+    pub channel_log: Rgba,
+    pub channel_alternate: Rgba,
     pub channel_event: Rgba,
     pub notice: Rgba,
     pub highlight: Rgba,
-    pub sub_log: Rgba,
-    pub sub_alternate: Rgba,
+    pub combined_log: Rgba,
+    pub combined_alternate: Rgba,
     /// Background of the hover popups (full URL, character reference
     /// original), with its opacity as alpha; their text stays opaque.
     pub url_tooltip: Rgba,
@@ -106,13 +106,13 @@ impl Theme {
             text_selection: rgba(0x3311ff30),
             panes: PaneColors {
                 member_list: color(&appearance.member_list_background, 0xffffff),
-                main_log: color(&appearance.main_log_background, 0xffffff),
-                main_alternate: color(&appearance.main_log_alternate, 0xf2f5ff),
+                channel_log: color(&appearance.channel_log_background, 0xffffff),
+                channel_alternate: color(&appearance.channel_log_alternate, 0xf2f5ff),
                 channel_event: color(&appearance.channel_event_color, 0x007d00),
                 notice: color(&appearance.notice_color, 0x7a838c),
                 highlight: color(&appearance.highlight_color, 0xd46a8e),
-                sub_log: color(&appearance.sub_log_background, 0xf9fafb),
-                sub_alternate: color(&appearance.sub_log_alternate, 0xf2f5ff),
+                combined_log: color(&appearance.combined_log_background, 0xf9fafb),
+                combined_alternate: color(&appearance.combined_log_alternate, 0xf2f5ff),
                 url_tooltip: translucent(
                     color(&appearance.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
@@ -149,13 +149,13 @@ impl Theme {
             text_selection: rgba(0x5a8dee55),
             panes: PaneColors {
                 member_list: color(&colors.member_list_background, 0x1f2124),
-                main_log: color(&colors.main_log_background, 0x1f2124),
-                main_alternate: color(&colors.main_log_alternate, 0x272b31),
+                channel_log: color(&colors.channel_log_background, 0x1f2124),
+                channel_alternate: color(&colors.channel_log_alternate, 0x272b31),
                 channel_event: color(&colors.channel_event_color, 0x6cc46c),
                 notice: color(&colors.notice_color, 0x8c949c),
                 highlight: color(&colors.highlight_color, 0xefa0be),
-                sub_log: color(&colors.sub_log_background, 0x24272b),
-                sub_alternate: color(&colors.sub_log_alternate, 0x2c3036),
+                combined_log: color(&colors.combined_log_background, 0x24272b),
+                combined_alternate: color(&colors.combined_log_alternate, 0x2c3036),
                 url_tooltip: translucent(
                     color(&colors.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
@@ -206,9 +206,9 @@ mod tests {
     #[test]
     fn mode_selects_light_or_dark_and_uses_each_themes_pane_colors() {
         let appearance = Appearance {
-            main_log_background: "#FAFAFA".into(),
+            channel_log_background: "#FAFAFA".into(),
             dark: cayenchat_storage::DarkColors {
-                main_log_background: "#101010".into(),
+                channel_log_background: "#101010".into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -216,7 +216,7 @@ mod tests {
 
         let light = Theme::new(ThemeMode::System, WindowAppearance::Light, &appearance);
         assert!(!light.dark);
-        assert_eq!(light.panes.main_log, rgb(0xfafafa));
+        assert_eq!(light.panes.channel_log, rgb(0xfafafa));
 
         let dark = Theme::new(
             ThemeMode::System,
@@ -224,7 +224,7 @@ mod tests {
             &appearance,
         );
         assert!(dark.dark);
-        assert_eq!(dark.panes.main_log, rgb(0x101010));
+        assert_eq!(dark.panes.channel_log, rgb(0x101010));
 
         assert!(Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance).dark);
         assert!(!Theme::new(ThemeMode::Light, WindowAppearance::Dark, &appearance).dark);
