@@ -307,6 +307,9 @@ actions!(
         ToggleMenuBar,
         CopyLogSelection,
         ScrollToLatest,
+        ToggleSelectedHeading,
+        CollapseAllHeadings,
+        ExpandAllHeadings,
         FindInLog,
         CloseSearch,
         SearchNext,
@@ -4938,6 +4941,33 @@ impl ChatWindow {
         self.scroll_channel_log_to_latest(cx);
     }
 
+    fn toggle_selected_heading_action(
+        &mut self,
+        _: &ToggleSelectedHeading,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_selected_heading(cx);
+    }
+
+    fn collapse_all_headings_action(
+        &mut self,
+        _: &CollapseAllHeadings,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_all_headings_collapsed(true, cx);
+    }
+
+    fn expand_all_headings_action(
+        &mut self,
+        _: &ExpandAllHeadings,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_all_headings_collapsed(false, cx);
+    }
+
     /// Whether a dialog is drawn over the window, so nothing behind it may
     /// be operated.
     fn dialog_open(&self) -> bool {
@@ -8670,6 +8700,9 @@ impl ChatWindow {
             .bg(theme.surface)
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::scroll_to_latest))
+            .on_action(cx.listener(Self::toggle_selected_heading_action))
+            .on_action(cx.listener(Self::collapse_all_headings_action))
+            .on_action(cx.listener(Self::expand_all_headings_action))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::send_message_with_ctrl))

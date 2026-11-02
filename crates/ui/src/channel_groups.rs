@@ -142,6 +142,49 @@ impl ChatWindow {
         self.save_channel_layout(None, cx);
     }
 
+    /// The heading the selection sits under: its group, else its server.
+    pub(crate) fn selected_heading(&self) -> Option<Parent> {
+        match self.state.selection() {
+            cayenchat_app::Selection::Server(network) => Some(Parent::Server(network)),
+            cayenchat_app::Selection::Channel(id) => self.state.display_parent(id),
+            cayenchat_app::Selection::None => None,
+        }
+    }
+
+    /// Folds or opens the heading of the selection (#943). The selection and
+    /// the shown pane stay, as when the heading is clicked.
+    pub(crate) fn toggle_selected_heading(&mut self, cx: &mut Context<Self>) {
+        match self.selected_heading() {
+            Some(Parent::Group(id)) => self.toggle_group(id, cx),
+            Some(Parent::Server(network)) => self.toggle_server(network, cx),
+            None => {}
+        }
+    }
+
+    /// Folds (or opens) every server and group heading, saving once (#943).
+    pub(crate) fn set_all_headings_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        let mut changed = false;
+        let groups: Vec<GroupId> = self.state.groups().iter().map(|g| g.id).collect();
+        for id in groups {
+            changed |= self.state.set_group_collapsed(id, collapsed);
+        }
+        let profiles: Vec<String> = self
+            .sessions
+            .values()
+            .map(|s| s.profile_id.clone())
+            .collect();
+        for profile_id in profiles {
+            changed |= if collapsed {
+                self.channel_orders.collapsed_servers.insert(profile_id)
+            } else {
+                self.channel_orders.collapsed_servers.remove(&profile_id)
+            };
+        }
+        if changed {
+            self.save_channel_layout(None, cx);
+        }
+    }
+
     /// The channel menu's "Move to group": an existing group.
     pub(crate) fn move_menu_channel_to_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         let Some(menu) = self.channel_menu.take() else {

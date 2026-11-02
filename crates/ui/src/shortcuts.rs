@@ -28,6 +28,10 @@ pub enum Target {
     Command(Command),
     /// Scroll the channel log to its newest line.
     ScrollToLatest,
+    /// Fold or open the heading of the selection (#943).
+    ToggleSelectedHeading,
+    CollapseAllHeadings,
+    ExpandAllHeadings,
 }
 
 pub struct ShortcutAction {
@@ -137,6 +141,23 @@ pub const ACTIONS: &[ShortcutAction] = &[
         target: Target::ScrollToLatest,
         defaults: per_platform!(&["cmd-j"], &["ctrl-end"]),
     },
+    // Channel tree headings (#943). Ctrl+Shift+Enter and Alt+Home/End are unused by
+    // the draft; Cmd+Ctrl+arrows are free on macOS.
+    ShortcutAction {
+        id: "toggle_selected_heading",
+        target: Target::ToggleSelectedHeading,
+        defaults: per_platform!(&["cmd-alt-enter"], &["ctrl-shift-enter"]),
+    },
+    ShortcutAction {
+        id: "collapse_all_headings",
+        target: Target::CollapseAllHeadings,
+        defaults: per_platform!(&["cmd-ctrl-up"], &["alt-home"]),
+    },
+    ShortcutAction {
+        id: "expand_all_headings",
+        target: Target::ExpandAllHeadings,
+        defaults: per_platform!(&["cmd-ctrl-down"], &["alt-end"]),
+    },
 ];
 
 /// Whether pressing `keystroke` is how a character is typed on that system:
@@ -240,6 +261,15 @@ pub fn bindings(overrides: &Overrides) -> Vec<KeyBinding> {
                     Target::Command(command) => crate::navigation_binding(&key, command),
                     Target::ScrollToLatest => {
                         KeyBinding::new(&key, crate::ScrollToLatest, Some("ChatWindow"))
+                    }
+                    Target::ToggleSelectedHeading => {
+                        KeyBinding::new(&key, crate::ToggleSelectedHeading, Some("ChatWindow"))
+                    }
+                    Target::CollapseAllHeadings => {
+                        KeyBinding::new(&key, crate::CollapseAllHeadings, Some("ChatWindow"))
+                    }
+                    Target::ExpandAllHeadings => {
+                        KeyBinding::new(&key, crate::ExpandAllHeadings, Some("ChatWindow"))
                     }
                 })
         })
