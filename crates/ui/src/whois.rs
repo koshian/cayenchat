@@ -11,7 +11,7 @@ const AVATAR_SLOT: f32 = 48.;
 /// Pixels a side of the avatar to draw in the box on a window with
 /// `scale_factor` device pixels per logical pixel, so it is never enlarged.
 pub fn avatar_pixels(scale_factor: f32) -> u32 {
-    (AVATAR_SLOT * scale_factor.max(1.)).ceil() as u32
+    crate::avatars::pixels_for(AVATAR_SLOT, scale_factor)
 }
 
 /// The channels we are in on a network, folded under the network's case

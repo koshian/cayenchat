@@ -31,9 +31,13 @@ use crate::{ChatWindow, default_avatar};
 
 /// Slot size in logical pixels, below the 20 px log and member line height.
 pub const SLOT: f32 = 16.;
-/// Thumbnail size in pixels (sharp on 2× displays), also the size asked for
-/// through the registry's `{size}` placeholder.
-pub const PIXELS: u32 = 32;
+/// Pixels a side of the thumbnail for a slot of `slot` logical pixels on a
+/// window with `scale_factor` device pixels per logical pixel: rounded up so
+/// the texture is never smaller than the slot's device pixels, and never
+/// below 1×.
+pub fn pixels_for(slot: f32, scale_factor: f32) -> u32 {
+    (slot * scale_factor.max(1.)).ceil() as u32
+}
 /// Pixels a side of the one size an avatar URL is fetched at (the registry's
 /// `{size}` placeholder); every displayed size is made from that download.
 pub const ORIGINAL_PIXELS: u32 = 128;
@@ -205,7 +209,8 @@ impl Avatars {
         let mut avatars = Self {
             cache: RefCell::new(PreviewCache::new(cache_limits())),
             originals: RefCell::default(),
-            limits: Limits::avatar(PIXELS),
+            // The thumbnail size is set per load, from the key.
+            limits: Limits::avatar(ORIGINAL_PIXELS),
             fetcher: None,
             released: RefCell::new(Vec::new()),
             retry_wake: None,
@@ -223,15 +228,9 @@ impl Avatars {
         self.fetcher.is_some()
     }
 
-    /// The default avatar drawn for `nickname`.
-    pub fn default_for(&self, nickname: &str) -> Arc<gpui::Image> {
-        self.default_sized(nickname, PIXELS)
-    }
-
     /// The default avatar of `nickname` rasterized at `pixels` × `pixels`
-    /// (GPUI draws an SVG at its own size, so a larger slot, such as the
-    /// 48 px one in WHOIS, asks for twice its logical size instead of
-    /// enlarging the 32 px image).
+    /// (GPUI draws an SVG at its own size, so a slot asks for its size in
+    /// device pixels instead of enlarging a smaller image).
     pub fn default_sized(&self, nickname: &str, pixels: u32) -> Arc<gpui::Image> {
         // Bounds the cache even if a caller passes a wild size.
         let pixels = pixels.clamp(1, MAX_DEFAULT_PIXELS);
@@ -500,6 +499,7 @@ mod tests {
     use cayenchat_model::NetworkId;
     use gpui::{Entity, Focusable, Pixels, TestAppContext, VisualTestContext};
 
+    use super::{SLOT, pixels_for};
     use crate::{ChatWindow, Worker};
 
     const BOB: &str = "https://avatars.example.com/u/bob?s={size}";
@@ -837,15 +837,16 @@ mod tests {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);
         let url = "https://avatars.example.com/big/{size}";
-        // The log's slot, and the WHOIS box at 1×, 1.5× and 2× scaling.
-        let sizes = [32, 48, 72, 96];
+        // The log slot at 1×, 1.25×, 1.5×, 2× and 3× scaling.
+        let sizes = [16, 20, 24, 32, 48];
         assert_eq!(
             sizes,
             [
-                super::PIXELS,
-                crate::whois::avatar_pixels(1.),
-                crate::whois::avatar_pixels(1.5),
-                crate::whois::avatar_pixels(2.),
+                super::pixels_for(super::SLOT, 1.),
+                super::pixels_for(super::SLOT, 1.25),
+                super::pixels_for(super::SLOT, 1.5),
+                super::pixels_for(super::SLOT, 2.),
+                super::pixels_for(super::SLOT, 3.),
             ]
         );
         let shown = widths(&chat, cx, url, &sizes);
@@ -872,6 +873,19 @@ mod tests {
         assert_eq!(widths(&chat, cx, url, &[96]), [Some(96)]);
         assert_eq!(fetcher.calls().len(), 2);
         chat.read_with(cx, |chat, _| assert_eq!(chat.avatars.originals().1, 0));
+    }
+
+    #[test]
+    fn thumbnail_pixels_follow_the_scale_factor_rounded_up() {
+        assert_eq!(pixels_for(SLOT, 1.), 16);
+        assert_eq!(pixels_for(SLOT, 1.25), 20);
+        assert_eq!(pixels_for(SLOT, 1.5), 24);
+        assert_eq!(pixels_for(SLOT, 2.), 32);
+        assert_eq!(pixels_for(SLOT, 3.), 48);
+        assert_eq!(pixels_for(SLOT, 1.01), 17);
+        assert_eq!(pixels_for(SLOT * 2., 1.5), 48);
+        // Never below 1×.
+        assert_eq!(pixels_for(SLOT, 0.5), 16);
     }
 
     #[test]
@@ -994,7 +1008,7 @@ mod tests {
         chat.update(cx, |chat, cx| {
             for n in 0..10 {
                 chat.avatars
-                    .lookup(&format!("https://avatars.example.com/n/{n}"), super::PIXELS);
+                    .lookup(&format!("https://avatars.example.com/n/{n}"), 32);
                 let url = format!("https://images.example.com/{n}.png");
                 chat.previews.lookup(
                     &cayenchat_app::links::find(&url),
@@ -1164,9 +1178,9 @@ mod tests {
         // Bob, carol, "me" and dave (failed) at least; one per look.
         assert!((1..=512).contains(&made), "{made}");
         chat.read_with(cx, |chat, _| {
-            let bob = chat.avatars.default_for("bob");
+            let bob = chat.avatars.default_sized("bob", 32);
             assert!(
-                Arc::ptr_eq(&bob, &chat.avatars.default_for("bob")),
+                Arc::ptr_eq(&bob, &chat.avatars.default_sized("bob", 32)),
                 "shared"
             );
         });
