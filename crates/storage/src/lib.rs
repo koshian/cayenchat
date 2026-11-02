@@ -314,6 +314,9 @@ pub enum TextEncoding {
     #[default]
     Utf8,
     Iso2022Jp,
+    /// ISO-2022-JP that keeps half-width katakana (`ESC ( I`) instead of
+    /// turning them into full-width ones, as Perl's `7bit-jis` does.
+    SevenBitJis,
     ShiftJis,
     EucJp,
     EucKr,
@@ -474,9 +477,10 @@ impl TextEncoding {
     /// Every supported character encoding in the order the server settings
     /// list them. The server settings, `/charset` and its help all read this
     /// one list.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Utf8,
         Self::Iso2022Jp,
+        Self::SevenBitJis,
         Self::ShiftJis,
         Self::EucJp,
         Self::EucKr,
@@ -493,11 +497,13 @@ impl TextEncoding {
     ];
 
     /// The canonical name, which is also a WHATWG label `encoding_rs`
-    /// understands.
+    /// understands, except `7bit-jis`: the encoding layer
+    /// (`irc_proto::charsets::Charset::for_label`) resolves that one itself.
     pub fn label(self) -> &'static str {
         match self {
             Self::Utf8 => "UTF-8",
             Self::Iso2022Jp => "ISO-2022-JP",
+            Self::SevenBitJis => "7bit-jis",
             Self::ShiftJis => "Shift_JIS",
             Self::EucJp => "EUC-JP",
             Self::EucKr => "EUC-KR",
@@ -520,6 +526,7 @@ impl TextEncoding {
         match self {
             Self::Utf8 => &[],
             Self::Iso2022Jp => &[],
+            Self::SevenBitJis => &[],
             Self::ShiftJis => &["sjis", "windows-31j", "cp932"],
             Self::EucJp => &[],
             Self::EucKr => &["cp949", "windows-949", "uhc"],
@@ -2251,8 +2258,12 @@ mod tests {
         let mut labels: Vec<_> = TextEncoding::ALL.map(TextEncoding::label).to_vec();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels.len(), 15);
+        assert_eq!(labels.len(), 16);
+        assert_eq!(TextEncoding::ALL[2], TextEncoding::SevenBitJis);
+        assert_eq!(TextEncoding::SevenBitJis.label(), "7bit-jis");
         for (name, expected) in [
+            ("7BIT-JIS", TextEncoding::SevenBitJis),
+            ("7bit_jis", TextEncoding::SevenBitJis),
             ("shift-jis", TextEncoding::ShiftJis),
             ("sjis", TextEncoding::ShiftJis),
             ("CP949", TextEncoding::EucKr),

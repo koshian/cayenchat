@@ -16,7 +16,7 @@ use std::{
 
 use cayenchat_model::names::CaseMapping;
 use encoding_rs::Encoding;
-use irc::proto::charsets::{BodyCharsets, Pin};
+use irc::proto::charsets::{BodyCharsets, Charset, Pin};
 
 use crate::valid_channel;
 
@@ -50,11 +50,15 @@ pub struct ChannelEncoding {
     pub char_refs: Option<CharRefMode>,
 }
 
-/// An encoding `encoding_rs` can both read and write, by its label.
-pub(crate) fn resolve(label: &str) -> Result<&'static Encoding, String> {
-    Encoding::for_label(label.as_bytes())
-        .filter(|encoding| encoding.output_encoding() == *encoding)
-        .ok_or_else(|| format!("Unsupported character encoding: {label}"))
+/// An encoding `encoding_rs` can both read and write, or `7bit-jis`, by its
+/// label (the one resolution the line codec shares).
+pub(crate) fn resolve(label: &str) -> Result<Charset, String> {
+    Charset::for_label(label).ok_or_else(|| format!("Unsupported character encoding: {label}"))
+}
+
+/// [`resolve`] for the side that decodes, which has no katakana policy.
+fn decode_side(label: &str) -> Result<&'static Encoding, String> {
+    resolve(label).map(|charset| charset.encoding)
 }
 
 /// `text` with each character ISO-2022-JP cannot hold written as a decimal
@@ -110,7 +114,7 @@ pub(crate) fn apply_char_refs(text: &mut String, display_text: &mut String) {
 struct Entry {
     channel: String,
     decode: Option<&'static Encoding>,
-    encode: Option<&'static Encoding>,
+    encode: Option<Charset>,
     char_refs: Option<CharRefMode>,
 }
 
@@ -144,7 +148,7 @@ pub(crate) struct ChannelCharsets {
     /// The encoding fixed for each queued line until the codec writes it,
     /// oldest first, so a change made while a message waits cannot alter
     /// what was checked when it was accepted.
-    pins: Mutex<HashMap<String, VecDeque<Option<&'static Encoding>>>>,
+    pins: Mutex<HashMap<String, VecDeque<Option<Charset>>>>,
     /// How many pins `pins` holds, so the codec does not take its lock for
     /// a line when there are none.
     pinned: AtomicUsize,
@@ -167,7 +171,7 @@ impl ChannelCharsets {
             if !valid_channel(&entry.channel) {
                 return Err(format!("Invalid channel name: {}", entry.channel));
             }
-            let decode = entry.decode.as_deref().map(resolve).transpose()?;
+            let decode = entry.decode.as_deref().map(decode_side).transpose()?;
             let encode = entry.encode.as_deref().map(resolve).transpose()?;
             kept.retain(|other| other.channel != entry.channel);
             if decode.is_some() || encode.is_some() || entry.char_refs.is_some() {
@@ -206,7 +210,7 @@ impl ChannelCharsets {
 
     /// Fixes the encoding of the text of `line`, which is about to be queued
     /// for the codec, until the codec writes it.
-    pub(crate) fn pin(&self, line: &str, encoding: Option<&'static Encoding>) {
+    pub(crate) fn pin(&self, line: &str, encoding: Option<Charset>) {
         if let Ok(mut pins) = self.pins.lock() {
             pins.entry(line.to_owned()).or_default().push_back(encoding);
             self.pinned.fetch_add(1, Ordering::Relaxed);
@@ -219,7 +223,7 @@ impl ChannelCharsets {
     }
 
     /// The oldest pin of `line`, or the newest with `newest`.
-    fn take(&self, line: &str, newest: bool) -> Option<Option<&'static Encoding>> {
+    fn take(&self, line: &str, newest: bool) -> Option<Option<Charset>> {
         let mut pins = self.pins.lock().ok()?;
         let queue = pins.get_mut(line)?;
         let pin = if newest {
@@ -246,13 +250,13 @@ impl ChannelCharsets {
         if !valid_channel(channel) {
             return Err(format!("Invalid channel name: {channel}"));
         }
-        let decode = decode.map(resolve).transpose()?;
+        let decode = decode.map(decode_side).transpose()?;
         let encode = encode.map(resolve).transpose()?;
         let Ok(mut state) = self.state.write() else {
             return Err("Character encodings are unavailable.".into());
         };
         if state.utf8_only
-            && [decode, encode]
+            && [decode, encode.map(|charset| charset.encoding)]
                 .into_iter()
                 .flatten()
                 .any(|encoding| encoding != encoding_rs::UTF_8)
@@ -302,7 +306,7 @@ impl ChannelCharsets {
         let was = state.utf8_only;
         state.utf8_only = true;
         !was && state.entries.iter().any(|entry| {
-            [entry.decode, entry.encode]
+            [entry.decode, entry.encode.map(|charset| charset.encoding)]
                 .into_iter()
                 .flatten()
                 .any(|encoding| encoding != encoding_rs::UTF_8)
@@ -315,7 +319,7 @@ impl ChannelCharsets {
         let waiting = self.pins.lock().map_or(0, |pins| {
             pins.values()
                 .flatten()
-                .filter(|pin| pin.is_some_and(|encoding| encoding != encoding_rs::UTF_8))
+                .filter(|pin| pin.is_some_and(|charset| charset.encoding != encoding_rs::UTF_8))
                 .count()
         });
         waiting + self.skipped.load(Ordering::Relaxed)
@@ -343,7 +347,9 @@ impl BodyCharsets for ChannelCharsets {
         let encoding = self.take(line, false)?;
         // A pin keeps what the user set, not what the server allows: a line
         // checked for another encoding before `UTF8ONLY` is not written.
-        if self.utf8_only() && encoding.is_some_and(|encoding| encoding != encoding_rs::UTF_8) {
+        if self.utf8_only()
+            && encoding.is_some_and(|charset| charset.encoding != encoding_rs::UTF_8)
+        {
             self.skipped.fetch_add(1, Ordering::Relaxed);
             return Some(Pin::Skip);
         }
@@ -355,9 +361,12 @@ impl BodyCharsets for ChannelCharsets {
         state.allowed(state.find(target)?.decode)
     }
 
-    fn encoder(&self, target: &str) -> Option<&'static Encoding> {
+    fn encoder(&self, target: &str) -> Option<Charset> {
         let state = self.state.read().ok()?;
-        state.allowed(state.find(target)?.encode)
+        state
+            .find(target)?
+            .encode
+            .filter(|charset| state.allowed(Some(charset.encoding)).is_some())
     }
 }
 
@@ -466,14 +475,14 @@ mod tests {
     fn a_pin_outlives_changes_and_is_taken_once_in_order() {
         let charsets = one("#a", None, Some("GBK"));
         let line = "PRIVMSG #a :x\r\n";
-        charsets.pin(line, Some(encoding_rs::BIG5));
+        charsets.pin(line, Some(plain(encoding_rs::BIG5)));
         charsets.pin(line, None);
         charsets.set("#a", None, None, None).unwrap();
         assert!(!charsets.is_empty());
         assert_eq!(charsets.take_pin("PRIVMSG #b :x\r\n"), None);
         assert_eq!(
             charsets.take_pin(line),
-            Some(Pin::Encoding(Some(encoding_rs::BIG5)))
+            Some(Pin::Encoding(Some(plain(encoding_rs::BIG5))))
         );
         charsets.unpin(line);
         assert_eq!(charsets.take_pin(line), None);
@@ -484,8 +493,8 @@ mod tests {
     fn utf8_only_keeps_a_pinned_legacy_line_from_being_written() {
         let charsets = one("#a", None, Some("Shift_JIS"));
         let line = "PRIVMSG #a :x\r\n";
-        charsets.pin(line, Some(encoding_rs::SHIFT_JIS));
-        charsets.pin(line, Some(encoding_rs::UTF_8));
+        charsets.pin(line, Some(plain(encoding_rs::SHIFT_JIS)));
+        charsets.pin(line, Some(plain(encoding_rs::UTF_8)));
         charsets.pin(line, None);
         charsets.set_utf8_only();
         assert_eq!(charsets.unsent_for_utf8_only(), 1);
@@ -493,9 +502,55 @@ mod tests {
         assert_eq!(charsets.unsent_for_utf8_only(), 1);
         assert_eq!(
             charsets.take_pin(line),
-            Some(Pin::Encoding(Some(encoding_rs::UTF_8)))
+            Some(Pin::Encoding(Some(plain(encoding_rs::UTF_8))))
         );
         assert_eq!(charsets.take_pin(line), Some(Pin::Encoding(None)));
+    }
+
+    fn plain(encoding: &'static Encoding) -> Charset {
+        Charset::plain(encoding)
+    }
+
+    fn seven_bit_jis() -> Charset {
+        resolve("7bit-jis").unwrap()
+    }
+
+    #[test]
+    fn seven_bit_jis_is_a_flag_of_the_channel_that_sets_it() {
+        let charsets = one("#a", None, Some("7bit-jis"));
+        assert_eq!(charsets.encoder("#a"), Some(seven_bit_jis()));
+        assert!(charsets.encoder("#a").unwrap().is_iso_2022_jp());
+        assert_eq!(charsets.encoder("#b"), None);
+        // Decoding is ISO-2022-JP's own.
+        let charsets = one("#a", Some("7bit-jis"), None);
+        assert_eq!(charsets.decoder("#a"), Some(encoding_rs::ISO_2022_JP));
+        // ISO-2022-JP keeps folding.
+        let charsets = one("#a", None, Some("ISO-2022-JP"));
+        assert_eq!(
+            charsets.encoder("#a"),
+            Some(plain(encoding_rs::ISO_2022_JP))
+        );
+        // Not offered under UTF8ONLY.
+        let charsets = one("#a", None, Some("7bit-jis"));
+        charsets.set_utf8_only();
+        assert_eq!(charsets.encoder("#a"), None);
+        assert!(charsets.set("#b", None, Some("7bit-jis"), None).is_err());
+    }
+
+    #[test]
+    fn a_pin_keeps_the_policy_it_was_accepted_with() {
+        let charsets = one("#a", None, Some("7bit-jis"));
+        let line = "PRIVMSG #a :ｱ\r\n";
+        charsets.pin(line, charsets.encoder("#a"));
+        charsets.set("#a", None, Some("ISO-2022-JP"), None).unwrap();
+        assert_eq!(
+            charsets.take_pin(line),
+            Some(Pin::Encoding(Some(seven_bit_jis())))
+        );
+        assert_eq!(
+            charsets.encoder("#a"),
+            Some(plain(encoding_rs::ISO_2022_JP))
+        );
     }
 
     #[test]
@@ -503,7 +558,7 @@ mod tests {
         let charsets = one("#a", Some("Big5"), Some("Big5"));
         charsets.set("#A", None, Some("GBK"), None).unwrap();
         assert_eq!(charsets.decoder("#a"), None);
-        assert_eq!(charsets.encoder("#a"), Some(encoding_rs::GBK));
+        assert_eq!(charsets.encoder("#a"), Some(plain(encoding_rs::GBK)));
         charsets.set("#a", None, None, None).unwrap();
         assert!(charsets.is_empty());
         assert!(charsets.set("#a", Some("nope"), None, None).is_err());
@@ -518,7 +573,7 @@ mod tests {
         // Announced again, or nothing to switch off: nothing to report.
         assert!(!charsets.set_utf8_only());
         assert_eq!(charsets.decoder("#a"), None);
-        assert_eq!(charsets.encoder("#a"), Some(encoding_rs::UTF_8));
+        assert_eq!(charsets.encoder("#a"), Some(plain(encoding_rs::UTF_8)));
         assert!(charsets.set("#b", Some("GBK"), None, None).is_err());
         assert!(charsets.set("#b", Some("UTF-8"), None, None).is_ok());
         // Numeric references are ASCII text in UTF-8: still allowed.

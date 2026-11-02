@@ -63,7 +63,7 @@ use irc::{
     },
     proto::{
         Command as IrcCommand, Message as IrcMessage, Prefix, Response,
-        charsets::{BodyCharsets, Fixed, encode_line},
+        charsets::{BodyCharsets, Charset, Fixed, encode_line},
         mode::{ChannelMode, Mode},
     },
 };
@@ -611,10 +611,10 @@ fn encode_strict<'a, 'w>(
     wire: impl Into<Wire<'w>>,
 ) -> Result<std::borrow::Cow<'a, [u8]>, String> {
     let wire = wire.into();
-    let encoding = charsets::resolve(wire.label)?;
-    let (bytes, unmappable) = encode_line(text, encoding, wire.charsets);
+    let charset = charsets::resolve(wire.label)?;
+    let (bytes, unmappable) = encode_line(text, charset, wire.charsets);
     if let Some(failed) = unmappable {
-        let name = if failed == encoding {
+        let name = if failed == charset.encoding {
             wire.label
         } else {
             failed.name()
@@ -1740,7 +1740,7 @@ enum Outgoing {
         /// the message (`None`: the server's), so the checks of the worker
         /// and the bytes the codec writes agree with the one that accepted
         /// it even if the channel's setting changes meanwhile.
-        encoder: Option<&'static encoding_rs::Encoding>,
+        encoder: Option<Charset>,
     },
     Raw(IrcMessage),
     /// Messages (all `Outgoing::Message`) from a multi-line paste; the worker
@@ -2294,8 +2294,11 @@ impl Connection {
             *encoder = self.charsets.encoder(target);
             // Converted here, after the encoding is fixed, so what is
             // checked, shown and written is the same text in that encoding.
-            let sent_as_iso2022jp = encoder.or_else(|| charsets::resolve(&self.encoding).ok())
-                == Some(encoding_rs::ISO_2022_JP);
+            // `7bit-jis` is ISO-2022-JP here too: only half-width katakana
+            // differ, and they are never referred to.
+            let sent_as_iso2022jp = encoder
+                .or_else(|| charsets::resolve(&self.encoding).ok())
+                .is_some_and(Charset::is_iso_2022_jp);
             let wanted = match self.charsets.char_refs(target).unwrap_or(self.char_refs) {
                 CharRefMode::Auto => sent_as_iso2022jp,
                 CharRefMode::Iso2022Jp => true,
@@ -3465,7 +3468,7 @@ impl Worker {
         text: String,
         display_text: String,
         notice: bool,
-        encoder: Option<&'static encoding_rs::Encoding>,
+        encoder: Option<Charset>,
     ) -> Flow {
         // With echo-message the local line is confirmed by
         // the server's echo; a label (labeled-response)
@@ -3508,7 +3511,7 @@ impl Worker {
         let written = irc::proto::IrcCodec::sanitize(message.to_string());
         // The handle accepted the message before `UTF8ONLY` was known.
         let refused = (self.charsets.utf8_only()
-            && encoder.is_some_and(|encoding| encoding != encoding_rs::UTF_8))
+            && encoder.is_some_and(|charset| charset.encoding != encoding_rs::UTF_8))
         .then(|| {
             "the server requires UTF-8 (UTF8ONLY); the message was accepted in another character encoding"
                 .to_owned()
