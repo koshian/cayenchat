@@ -330,3 +330,55 @@ fn a_folded_server_heading_shows_a_mention_under_it(cx: &mut TestAppContext) {
         assert!(marks.unread && marks.highlighted);
     });
 }
+
+#[gpui::test]
+fn the_heading_shortcuts_fold_what_the_mouse_folds(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("channel-order.json");
+    let (one, two) = (cayenchat_model::NetworkId(1), cayenchat_model::NetworkId(2));
+    chat.update_in(cx, |chat, _, cx| {
+        chat.order_file = Some(file.clone());
+        let group = chat.state.create_group("daily").unwrap();
+        let c = chat.state.channel_id(two, "#c").unwrap();
+        chat.state.move_to_group(c, group, None);
+        // A channel in a group: the group is the heading.
+        chat.state.dispatch(Command::SelectChannel(c));
+        assert_eq!(chat.selected_heading(), Some(Parent::Group(group)));
+        chat.toggle_selected_heading(cx);
+        assert!(chat.state.group(group).unwrap().collapsed);
+        assert!(!chat.server_collapsed(two));
+        // The selection stays on the channel inside the folded group.
+        assert_eq!(chat.state.selection(), Selection::Channel(c));
+        chat.toggle_selected_heading(cx);
+        assert!(!chat.state.group(group).unwrap().collapsed);
+        // A channel directly under a server: that server.
+        let a = chat.state.channel_id(one, "#a").unwrap();
+        chat.state.dispatch(Command::SelectChannel(a));
+        assert_eq!(chat.selected_heading(), Some(Parent::Server(one)));
+        chat.toggle_selected_heading(cx);
+        assert!(chat.server_collapsed(one) && !chat.server_collapsed(two));
+        assert_eq!(chat.state.selection(), Selection::Channel(a));
+        chat.toggle_selected_heading(cx);
+        assert!(!chat.server_collapsed(one));
+        // The server itself.
+        chat.state.dispatch(Command::SelectServer(two));
+        assert_eq!(chat.selected_heading(), Some(Parent::Server(two)));
+        chat.toggle_selected_heading(cx);
+        assert!(chat.server_collapsed(two));
+        chat.toggle_selected_heading(cx);
+        // Fold all, then open all; both are saved.
+        chat.set_all_headings_collapsed(true, cx);
+        assert!(chat.server_collapsed(one) && chat.server_collapsed(two));
+        assert!(chat.state.group(group).unwrap().collapsed);
+        assert_eq!(chat.state.selection(), Selection::Server(two));
+        let saved = cayenchat_storage::order::load_orders_from(&file);
+        assert_eq!(saved.collapsed_servers.len(), 2);
+        assert!(saved.groups[0].collapsed);
+        chat.set_all_headings_collapsed(false, cx);
+        assert!(!chat.server_collapsed(one) && !chat.server_collapsed(two));
+        assert!(!chat.state.group(group).unwrap().collapsed);
+        let saved = cayenchat_storage::order::load_orders_from(&file);
+        assert!(saved.collapsed_servers.is_empty() && !saved.groups[0].collapsed);
+    });
+}
