@@ -203,7 +203,20 @@ enum JisState {
 /// there is nothing to rewrite.
 fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
     const ESC: u8 = 0x1b;
-    if !bytes.iter().any(|byte| (0xa1..=0xdf).contains(byte)) {
+    const SO: u8 = 0x0e;
+    const SI: u8 = 0x0f;
+    // Two escapes with nothing between them are an error in the decoder, so a
+    // switch to katakana drops a switch back to ASCII or Roman just before it.
+    fn open_katakana(out: &mut Vec<u8>) {
+        if out.ends_with(b"\x1b(B") || out.ends_with(b"\x1b(J") {
+            out.truncate(out.len() - 3);
+        }
+        out.extend_from_slice(b"\x1b(I");
+    }
+    if !bytes
+        .iter()
+        .any(|byte| (0xa1..=0xdf).contains(byte) || matches!(*byte, SO | SI))
+    {
         return Cow::Borrowed(bytes);
     }
     let mut out = Vec::with_capacity(bytes.len() + 8);
@@ -226,14 +239,50 @@ fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
                 continue;
             }
         }
+        let restore = if state == JisState::Roman { b'J' } else { b'B' };
         if matches!(state, JisState::Ascii | JisState::Roman) && (0xa1..=0xdf).contains(&byte) {
-            out.extend_from_slice(&[ESC, b'(', b'I']);
+            open_katakana(&mut out);
             while let Some(&raw) = bytes.get(at).filter(|raw| (0xa1..=0xdf).contains(*raw)) {
                 out.push(raw & 0x7f);
                 at += 1;
             }
-            let restore = if state == JisState::Roman { b'J' } else { b'B' };
             out.extend_from_slice(&[ESC, b'(', restore]);
+            continue;
+        }
+        if matches!(state, JisState::Ascii | JisState::Roman) && byte == SI {
+            at += 1;
+            continue;
+        }
+        if matches!(state, JisState::Ascii | JisState::Roman) && byte == SO {
+            // A shifted section: katakana as raw or designated bytes, up to SI,
+            // an ESC, or the end. Other bytes pass through, outside ESC ( I.
+            at += 1;
+            let mut open = false;
+            while let Some(&inner) = bytes.get(at) {
+                if inner == SI || inner == ESC {
+                    break;
+                }
+                at += 1;
+                if (0xa1..=0xdf).contains(&inner) || (0x21..=0x5f).contains(&inner) {
+                    if !open {
+                        open_katakana(&mut out);
+                        open = true;
+                    }
+                    out.push(inner & 0x7f);
+                } else {
+                    if open {
+                        out.extend_from_slice(&[ESC, b'(', restore]);
+                        open = false;
+                    }
+                    out.push(inner);
+                }
+            }
+            if open && bytes.get(at) != Some(&ESC) && at < bytes.len() {
+                out.extend_from_slice(&[ESC, b'(', restore]);
+            }
+            if bytes.get(at) == Some(&SI) {
+                at += 1;
+            }
             continue;
         }
         out.push(byte);
@@ -591,6 +640,49 @@ mod tests {
             decode_line(&wire, encoding_rs::UTF_8, Some(&Fixed)),
             "PRIVMSG #jp :\u{ff89}\u{ff7c}"
         );
+    }
+
+    #[test]
+    fn shifted_katakana_between_so_and_si() {
+        let ino = "\u{ff89}\u{ff7c}";
+        // LimeChat's wire form, raw bytes; and the designated form.
+        let mut wire = b"PRIVMSG #a :".to_vec();
+        wire.extend_from_slice(b"\x0e\xc9\xbc\x0f");
+        assert_eq!(jis(&wire), format!("PRIVMSG #a :{ino}"));
+        assert_eq!(decode_line(&wire, encoding_rs::ISO_2022_JP, Some(&Fixed)), format!("PRIVMSG #a :{ino}"));
+        assert_eq!(jis(b"\x0e\x49\x3c\x0f"), ino);
+        assert_eq!(jis(b"a\x0e\x49\x3c\x0fb"), format!("a{ino}b"));
+        // No SI: up to the end of the line.
+        assert_eq!(jis(b"\x0e\xc9\xbc"), ino);
+        assert_eq!(jis(b"\x0e\xc9\xbc\r\n"), format!("{ino}\r\n"));
+        // An SI alone is consumed.
+        assert_eq!(jis(b"a\x0fb"), "ab");
+        // Bytes outside the katakana range pass through.
+        assert_eq!(jis(b"\x0e\xc9 \xbc\x0f"), "\u{ff89} \u{ff7c}");
+        // Roman state before and after.
+        assert_eq!(jis(b"\x1b(J~\x0e\xc9\xbc\x0f~"), format!("\u{203e}{ino}\u{203e}"));
+        // An ESC ends the section and is handled as usual.
+        assert_eq!(jis(b"\x0e\xc9\x1b$B$3\x1b(B"), "\u{ff89}\u{3053}");
+        // Raw runs and shifted sections on one line.
+        assert_eq!(jis(b"\xc9\x0e\xbc\x0f\xc9"), "\u{ff89}\u{ff7c}\u{ff89}");
+    }
+
+    #[test]
+    fn so_and_si_inside_a_designation_are_unchanged() {
+        for bytes in [&b"\x1b$B\x0e$3\x0f\x1b(B"[..], b"\x1b(I\x0e1\x0f\x1b(B"] {
+            assert_eq!(jis(bytes), plain(bytes), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn other_encodings_keep_so_and_si() {
+        for encoding in [encoding_rs::UTF_8, encoding_rs::SHIFT_JIS] {
+            let bytes = b"\x0e\x49\x3c\x0f";
+            assert_eq!(
+                decode_line(bytes, encoding, None),
+                encoding.decode_without_bom_handling(bytes).0
+            );
+        }
     }
 
     #[test]
