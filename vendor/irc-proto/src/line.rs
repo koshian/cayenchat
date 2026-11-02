@@ -3,8 +3,6 @@
 use std::io;
 
 use bytes::BytesMut;
-#[cfg(feature = "encoding")]
-use encoding_rs::Encoding;
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::error;
@@ -18,7 +16,7 @@ pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// A line-based codec parameterized by an encoding.
 pub struct LineCodec {
     #[cfg(feature = "encoding")]
-    encoding: &'static Encoding,
+    encoding: crate::charsets::Charset,
     /// Other encodings for the text of messages to some targets.
     #[cfg(feature = "encoding")]
     charsets: Option<std::sync::Arc<dyn crate::charsets::BodyCharsets>>,
@@ -32,9 +30,7 @@ impl LineCodec {
     pub fn new(label: &str) -> error::Result<LineCodec> {
         Ok(LineCodec {
             #[cfg(feature = "encoding")]
-            encoding: match Encoding::for_label(label.as_bytes())
-                .filter(|encoding| encoding.output_encoding() == *encoding)
-            {
+            encoding: match crate::charsets::Charset::for_label(label) {
                 Some(x) => x,
                 None => {
                     return Err(error::ProtocolError::Io(io::Error::new(
@@ -87,7 +83,7 @@ impl Decoder for LineCodec {
                 // become U+FFFD, as with the replacing decoder before.
                 Ok(Some(crate::charsets::decode_line(
                     line.as_ref(),
-                    self.encoding,
+                    self.encoding.encoding,
                     self.charsets.as_deref(),
                 )))
             }
@@ -248,8 +244,8 @@ mod tests {
                 None
             }
             // What the setting has become since the line was queued.
-            fn encoder(&self, _: &str) -> Option<&'static encoding_rs::Encoding> {
-                Some(encoding_rs::UTF_8)
+            fn encoder(&self, _: &str) -> Option<crate::charsets::Charset> {
+                Some(crate::charsets::Charset::plain(encoding_rs::UTF_8))
             }
             fn take_pin(&self, _: &str) -> Option<crate::charsets::Pin> {
                 self.0.lock().unwrap().take()
@@ -258,7 +254,7 @@ mod tests {
 
         use crate::charsets::Pin;
         let pins = Arc::new(Pinned(Mutex::new(Some(Pin::Encoding(Some(
-            encoding_rs::SHIFT_JIS,
+            crate::charsets::Charset::plain(encoding_rs::SHIFT_JIS),
         ))))));
         let mut codec = LineCodec::new("utf-8").unwrap().with_charsets(Some(pins));
         let mut dst = BytesMut::new();

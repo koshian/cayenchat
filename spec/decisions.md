@@ -2281,8 +2281,8 @@ page. There is no re-decoding of lines already shown.
   the default mapping equates (`#a[` / `#a{` under `ascii`) stay separate.
 - **UTF8ONLY.** After `005 UTF8ONLY`, only UTF-8 overrides apply and `/charset`
   refuses others; a legacy server encoding still ends the connection.
-- **One list.** `TextEncoding::ALL` (15 encodings: UTF-8, ISO-2022-JP,
-  Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
+- **One list.** `TextEncoding::ALL` (16 encodings: UTF-8, ISO-2022-JP,
+  7bit-jis (D083), Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
   x-mac-cyrillic, Windows-1254, Windows-1252, GBK, Big5) feeds the server
   settings, `/charset` and its help. Aliases (`CP949`, `Windows-949`, `CP866`,
   `MacCyrillic`, …) are input names only and map to the canonical one; an
@@ -3610,3 +3610,32 @@ the start of the session.
   256 px a side, so even noise stays around 200 KB, well inside the avatar
   fetch limit (`Limits::avatar`, 2 MiB); two formats were not worth it.
 - **Unchanged.** Display-side thumbnails and chat image uploads.
+
+## D083 — `7bit-jis`: ISO-2022-JP that keeps half-width katakana (#913)
+
+- **Decision.** `TextEncoding::SevenBitJis` (label `7bit-jis`, after
+  ISO-2022-JP in `ALL`, so 16 encodings) is a send policy of ISO-2022-JP. The
+  encoder of `encoding_rs` (WHATWG) turns half-width katakana (U+FF61–U+FF9F)
+  into full-width ones; `7bit-jis` writes them as they are, each run as
+  `ESC ( I`, one byte per character (code point − 0xFF61 + 0x21) and
+  `ESC ( B`, as Perl's `Encode` does (`iso-2022-jp` folds, `7bit-jis` does not).
+  The default stays `ISO-2022-JP` (folding). Decoding is ISO-2022-JP's own.
+- **One resolution.** `irc_proto::charsets::Charset { encoding, keep_kana }`
+  and `Charset::for_label` resolve a label for `LineCodec::new` and for
+  `irc-core` (`charsets::resolve`). `ChannelCharsets` entries, `Pin`, `Fixed`
+  and `BodyCharsets::encoder` carry the `Charset`, so a queued line is written
+  with the policy it was accepted with, and `encode_strict` checks the same
+  bytes that are written.
+- **Only the text.** `encode_line` applies it to the text of a `PRIVMSG` or
+  `NOTICE`, also when the whole connection is `7bit-jis`; the rest of the line
+  (target, tags, other commands such as `TOPIC`) is encoded as plain
+  ISO-2022-JP. A run's closing `ESC ( B` is left out where the next run starts
+  with an escape, because the WHATWG decoder treats two escape sequences with
+  nothing between them as an error.
+- **Character references.** `Auto` counts `7bit-jis` as ISO-2022-JP; the
+  characters to refer to are chosen as before (half-width katakana can be
+  written, so they are not referred to). KVIrc's mark is not carried either
+  (`carries_mark`).
+- **Effect.** Half-width katakana round-trip, so echo matching by text no
+  longer misses them. Not changed: the default, lenient decoding (#911),
+  generalizing echo matching, and commands other than `PRIVMSG`/`NOTICE`.
