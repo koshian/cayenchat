@@ -155,6 +155,12 @@ struct NickCompletion {
     index: usize,
 }
 
+/// How much taller than the standard 20px line a text of `font_size` px
+/// makes the field (the line is 1.4 times the size, 20px at least).
+pub fn extra_line_height(font_size: f32) -> f32 {
+    (font_size * 1.4).max(20.) - 20.
+}
+
 pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -184,6 +190,8 @@ pub struct TextInput {
     native_settings_style: bool,
     /// Draws a frame around the field (the dialog's fields).
     bordered: bool,
+    /// The text size the pane asks for (px); `None` keeps the standard 13.
+    font_size: Option<f32>,
     /// A wrapped, vertically scrolling text of several lines; Enter is
     /// bound to a line break by the window that hosts it.
     multiline: bool,
@@ -1779,7 +1787,7 @@ impl Render for TextInput {
             .then(|| crate::settings_theme::current(cx))
             .flatten();
         let focused = native.is_some() && self.focus_handle.is_focused(window);
-        let font_size = native.map_or(13., |n| n.input.font.size);
+        let font_size = native.map_or(self.font_size.unwrap_or(13.), |n| n.input.font.size);
         let line_height = (font_size * 1.4).max(20.);
         // The menu is outside the field, which clips what it draws.
         div()
@@ -1861,7 +1869,9 @@ impl Render for TextInput {
                             .h(px(if self.multiline {
                                 line_height * self.rows as f32 + 10.
                             } else {
-                                native.map_or(28., |n| n.input.min_height.max(line_height + 10.))
+                                native.map_or(28. + extra_line_height(font_size), |n| {
+                                    n.input.min_height.max(line_height + 10.)
+                                })
                             }))
                             .w_full()
                             .p(px(4.))
@@ -1915,6 +1925,7 @@ impl TextInput {
             prefers_direct_input: false,
             native_settings_style: false,
             bordered: false,
+            font_size: None,
             multiline: false,
             line_quote: None,
             rows: 1,
@@ -1968,6 +1979,11 @@ impl TextInput {
     }
 
     /// A field with a frame, so that it reads as an input.
+    /// Sets the text size (px) the pane asks for; `None` is the standard.
+    pub fn set_font_size(&mut self, size: Option<f32>) {
+        self.font_size = size;
+    }
+
     pub fn bordered(mut self) -> Self {
         self.bordered = true;
         self

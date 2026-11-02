@@ -673,6 +673,16 @@ pub struct Appearance {
     pub channel_tree_font: String,
     pub input_font: String,
     pub time_font: String,
+    /// Font sizes in px for the same six areas; 0 is the standard size.
+    /// Added after version 15 without a version change; files without them
+    /// read as standard. Clamped to [`MIN_FONT_SIZE`]..=[`MAX_FONT_SIZE`] on
+    /// load.
+    pub channel_log_font_size: u16,
+    pub combined_log_font_size: u16,
+    pub member_list_font_size: u16,
+    pub channel_tree_font_size: u16,
+    pub input_font_size: u16,
+    pub time_font_size: u16,
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
@@ -695,6 +705,20 @@ const HOVER_POPUP_TEXT_COLOR: &str = "#E3E6EA";
 /// would be hard to read.
 pub const MIN_URL_TOOLTIP_OPACITY: u8 = 20;
 pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
+
+/// Range of a pane font size in px. 0 means "standard size" and is kept as
+/// is; any other value is clamped into the range on load and on use.
+pub const MIN_FONT_SIZE: u16 = 8;
+pub const MAX_FONT_SIZE: u16 = 40;
+
+/// Clamps a saved pane font size; 0 (standard) stays 0.
+pub fn clamp_font_size(size: u16) -> u16 {
+    if size == 0 {
+        0
+    } else {
+        size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -771,6 +795,12 @@ impl Default for Appearance {
             channel_tree_font: String::new(),
             input_font: String::new(),
             time_font: String::new(),
+            channel_log_font_size: 0,
+            combined_log_font_size: 0,
+            member_list_font_size: 0,
+            channel_tree_font_size: 0,
+            input_font_size: 0,
+            time_font_size: 0,
             dark: DarkColors::default(),
             saved_colors: Vec::new(),
         }
@@ -814,6 +844,21 @@ impl Appearance {
         }
         kept.truncate(MAX_SAVED_COLORS);
         self.saved_colors = kept;
+    }
+
+    /// Clamps every pane font size so a hand-edited file cannot ask for an
+    /// unusable one.
+    fn clamp_font_sizes(&mut self) {
+        for size in [
+            &mut self.channel_log_font_size,
+            &mut self.combined_log_font_size,
+            &mut self.member_list_font_size,
+            &mut self.channel_tree_font_size,
+            &mut self.input_font_size,
+            &mut self.time_font_size,
+        ] {
+            *size = clamp_font_size(*size);
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -1727,6 +1772,7 @@ impl Settings {
 
     fn normalize(mut self) -> Self {
         self.appearance.clean_palette();
+        self.appearance.clamp_font_sizes();
         let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
@@ -3119,6 +3165,35 @@ mod tests {
             .insert("header_line_messages".into(), true.into());
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
         assert!(loaded.reiwa_mode);
+    }
+
+    #[test]
+    fn font_sizes_are_standard_when_absent_and_clamped_on_load() {
+        let mut saved = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = saved["appearance"].as_object_mut().unwrap();
+        for key in [
+            "channel_log_font_size",
+            "combined_log_font_size",
+            "member_list_font_size",
+            "channel_tree_font_size",
+            "input_font_size",
+            "time_font_size",
+        ] {
+            assert!(appearance.remove(key).is_some());
+        }
+        let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(settings.normalize().appearance, Appearance::default());
+
+        let appearance = saved["appearance"].as_object_mut().unwrap();
+        appearance.insert("channel_log_font_size".into(), 3.into());
+        appearance.insert("input_font_size".into(), 500.into());
+        appearance.insert("time_font_size".into(), 15.into());
+        let settings: Settings = serde_json::from_value(saved).unwrap();
+        let appearance = settings.normalize().appearance;
+        assert_eq!(appearance.channel_log_font_size, MIN_FONT_SIZE);
+        assert_eq!(appearance.input_font_size, MAX_FONT_SIZE);
+        assert_eq!(appearance.time_font_size, 15);
+        assert_eq!(appearance.combined_log_font_size, 0);
     }
 
     #[test]
