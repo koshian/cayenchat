@@ -18,6 +18,17 @@ python3 scripts/screenshots/demo.py readme --language japanese --out assets/scre
 python3 scripts/screenshots/demo.py check
 ```
 
+`--variant no-avatars`（アバターなし）、`reiwa`（令和モード）、`parts`（標準表示に4ペインの名称を付けた図：チャンネルログ・全体ログ・メンバーリスト・チャンネルツリー。ImageMagickの`convert`が必要）で、残りのREADME用画像（`cayenchat-{en,ja}-{noicon,reiwa,parts}.png`）を撮影します。コマンドは上と同様に`--language`と`--out`を指定します：
+
+```sh
+python3 scripts/screenshots/demo.py readme --variant no-avatars --out assets/screenshots/cayenchat-en-noicon.png
+python3 scripts/screenshots/demo.py readme --variant reiwa --out assets/screenshots/cayenchat-en-reiwa.png
+python3 scripts/screenshots/demo.py readme --variant parts --out assets/screenshots/cayenchat-en-parts.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant no-avatars --out assets/screenshots/cayenchat-ja-noicon.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant reiwa --out assets/screenshots/cayenchat-ja-reiwa.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant parts --out assets/screenshots/cayenchat-ja-parts.png
+```
+
 Xvfb上でOpenboxを起動し、1280×800の仮想画面より少し小さいCayenChatを中央に配置します。**タイトルバー・ウィンドウ枠・背景を含む**画像を撮影し、ツールバーが表示されたか検証します。画像の生成情報は`assets/screenshots/provenance.json`に記録します。
 
 必要に応じて`--theme dark`、`--size 幅x高さ`（仮想画面のサイズ）、`--display :N`を指定できます。Linuxの画像はREADME用で、ストア提出用には使いません。

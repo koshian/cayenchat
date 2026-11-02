@@ -16,6 +16,17 @@ python3 scripts/screenshots/demo.py readme --language japanese --out assets/scre
 python3 scripts/screenshots/demo.py check
 ```
 
+`--variant no-avatars` (avatars off), `reiwa` (Reiwa mode) and `parts` (the standard window with the four panes named: channel log, combined log, member list, channel tree; needs ImageMagick `convert`) take the other README pictures (`cayenchat-{en,ja}-{noicon,reiwa,parts}.png`, one command each, as above with `--language` and `--out`):
+
+```sh
+python3 scripts/screenshots/demo.py readme --variant no-avatars --out assets/screenshots/cayenchat-en-noicon.png
+python3 scripts/screenshots/demo.py readme --variant reiwa --out assets/screenshots/cayenchat-en-reiwa.png
+python3 scripts/screenshots/demo.py readme --variant parts --out assets/screenshots/cayenchat-en-parts.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant no-avatars --out assets/screenshots/cayenchat-ja-noicon.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant reiwa --out assets/screenshots/cayenchat-ja-reiwa.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant parts --out assets/screenshots/cayenchat-ja-parts.png
+```
+
 The script runs Openbox on Xvfb, gives CayenChat a smaller window centered in the 1280×800 virtual screen, and captures the title bar, borders and some neutral desktop background. It verifies that the toolbar was rendered, and writes the capture metadata to `assets/screenshots/provenance.json`. Use `--theme dark`, `--size WIDTHxHEIGHT` (virtual screen size), or `--display :N` if necessary. These images are for the README, **not store submissions**.
 
 ## macOS — Mac App Store / manual window capture
