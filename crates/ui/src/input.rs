@@ -311,6 +311,7 @@ impl TextInput {
         self.undo.clear();
         self.redo.clear();
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     /// Inserts `link` at the cursor without replacing any selection (which is
@@ -363,6 +364,7 @@ impl TextInput {
         self.undo.clear();
         self.redo.clear();
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     /// Replaces the whole text as one edit that can be undone. The caret stays
@@ -382,6 +384,7 @@ impl TextInput {
         self.completion = None;
         self.goal_x = None;
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -712,6 +715,7 @@ impl TextInput {
         self.completion = None;
         self.goal_x = None;
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -2721,6 +2725,33 @@ mod tests {
             input.insert_link("M", cx);
             input.unmark_text(window, cx);
             assert_eq!(input.text(), "変換あ M L");
+        });
+    }
+
+    #[gpui::test]
+    fn pending_link_does_not_outlive_composition_ended_elsewhere(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_live("", cx));
+        input.update_in(cx, |input, window, cx| {
+            // Send.
+            input.replace_and_mark_text_in_range(None, "あ", None, window, cx);
+            input.insert_link("A", cx);
+            input.clear_after_send(cx);
+            assert!(input.pending_links.is_empty());
+            assert_eq!(input.text(), "A");
+            // set_text.
+            input.replace_and_mark_text_in_range(None, "い", None, window, cx);
+            input.insert_link("B", cx);
+            input.set_text("x", cx);
+            assert!(input.pending_links.is_empty());
+            assert_eq!(input.text(), "x B");
+            // Undo.
+            input.replace_and_mark_text_in_range(None, "う", None, window, cx);
+            input.insert_link("C", cx);
+            input.undo(&Undo, window, cx);
+            assert!(input.pending_links.is_empty());
+            assert!(input.text().contains('C'));
+            assert!(!input.is_composing());
         });
     }
 
