@@ -842,7 +842,7 @@ fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
         form.tab = super::SettingsTab::Appearance;
         form
     });
-    let field = form.read_with(cx, |form, _| form.settings.main_log_background.clone());
+    let field = form.read_with(cx, |form, _| form.settings.channel_log_background.clone());
     let text = |cx: &mut gpui::VisualTestContext| field.read_with(cx, |f, _| f.text().to_owned());
     let before = text(cx);
 
@@ -896,11 +896,13 @@ fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
     let saved = form
         .update(cx, |form, cx| form.settings.snapshot(cx))
         .unwrap();
-    assert_eq!(saved.appearance.main_log_background, "#FFEE00");
+    assert_eq!(saved.appearance.channel_log_background, "#FFEE00");
     assert_eq!(saved.appearance.saved_colors, ["#FFEE00"]);
 
     // The same swatch closes it; another field's swatch moves it.
-    let other = form.read_with(cx, |form, _| form.settings.dark_main_log_background.clone());
+    let other = form.read_with(cx, |form, _| {
+        form.settings.dark_channel_log_background.clone()
+    });
     form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
     assert!(
         form.read_with(cx, |form, _| form.color_picker.as_ref().unwrap().field
@@ -1624,7 +1626,7 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
         chat.state
             .dispatch(cayenchat_app::Command::SelectChannel(a));
         chat.sync_log_lists();
-        let before = chat.sub_rows.len();
+        let before = chat.combined_rows.len();
         // The history fills a sequence range reserved earlier, so the newest
         // sequence does not move; the combined log must still be rebuilt.
         let sequence = chat.state.last_message_sequence();
@@ -1649,7 +1651,7 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
         );
         assert_eq!(chat.state.last_message_sequence(), sequence);
         chat.sync_log_lists();
-        assert_eq!(chat.sub_rows.len(), before + 1);
+        assert_eq!(chat.combined_rows.len(), before + 1);
     });
 }
 
@@ -1788,7 +1790,7 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
     config.port = listener.local_addr().unwrap().port();
     config.use_tls = false;
     let connection = Connection::connect(config).unwrap();
-    let (b, main_rows) = chat.update(cx, |chat, cx| {
+    let (b, channel_log_rows) = chat.update(cx, |chat, cx| {
         chat.sessions.get_mut(&NetworkId(1)).unwrap().irc = Some(connection);
         chat.handle_events(
             NetworkId(1),
@@ -1824,22 +1826,24 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         chat.sync_log_lists();
         (
             b,
-            chat.main_lists[&Selection::Channel(b)].state.item_count(),
+            chat.channel_log_lists[&Selection::Channel(b)]
+                .state
+                .item_count(),
         )
     });
     cx.run_until_parked();
 
     let request = chat.update(cx, |chat, _| {
         // Far from the top, or another conversation: nothing is asked.
-        chat.scrolled_main_log(b, 40);
+        chat.scrolled_channel_log(b, 40);
         let a = chat.state.channel_id(NetworkId(1), "#a").unwrap();
-        chat.scrolled_main_log(a, 0);
+        chat.scrolled_channel_log(a, 0);
         assert!(chat.state.older_history_in_flight(b).is_none());
         assert!(chat.state.older_history_in_flight(a).is_none());
         // Scrolled to the top: one page is asked for, and only one.
-        chat.scrolled_main_log(b, 0);
+        chat.scrolled_channel_log(b, 0);
         let request = chat.state.older_history_in_flight(b).expect("asked");
-        chat.scrolled_main_log(b, 1);
+        chat.scrolled_channel_log(b, 1);
         assert_eq!(chat.state.older_history_in_flight(b), Some(request));
         request
     });
@@ -1920,11 +1924,13 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         );
         chat.sync_log_lists();
         assert_eq!(
-            chat.main_lists[&Selection::Channel(b)].state.item_count(),
-            main_rows + 2
+            chat.channel_log_lists[&Selection::Channel(b)]
+                .state
+                .item_count(),
+            channel_log_rows + 2
         );
         // The beginning was reached: scrolling asks nothing more.
-        chat.scrolled_main_log(b, 0);
+        chat.scrolled_channel_log(b, 0);
         assert!(chat.state.older_history_in_flight(b).is_none());
         // A page answering an old request is ignored.
         chat.handle_events(
@@ -3508,7 +3514,7 @@ fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(chat.read_with(cx, |chat, _| chat.pane_renders) > rendered);
     let rows = chat.read_with(cx, |chat, _| {
-        chat.main_lists[&Selection::Channel(channel)]
+        chat.channel_log_lists[&Selection::Channel(channel)]
             .state
             .item_count()
     });

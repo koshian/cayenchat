@@ -181,24 +181,48 @@ impl SettingsWindow {
                 &form.member_list_background,
                 &appearance.member_list_background,
             ),
-            (&form.main_log_background, &appearance.main_log_background),
-            (&form.main_log_alternate, &appearance.main_log_alternate),
+            (
+                &form.channel_log_background,
+                &appearance.channel_log_background,
+            ),
+            (
+                &form.channel_log_alternate,
+                &appearance.channel_log_alternate,
+            ),
             (&form.channel_event_color, &appearance.channel_event_color),
             (&form.notice_color, &appearance.notice_color),
             (&form.highlight_color, &appearance.highlight_color),
-            (&form.sub_log_background, &appearance.sub_log_background),
-            (&form.sub_log_alternate, &appearance.sub_log_alternate),
+            (
+                &form.combined_log_background,
+                &appearance.combined_log_background,
+            ),
+            (
+                &form.combined_log_alternate,
+                &appearance.combined_log_alternate,
+            ),
             (
                 &form.dark_member_list_background,
                 &dark.member_list_background,
             ),
-            (&form.dark_main_log_background, &dark.main_log_background),
-            (&form.dark_main_log_alternate, &dark.main_log_alternate),
+            (
+                &form.dark_channel_log_background,
+                &dark.channel_log_background,
+            ),
+            (
+                &form.dark_channel_log_alternate,
+                &dark.channel_log_alternate,
+            ),
             (&form.dark_channel_event_color, &dark.channel_event_color),
             (&form.dark_notice_color, &dark.notice_color),
             (&form.dark_highlight_color, &dark.highlight_color),
-            (&form.dark_sub_log_background, &dark.sub_log_background),
-            (&form.dark_sub_log_alternate, &dark.sub_log_alternate),
+            (
+                &form.dark_combined_log_background,
+                &dark.combined_log_background,
+            ),
+            (
+                &form.dark_combined_log_alternate,
+                &dark.combined_log_alternate,
+            ),
             (&form.url_tooltip_color, &appearance.url_tooltip_color),
             (&form.dark_url_tooltip_color, &dark.url_tooltip_color),
             (&form.link_color, &appearance.link_color),
@@ -221,10 +245,10 @@ impl SettingsWindow {
                 &form.dark_url_tooltip_text_color,
                 &dark.url_tooltip_text_color,
             ),
-            (&form.main_log_font, &appearance.main_log_font),
-            (&form.sub_log_font, &appearance.sub_log_font),
-            (&form.member_font, &appearance.member_font),
-            (&form.channel_font, &appearance.channel_font),
+            (&form.channel_log_font, &appearance.channel_log_font),
+            (&form.combined_log_font, &appearance.combined_log_font),
+            (&form.member_list_font, &appearance.member_list_font),
+            (&form.channel_tree_font, &appearance.channel_tree_font),
             (&form.input_font, &appearance.input_font),
             (&form.time_font, &appearance.time_font),
         ] {
@@ -330,7 +354,7 @@ mod tests {
         assert!(is_default(&form, SettingsTab::Appearance, cx));
 
         form.update(cx, |form, cx| {
-            let field = form.settings.main_log_background.clone();
+            let field = form.settings.channel_log_background.clone();
             field.update(cx, |field, cx| field.set_text("#123456", cx));
             let values = &mut form.settings.values;
             values.appearance.alternate_rows = true;
@@ -350,8 +374,8 @@ mod tests {
         form.read_with(cx, |form, cx| {
             let defaults = Appearance::default();
             assert_eq!(
-                form.settings.main_log_background.read(cx).text(),
-                defaults.main_log_background
+                form.settings.channel_log_background.read(cx).text(),
+                defaults.channel_log_background
             );
             assert_eq!(form.settings.values.theme, ThemeMode::System);
             assert!(!form.settings.values.appearance.alternate_rows);

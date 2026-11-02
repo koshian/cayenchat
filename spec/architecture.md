@@ -214,27 +214,43 @@ The initial UI should be structurally close to a traditional desktop IRC client:
 
 ```text
 +--------------------------------------+--------------------+
-| selected-channel main log            | selected users     |
+| channel log                          | member list        |
 |                                      |                    |
 |--------------------------------------|--------------------|
-| draft input                          | network/channel    |
-|--------------------------------------| tree               |
-| other-channel subwindow              |                    |
+| draft input                          | channel tree       |
+|--------------------------------------|                    |
+| combined log                         |                    |
 +--------------------------------------+--------------------+
 ```
 
-The main log, other-channel subwindow, user list and channel tree are the four
+The panes have fixed names, following LimeChat's terms (issue #899). Code (`PaneKind`, `ChatPanes`,
+`PaneColors`), element ids and key contexts, saved settings keys, the settings
+window and these specifications all use them:
+
+| Name | Meaning | Code |
+|---|---|---|
+| channel tree | The list of servers and channels (queries included); where the selection is made | `ChannelTree`, `channel-tree-pane` |
+| channel log | The conversation log of the selected channel; the server log of the selected server when a server is selected, in the same place | `ChannelLog`, `channel-log` |
+| server log | The communication and system log of the selected server (network) | the channel log pane while a server is selected |
+| combined log | New lines of every conversation except the selected one, mixed in time order with the system lines of all networks (LimeChat's all-log; like it, it leaves out the active channel by default) | `CombinedLog`, `combined-log` |
+| member list | The participants of the selected channel | `MemberList`, `member-list-pane` |
+
+Saved keys that carried the former names (`main_log_*`, `sub_log_*`,
+`member_font`, `channel_font`) are still read and are written with the new
+names. Do not call these panes subwindow, main log, user list or log window.
+
+The channel log, combined log, member list and channel tree are the four
 information panes. The left logs stack around the draft input; the right side
-stacks users over the channel tree. The subwindow shows messages from conversations
+stacks the member list over the channel tree. The combined log shows messages from conversations
 other than the selected one, with a direct jump to the source conversation. Its
 channel/server labels are single-line and ellipsize within their column. Channel
-messages have an application arrival sequence so the combined subwindow shows
+messages have an application arrival sequence so the combined log shows
 the actual latest line last even when several channels receive messages within
 the same displayed minute. Channel activity (JOIN, PART, QUIT, NICK and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname regardless of the UI language, does not mark the channel
-unread, and appears only in its channel's main log, never in the combined
-subwindow. QUIT and NICK (ours included) are logged only in channels whose last
+unread, and appears only in its channel's channel log, never in the combined
+combined log. QUIT and NICK (ours included) are logged only in channels whose last
 published roster contained the nickname. Activity text uses configurable green (`#007D00`) by
 default. A channel message is laid out as `time | [avatar] | nick: text`: the time is
 its own monospaced column and the nickname (nickname color, no fixed or
@@ -267,15 +283,15 @@ the default flow, `time | channel [network] nick: text` with the full channel an
 network names in the nickname color and no fixed channel column (the
 former `sub_log_name_width` setting is gone and ignored when read); the
 former `wrap_long_nicknames` setting is gone and ignored when read. The
-main log keeps separate scroll positions for each server or
+channel log keeps separate scroll positions for each server or
 channel (selecting an unread conversation can jump to the bottom, D064), and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
-Both logs, the user list and the channel tree are virtualized (GPUI `list` /
+Both logs, the member list and the channel tree are virtualized (GPUI `list` /
 `uniform_list`), so
 each redraw lays out only rows near the viewport. GPUI re-renders the whole chat
 window whenever the draft input changes, so rebuilding every retained line made
 typing, IME composition and channel switching slow, most visibly on Linux. The
-two logs, the user list and the channel tree are therefore separate views drawn
+two logs, the member list and the channel tree are therefore separate views drawn
 with `AnyView::cached`: a keystroke redraws only the window shell and the input,
 while each pane reuses its previous layout and paint until the chat window is
 notified of a state change (or the pane itself scrolls or changes hover state).
@@ -283,7 +299,7 @@ State changes that affect panes must call `cx.notify()` on the chat window.
 GPUI still reshapes rows it did not draw in the previous frame; on Linux the
 vendored GPUI caches cosmic-text shaping per word (bounded) so a switch does not
 pay full shaping cost for every newly visible line (issue #5). The
-combined subwindow shows the newest 1,000 lines across other channels; it is
+combined log shows the newest 1,000 lines across other channels; it is
 rebuilt only when a message arrives or the selection changes, and log lists
 replace only the rows whose messages appeared or disappeared, so switching
 channels keeps the measured heights of lines shown before and after. Channel
@@ -371,7 +387,7 @@ keeps its own handle, which also moves it with the pointer within limits and
 edge of a `relative` container. It reads and writes the scroll position of the
 pane's own handle (`ListState`, or a `ScrollHandle` from `track_scroll`), shows
 a thumb only while the content overflows, and supports dragging the thumb and
-clicking the track to jump. The main and sub logs, the member list, the
+clicking the track to jump. The channel and combined logs, the member list, the
 channel tree, the settings navigation and pane, and the WHOIS details and
 channel menu use it. The font-choice drop-down in settings still has none.
 resets on a double click. Sizes are saved and restored (D037).
@@ -782,7 +798,7 @@ server or add a view. To hand the result over, select and copy the server log.
 
 Every server profile in the settings is a network in the channel tree,
 connected or not, in the order added. With no servers the selection is
-`Selection::None`: the tree is empty, the main log explains how to add one
+`Selection::None`: the tree is empty, the channel log explains how to add one
 and the first run shows the setup wizard (settings do not open at startup). `ui::session::ServerSession`
 holds everything per connection: the `Connection`, the configuration reused by
 reconnects, retry state, the current nickname and pending WHOIS nicknames.
@@ -1038,7 +1054,7 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D055, D056).
   plaintext-password policies); a worker already running keeps the value it was
   started with, so a wait in progress is not cancelled by the change.
 
-`app::AppState` owns networks, conversations, bounded message logs, user lists,
+`app::AppState` owns networks, conversations, bounded message logs, member lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,
 our own JOINs and private messages (see Conversations) create conversations (at
 most 1,000 per network, 100 of them private); messages for
@@ -1249,7 +1265,7 @@ the subset avatars need:
   time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
   key. The value is checked again here (no controls or spaces, at most 400
   bytes, ASCII on legacy encodings).
-- Showing our own avatar: rows by our current nickname (main log and member
+- Showing our own avatar: rows by our current nickname (channel log and member
   list) use the saved icon of this server's settings (`ServerProfile::avatar_url`,
   #612), read at draw time; no lookup or CTCP request to ourselves is made,
   and saving or removing the icon shows on every row at once, offline too.
@@ -1482,7 +1498,7 @@ app::MessageMeta { server_time, native_id, provenance }
 model::Message (retained timeline item)
         |
         v
-ui logs (LogList, combined subwindow, previews, avatars)
+ui logs (LogList, combined log, previews, avatars)
 ```
 
 CayenChat's shared presentation layer is protocol-agnostic where practical,
@@ -1493,7 +1509,7 @@ protocol:
 - `sequence` (`u64`) is the application's identity for a message and its
   order key: unique for the run, never reused, assigned when the message is
   added. Logs keep arrival order and are never re-sorted by timestamp;
-  `LogList`, the combined subwindow, previews and avatar occupancy all key on
+  `LogList`, the combined log, previews and avatar occupancy all key on
   it. Ordinary messages count up from 2^62; older history pages, which go
   before everything a conversation holds, count down from it (see Channel
   history), so every log stays ascending without renumbering.
@@ -1541,8 +1557,8 @@ irc-core events (ChannelMessage, PrivateMessage, OwnPrivateMessage,
 app::AppState conversations (model::Conversation { kind, name, messages })
         |   ConversationKind::Channel | Private { peer_key }
         v
-Selection::Channel(ConversationId) -> the same main log, draft, previews,
-avatars, scroll state, unread/highlight and combined subwindow
+Selection::Channel(ConversationId) -> the same channel log, draft, previews,
+avatars, scroll state, unread/highlight and combined log
 ```
 
 A conversation is a channel or a private conversation; the server log is
@@ -1625,7 +1641,7 @@ Four behaviors look alike and are kept apart:
 The last three share the per-server option, `irc-core::history`'s queue
 and the duplicate filter, and produce `Provenance::Requested` lines, which
 never notify, highlight or mark unread and stay out of the combined
-subwindow.
+combined log.
 
 ### Recent history on join
 
@@ -1644,7 +1660,7 @@ app::AppState::history_requested (reserve 256 sequences)
 app::AppState::push_history_line (insert at the reservation, dedupe)
 app::AppState::finish_history_for (order the block by server time)
         v
-main log (same rows); not in the combined subwindow; no notification
+channel log (same rows); not in the combined log; no notification
 ```
 
 Negotiation: with the per-server option on, `draft/chathistory` is
@@ -1731,7 +1747,7 @@ searched for mentions and keywords by the same code as a live line
 a line the notification rules call attention-worthy
 (`TimelineLine::attention`) is queued for the jump to notified lines under
 the sequence it was given, in order within its conversation. Requested history is
-left out of the combined subwindow. A reply without a pending reservation
+left out of the combined log. A reply without a pending reservation
 is ignored: the reservation is dropped when the network disconnects, is
 reset or removed, and the UI already drops events of an old connection
 generation. Limitations: a live line that arrived after the request and is
@@ -1748,7 +1764,7 @@ and PART, KICK, reset or removal drops it.
 ### Older pages
 
 ```text
-ui main log scroll handler (LogList::on_scroll, deferred)
+ui channel log scroll handler (LogList::on_scroll, deferred)
         |   first visible row within 5 message rows of the top
         v
 ChatWindow::load_older_history
@@ -1767,7 +1783,7 @@ app::AppState::push_older_history_line / finish_older_history / older_history_fa
 LogList::sync keeps the top row (sequence + pixel offset) in place
 ```
 
-Trigger: the main log's GPUI scroll handler (a user's wheel or trackpad
+Trigger: the channel log's GPUI scroll handler (a user's wheel or trackpad
 scroll, never a redraw, a timer or merely opening the channel) reports the
 first visible row; within 5 message rows of the top the chat window asks
 the application for one page. The handler runs while the list is
@@ -2014,7 +2030,7 @@ prefix by `MessageMeta::after_prefix`), and whether there are any decides
 the channel-tree highlight and the mention and keyword notifications. A
 nickname wrapped in color codes therefore counts and is drawn alike, and a
 later nickname or keyword change leaves earlier lines as they were marked.
-The main and sub logs draw the ranges bold in the theme's highlight
+The channel and combined logs draw the ranges bold in the theme's highlight
 color (light `#D46A8E`, dark `#EFA0BE` by default, matching the pastel pane
 colors). A channel that receives a mention or keyword while it is not selected
 is recorded in `AppState::highlighted`, and the channel tree draws its name in
@@ -2200,7 +2216,7 @@ is the separate `media` layer below.
 ## Inline image previews
 
 ```text
-channel message text (main log row being drawn, previews on)
+channel message text (channel log row being drawn, previews on)
         |   Message::links (app::links::find when the message was added;
         |   the same recognition as link opening)
         v
@@ -2227,7 +2243,7 @@ depends on an upload provider or account, and `ExternalUploader` is not used.
 
 Rows request their preview while they are drawn, so only rows the virtualized
 log lays out (the viewport plus its 400 px overdraw) cause requests; receiving
-or retaining image links fetches nothing. Only message rows of the main log
+or retaining image links fetches nothing. Only message rows of the channel log
 (channels and private conversations) preview; the combined log, the server
 log (diagnostics) and activity lines stay text-only, and link opening and selection
 work on the text as before. A pending preview reserves a box of the full
@@ -2268,7 +2284,7 @@ media::cache::PreviewCache (separate small avatar instance)
         v
 media::load_thumbnail (HttpFetcher, Limits::avatar(32): centered square)
         v
-RenderImage in a fixed 16×16 slot (main-log message rows, member rows)
+RenderImage in a fixed 16×16 slot (channel-log message rows, member rows)
 ```
 
 Presentation and protocol are separate. The Appearance setting "Show user
@@ -2312,8 +2328,8 @@ to avoid it. Removing or resetting a server forgets the directory, the
 mask cache is dropped with the server's session.
 
 Display: with the setting on (the only avatar switch, for every server),
-main-log channel message rows (not activity
-lines, the server log or the combined subwindow) and member rows get a
+channel-log channel message rows (not activity
+lines, the server log or the combined log) and member rows get a
 fixed 16×16 slot (below the 20 px line height, so rows keep their height)
 between the time and the nickname, or before the member name. Rows ask for
 their avatar while they are drawn, so only visible rows plus the log's
@@ -2327,7 +2343,7 @@ the setting off there is no slot, no lookup, no fetch, no decode and no
 default avatar; turning it off
 cancels loads, drops late results (cache generation), releases the
 records and drops the HTTP agent. Released images are removed from the GPU
-atlas only after both cached panes that draw avatars (main log and member
+atlas only after both cached panes that draw avatars (channel log and member
 list) have redrawn, since a cached pane replays its last paint; if one
 lags, both are redrawn on the next frame.
 
@@ -2452,7 +2468,7 @@ comes from the real wrapped layout, so character widths do not matter, and
 only the one selected row is measured. Hits whose line is gone are skipped. The scope is "this channel" (the log of the
 selected channel, private conversation or, on a server tab, "this log") or
 "all" (every channel, private conversation and server log in memory). While the
-bar is open the term is highlighted in whatever main log is shown: yellow
+bar is open the term is highlighted in whatever channel log is shown: yellow
 background, orange on the current line, under the selection and over mention,
 link and decoded-reference styling. The sub log (combined view) is not
 highlighted. Closing the bar drops the scan, the task and the highlights, so a

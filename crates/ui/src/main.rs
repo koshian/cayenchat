@@ -198,7 +198,7 @@ const WAKE_GRACE: Duration = Duration::from_secs(3);
 /// before sleep; the system waits for us only briefly.
 const SLEEP_WAIT: Duration = cayenchat_irc_core::SLEEP_FLUSH_LIMIT;
 /// Most lines the combined other-channel log keeps on screen.
-const SUB_LOG_LIMIT: usize = 1_000;
+const COMBINED_LOG_LIMIT: usize = 1_000;
 /// Worker events applied per update before yielding to input and redraws.
 const EVENT_BATCH_LIMIT: usize = 256;
 
@@ -734,13 +734,13 @@ impl ChatWindow {
 /// channel; like other channel activity, in English.
 const HISTORY_GAP_NOTE: &str = "Some messages sent while disconnected are not shown.";
 
-/// Message rows between the top of the main log and the first visible row
+/// Message rows between the top of the channel log and the first visible row
 /// within which scrolling asks for older history.
 const OLDER_HISTORY_TRIGGER_ROWS: usize = 5;
 
 /// What a row of the combined log shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SubRow {
+enum CombinedRow {
     /// A conversation line: conversation and message index.
     Line(ConversationId, usize),
     /// A system line: index into `AppState::system_messages`.
@@ -749,12 +749,12 @@ enum SubRow {
 
 /// Merges `lines` (oldest first, from [`newest_lines`]) with the system
 /// lines (oldest first) by sequence, keeping the newest `limit`.
-fn sub_rows(
+fn combined_rows(
     lines: Vec<(u64, ConversationId, usize)>,
     system: &std::collections::VecDeque<(NetworkId, cayenchat_model::Message)>,
     limit: usize,
-) -> Vec<(u64, SubRow)> {
-    let mut rows: Vec<(u64, SubRow)> = Vec::with_capacity(lines.len() + system.len());
+) -> Vec<(u64, CombinedRow)> {
+    let mut rows: Vec<(u64, CombinedRow)> = Vec::with_capacity(lines.len() + system.len());
     let mut lines = lines.into_iter().peekable();
     let mut system = system.iter().enumerate().peekable();
     loop {
@@ -766,10 +766,10 @@ fn sub_rows(
         };
         if take_line {
             let (sequence, id, index) = lines.next().expect("peeked");
-            rows.push((sequence, SubRow::Line(id, index)));
+            rows.push((sequence, CombinedRow::Line(id, index)));
         } else {
             let (index, (_, message)) = system.next().expect("peeked");
-            rows.push((message.sequence, SubRow::System(index)));
+            rows.push((message.sequence, CombinedRow::System(index)));
         }
     }
     rows.drain(..rows.len().saturating_sub(limit));
@@ -834,8 +834,8 @@ fn i18n_error(language: Language, key: &str) -> String {
 struct ChatWindow {
     state: AppState,
     // Virtualized logs keep a separate scroll position per server or channel.
-    main_lists: HashMap<Selection, LogList>,
-    sub_list: LogList,
+    channel_log_lists: HashMap<Selection, LogList>,
+    combined_list: LogList,
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
     tree_list: LogList,
@@ -853,11 +853,11 @@ struct ChatWindow {
     group_edit_reveal: bool,
     // Selection, newest message sequence and log revision the combined log was
     // built for.
-    sub_source: Option<(Option<ConversationId>, u64, u64)>,
+    combined_source: Option<(Option<ConversationId>, u64, u64)>,
     // The Reiwa mode leads of the selected channel's lines, with what they
     // were derived from: rebuilt only when that changes, not on every redraw.
     reiwa_shapes: Option<(ReiwaShapeKey, Vec<u8>)>,
-    sub_rows: Vec<SubRow>,
+    combined_rows: Vec<CombinedRow>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     /// The error of the open member prompt, drawn inside it. Errors anywhere
@@ -1006,7 +1006,7 @@ struct ChatWindow {
     /// the drag that follows widens the selection by this unit from the
     /// range that click selected (its two ends).
     log_unit: Option<(select_unit::SelectUnit, LogPosition, LogPosition)>,
-    /// The main log row whose URL the pointer is over; it shows a hand.
+    /// The channel log row whose URL the pointer is over; it shows a hand.
     url_hover: Option<(ConversationId, usize)>,
     /// The line a jump just chose and when, drawn emphasized while
     /// `reveal_strength` has anything left.
@@ -1033,16 +1033,16 @@ struct ChatWindow {
     notifier: Notifier,
     notification_rules: NotificationRules,
     notification_burst: BurstLimiter,
-    /// Inline image previews in the main channel log (application-wide).
+    /// Inline image previews in the channel log (application-wide).
     previews: previews::Previews,
-    /// User avatar images for the main log and member list (application-wide).
+    /// User avatar images for the channel log and member list (application-wide).
     avatars: avatars::Avatars,
     /// Whether the chat window has keyboard focus; messages in the selected
     /// conversation of a focused window are already visible.
     window_active: bool,
     #[cfg(test)]
     pane_renders: usize,
-    /// Whether the last draw of the main log included the jump button.
+    /// Whether the last draw of the channel log included the jump button.
     #[cfg(test)]
     latest_button_drawn: bool,
 }
@@ -1477,8 +1477,8 @@ impl ChatWindow {
         });
         let mut this = Self {
             state,
-            main_lists: HashMap::new(),
-            sub_list: LogList::new(),
+            channel_log_lists: HashMap::new(),
+            combined_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
@@ -1487,9 +1487,9 @@ impl ChatWindow {
             join_selected: None,
             tree_reveal_pending: false,
             group_edit_reveal: false,
-            sub_source: None,
+            combined_source: None,
             reiwa_shapes: None,
-            sub_rows: Vec::new(),
+            combined_rows: Vec::new(),
             inputs,
             startup_notice: feedback.clone(),
             prompt_feedback: None,
@@ -2249,7 +2249,7 @@ impl ChatWindow {
     fn forget_conversations(&mut self, removed: &[ConversationId]) {
         for id in removed {
             self.inputs.remove(&Selection::Channel(*id));
-            self.main_lists.remove(&Selection::Channel(*id));
+            self.channel_log_lists.remove(&Selection::Channel(*id));
         }
         self.previews.retain_rows(|row| match row.selection {
             Selection::Channel(id) => !removed.contains(&id),
@@ -2264,7 +2264,7 @@ impl ChatWindow {
         {
             self.log_selection = None;
         }
-        self.sub_source = None;
+        self.combined_source = None;
     }
 
     /// Makes the networks follow the saved server profiles: new servers
@@ -2375,7 +2375,7 @@ impl ChatWindow {
                 session.close();
             }
             self.inputs.remove(&Selection::Server(id));
-            self.main_lists.remove(&Selection::Server(id));
+            self.channel_log_lists.remove(&Selection::Server(id));
             if self
                 .log_selection
                 .is_some_and(|selection| selection.source == Selection::Server(id))
@@ -2564,7 +2564,7 @@ impl ChatWindow {
             .retain(|prompt| prompt.network != network);
         let removed = self.state.reset_network(network, config.channels.clone());
         self.forget_conversations(&removed);
-        self.main_lists.remove(&Selection::Server(network));
+        self.channel_log_lists.remove(&Selection::Server(network));
         self.ensure_inputs(cx);
         let outcome = match Connection::connect(config) {
             Ok(connection) => {
@@ -4694,13 +4694,13 @@ impl ChatWindow {
         }
     }
 
-    /// The user scrolled conversation `id`'s main log so that row
+    /// The user scrolled conversation `id`'s channel log so that row
     /// `first_visible` is at its top. Close to the oldest line, one older
     /// page is asked for; nothing is asked while the log is only open, and
     /// nothing while a page is on its way or history has run out.
-    fn scrolled_main_log(&mut self, id: ConversationId, first_visible: usize) {
+    fn scrolled_channel_log(&mut self, id: ConversationId, first_visible: usize) {
         let near_top = self
-            .main_lists
+            .channel_log_lists
             .get(&Selection::Channel(id))
             .is_some_and(|list| {
                 list.message_rows_above(first_visible) <= OLDER_HISTORY_TRIGGER_ROWS
@@ -4932,7 +4932,7 @@ impl ChatWindow {
     }
 
     fn scroll_to_latest(&mut self, _: &ScrollToLatest, _: &mut Window, cx: &mut Context<Self>) {
-        self.scroll_main_log_to_latest(cx);
+        self.scroll_channel_log_to_latest(cx);
     }
 
     /// Whether a dialog is drawn over the window, so nothing behind it may
@@ -4951,19 +4951,19 @@ impl ChatWindow {
             || self.setup_wizard_visible()
     }
 
-    /// Scrolls the selected conversation's main log to its newest line and
+    /// Scrolls the selected conversation's channel log to its newest line and
     /// follows new lines again. The one place the shortcut and the button
     /// (and, later, #545) go through. Nothing else changes: not the draft,
     /// the focus, the selection or the search; nothing happens under a
     /// question that has the window's attention.
-    fn scroll_main_log_to_latest(&mut self, cx: &mut Context<Self>) {
+    fn scroll_channel_log_to_latest(&mut self, cx: &mut Context<Self>) {
         // The shortcut runs before a dialog's own key handling, so every
         // dialog drawn over the window has to be excluded here.
         if self.dialog_open() {
             return;
         }
         self.sync_log_lists();
-        if let Some(list) = self.main_lists.get(&self.state.selection()) {
+        if let Some(list) = self.channel_log_lists.get(&self.state.selection()) {
             list.scroll_to_end();
             cx.notify();
         }
@@ -4982,8 +4982,9 @@ impl ChatWindow {
         if flexible <= 0. {
             return;
         }
-        let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
-        self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        let channel_log_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
+        self.log_split =
+            (channel_log_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
         self.schedule_layout_save(cx);
         cx.notify();
     }
@@ -5165,7 +5166,7 @@ impl ChatWindow {
             && unread_before.contains(&id)
         {
             self.sync_log_lists();
-            if let Some(list) = self.main_lists.get(&selection) {
+            if let Some(list) = self.channel_log_lists.get(&selection) {
                 list.scroll_to_end();
             }
         }
@@ -5179,7 +5180,7 @@ impl ChatWindow {
     /// emphasizes it for a moment.
     fn reveal_message(&mut self, id: ConversationId, sequence: u64, cx: &mut Context<Self>) {
         self.sync_log_lists();
-        if let Some(list) = self.main_lists.get_mut(&Selection::Channel(id)) {
+        if let Some(list) = self.channel_log_lists.get_mut(&Selection::Channel(id)) {
             list.scroll_to_sequence(sequence);
         }
         let started = Instant::now();
@@ -5197,12 +5198,12 @@ impl ChatWindow {
                     if !more {
                         this.reveal_flash = None;
                     }
-                    // Only the main log shows the line, and only while its
+                    // Only the channel log shows the line, and only while its
                     // conversation is selected; the other panes stay cached.
                     if let Some(panes) = &this.panes
                         && this.state.selected_channel().map(|c| c.id) == Some(id)
                     {
-                        App::notify(cx, panes.main_log.entity_id());
+                        App::notify(cx, panes.channel_log.entity_id());
                     }
                     more
                 }) else {
@@ -5858,7 +5859,7 @@ impl ChatWindow {
                 }
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
-            // Older pages go above everything the log holds; the main log
+            // Older pages go above everything the log holds; the channel log
             // keeps its top row in place (`LogList::sync`).
             Event::OlderChannelHistory {
                 channel,
@@ -6871,7 +6872,7 @@ impl Render for ChatWindow {
     }
 }
 
-/// The input method of the main log: the log holds no text, so it stands in
+/// The input method of the channel log: the log holds no text, so it stands in
 /// for the selected draft. Every call, queries and unmarking included, goes to
 /// the draft so ranges and the composition state stay consistent, and anything
 /// that changes text also moves focus there. Plain typing arrives here too
@@ -7125,8 +7126,8 @@ impl ChatWindow {
             .flex()
             .flex_col()
             .bg(theme.channel_tree)
-            .when(!appearance.channel_font.is_empty(), |d| {
-                d.font_family(appearance.channel_font.clone())
+            .when(!appearance.channel_tree_font.is_empty(), |d| {
+                d.font_family(appearance.channel_tree_font.clone())
             })
             .border_t_1()
             .border_color(theme.border)
@@ -7502,10 +7503,10 @@ impl ChatWindow {
         }
         let theme = theme::current(cx);
         match kind {
-            PaneKind::MainLog => {
+            PaneKind::ChannelLog => {
                 let selection = self.state.selection();
                 let main = self
-                    .main_lists
+                    .channel_log_lists
                     .get_mut(&selection)
                     .expect("synced before drawing");
                 if let Selection::Channel(id) = selection {
@@ -7514,7 +7515,7 @@ impl ChatWindow {
                         let chat = chat.clone();
                         cx.defer(move |cx| {
                             let _ = chat.update(cx, |chat, _| {
-                                chat.scrolled_main_log(id, first_visible);
+                                chat.scrolled_channel_log(id, first_visible);
                             });
                         });
                     });
@@ -7537,7 +7538,7 @@ impl ChatWindow {
                 cx.defer(move |cx| {
                     let _ = chat.update(cx, |chat, cx| {
                         let behind = chat
-                            .main_lists
+                            .channel_log_lists
                             .get(&selected)
                             .is_some_and(|list| list.is_behind_latest());
                         if behind != shown && chat.state.selection() == selected {
@@ -7549,29 +7550,33 @@ impl ChatWindow {
                     .relative()
                     .size_full()
                     .child(
-                        list(main.state.clone(), cx.processor(Self::render_main_row)).size_full(),
+                        list(
+                            main.state.clone(),
+                            cx.processor(Self::render_channel_log_row),
+                        )
+                        .size_full(),
                     )
                     .child(bar)
                     .children(latest_button)
                     .into_any_element()
             }
-            PaneKind::SubLog => div()
+            PaneKind::CombinedLog => div()
                 .relative()
                 .size_full()
                 .child(
                     list(
-                        self.sub_list.state.clone(),
-                        cx.processor(Self::render_sub_row),
+                        self.combined_list.state.clone(),
+                        cx.processor(Self::render_combined_row),
                     )
                     .size_full(),
                 )
                 .child(scrollbar::scrollbar(
                     "scrollbar-sub",
-                    &self.sub_list.state,
+                    &self.combined_list.state,
                     theme.text_muted,
                 ))
                 .into_any_element(),
-            PaneKind::Members => {
+            PaneKind::MemberList => {
                 let member_count = self.participants().len();
                 div()
                     .relative()
@@ -7592,11 +7597,11 @@ impl ChatWindow {
                     ))
                     .into_any_element()
             }
-            PaneKind::Channels => self.render_channel_tree(window, cx),
+            PaneKind::ChannelTree => self.render_channel_tree(window, cx),
         }
     }
 
-    /// The button over the main log's lower right corner that scrolls to the
+    /// The button over the channel log's lower right corner that scrolls to the
     /// newest line (#546). Drawn only while the end of the log is out of
     /// view. It sits left of the scrollbar's strip and takes its own clicks,
     /// so neither the log's selection nor the focus is touched.
@@ -7629,7 +7634,7 @@ impl ChatWindow {
                     .text_color(theme.text),
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|this, _, _, cx| this.scroll_main_log_to_latest(cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.scroll_channel_log_to_latest(cx)))
             .tooltip(move |_, cx| {
                 let name = chat
                     .read_with(cx, |chat, _| chat.i18n.text("shortcut_scroll_to_latest"))
@@ -7659,16 +7664,16 @@ impl ChatWindow {
         };
         let border = theme.border;
         let appearance = &self.appearance;
-        let main_bg = theme.panes.main_log;
-        let sub_bg = theme.panes.sub_log;
+        let channel_log_bg = theme.panes.channel_log;
+        let combined_bg = theme.panes.combined_log;
 
         // Panes that do not change while the draft is edited are separate cached
         // views: typing redraws this window, but they reuse their last layout
         // and paint until the chat state they show is notified.
         let panes = self.panes.get_or_insert_with(|| ChatPanes::new(cx)).clone();
-        let main_log = div()
-            .id(("log", log_id))
-            .key_context("MainLog")
+        let channel_log = div()
+            .id(("channel-log", log_id))
+            .key_context("ChannelLog")
             .track_focus(&self.log_focus)
             .on_action(cx.listener(Self::copy_log_selection))
             .on_action(cx.listener(Self::copy_log_selection_menu))
@@ -7695,29 +7700,29 @@ impl ChatWindow {
             .min_h_0()
             .px_2()
             .py_1()
-            .bg(main_bg)
-            .when(!appearance.main_log_font.is_empty(), |d| {
-                d.font_family(appearance.main_log_font.clone())
+            .bg(channel_log_bg)
+            .when(!appearance.channel_log_font.is_empty(), |d| {
+                d.font_family(appearance.channel_log_font.clone())
             })
             .child(self.input_to_draft(&self.log_focus, cx))
-            .child(panes.main_log.clone().cached(pane_style()));
+            .child(panes.channel_log.clone().cached(pane_style()));
 
-        let sub_log = div()
-            .id("sub-log")
+        let combined_log = div()
+            .id("combined-log")
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .px_2()
             .py_1()
-            .bg(sub_bg)
-            .when(!appearance.sub_log_font.is_empty(), |d| {
-                d.font_family(appearance.sub_log_font.clone())
+            .bg(combined_bg)
+            .when(!appearance.combined_log_font.is_empty(), |d| {
+                d.font_family(appearance.combined_log_font.clone())
             })
-            .child(panes.sub_log.clone().cached(pane_style()));
+            .child(panes.combined_log.clone().cached(pane_style()));
 
         let members = div()
-            .id("members-pane")
+            .id("member-list-pane")
             .key_context("MemberList")
             .track_focus(&self.members_focus)
             .on_key_down(cx.listener(Self::members_key_down))
@@ -7731,14 +7736,19 @@ impl ChatWindow {
             .min_h_0()
             .w_full()
             .bg(theme.panes.member_list)
-            .when(!appearance.member_font.is_empty(), |d| {
-                d.font_family(appearance.member_font.clone())
+            .when(!appearance.member_list_font.is_empty(), |d| {
+                d.font_family(appearance.member_list_font.clone())
             })
             .child(self.input_to_draft(&self.members_focus, cx))
-            .child(panes.members.clone().cached(pane_style()));
+            .child(panes.member_list.clone().cached(pane_style()));
 
-        let mut main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
-        main_pane.style().flex_grow = Some(self.log_split * 2.);
+        let mut channel_log_pane = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(channel_log);
+        channel_log_pane.style().flex_grow = Some(self.log_split * 2.);
         // The bottom edge of the draft row is the handle between the logs;
         // a double click restores the even split.
         let split_handle = div()
@@ -7761,7 +7771,7 @@ impl ChatWindow {
                     cx.notify();
                 }),
             );
-        let mut sub_pane = div()
+        let mut combined_pane = div()
             .relative()
             .flex()
             .flex_col()
@@ -7769,9 +7779,9 @@ impl ChatWindow {
             .min_h_0()
             .border_t_1()
             .border_color(border)
-            .child(sub_log)
+            .child(combined_log)
             .child(split_handle);
-        sub_pane.style().flex_grow = Some((1. - self.log_split) * 2.);
+        combined_pane.style().flex_grow = Some((1. - self.log_split) * 2.);
         let editor = div()
             .flex()
             .items_center()
@@ -7852,9 +7862,9 @@ impl ChatWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.log_split_dragging = false),
             )
-            .child(main_pane)
+            .child(channel_log_pane)
             .child(editor)
-            .child(sub_pane);
+            .child(combined_pane);
         // The right column keeps its width inside what the window can spare,
         // and the member list its height inside the column.
         let right_max =
@@ -7924,7 +7934,7 @@ impl ChatWindow {
             .child(members_split)
             .child(
                 div()
-                    .id("channels-pane")
+                    .id("channel-tree-pane")
                     .key_context("ChannelTree")
                     .track_focus(&self.tree_focus)
                     .on_key_down(cx.listener(Self::tree_key_down))
@@ -7938,7 +7948,7 @@ impl ChatWindow {
                     .min_h_0()
                     .w_full()
                     .child(self.input_to_draft(&self.tree_focus, cx))
-                    .child(panes.channels.clone().cached(pane_style().w_full())),
+                    .child(panes.channel_tree.clone().cached(pane_style().w_full())),
             );
 
         let server_menu =
@@ -8778,10 +8788,10 @@ fn drop_line_on_top(rows: &[TreeRow], dragged: ConversationId, index: usize) -> 
 
 #[derive(Clone, Copy)]
 enum PaneKind {
-    MainLog,
-    SubLog,
-    Members,
-    Channels,
+    ChannelLog,
+    CombinedLog,
+    MemberList,
+    ChannelTree,
 }
 
 /// A chat window pane rendered as its own view. GPUI redraws the whole window
@@ -8802,16 +8812,16 @@ impl Render for ChatPane {
         // its context; it is not being updated while panes lay out.
         self.chat
             .update(cx, |chat, cx| {
-                // Only while the main log redraws: a reused (cached) pane
+                // Only while the channel log redraws: a reused (cached) pane
                 // replays sprites that may still point at these images.
-                if matches!(kind, PaneKind::MainLog) {
+                if matches!(kind, PaneKind::ChannelLog) {
                     chat.previews.release(window);
                 }
                 // Avatars appear in two cached panes; an image is freed only
                 // after both redrew. Redraw both once more if one lags.
                 let avatar_pane = match kind {
-                    PaneKind::MainLog => Some(avatars::Pane::MainLog),
-                    PaneKind::Members => Some(avatars::Pane::Members),
+                    PaneKind::ChannelLog => Some(avatars::Pane::ChannelLog),
+                    PaneKind::MemberList => Some(avatars::Pane::MemberList),
                     _ => None,
                 };
                 if let Some(pane) = avatar_pane
@@ -8827,10 +8837,10 @@ impl Render for ChatPane {
 
 #[derive(Clone)]
 struct ChatPanes {
-    main_log: AnyView,
-    sub_log: AnyView,
-    members: AnyView,
-    channels: AnyView,
+    channel_log: AnyView,
+    combined_log: AnyView,
+    member_list: AnyView,
+    channel_tree: AnyView,
 }
 
 impl ChatPanes {
@@ -8845,10 +8855,10 @@ impl ChatPanes {
             }))
         };
         Self {
-            main_log: pane(PaneKind::MainLog),
-            sub_log: pane(PaneKind::SubLog),
-            members: pane(PaneKind::Members),
-            channels: pane(PaneKind::Channels),
+            channel_log: pane(PaneKind::ChannelLog),
+            combined_log: pane(PaneKind::CombinedLog),
+            member_list: pane(PaneKind::MemberList),
+            channel_tree: pane(PaneKind::ChannelTree),
         }
     }
 }
@@ -8873,10 +8883,10 @@ fn pane_style() -> StyleRefinement {
 /// Colors and fonts shared by log rows, derived from the appearance settings.
 struct LogStyle {
     theme: Theme,
-    main_alt: Rgba,
+    channel_alt: Rgba,
     event_color: Rgba,
     notice_color: Rgba,
-    sub_alt: Rgba,
+    combined_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
     compact_urls: bool,
@@ -8888,10 +8898,10 @@ impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
         Self {
             theme,
-            main_alt: theme.panes.main_alternate,
+            channel_alt: theme.panes.channel_alternate,
             event_color: theme.panes.channel_event,
             notice_color: theme.panes.notice,
-            sub_alt: theme.panes.sub_alternate,
+            combined_alt: theme.panes.combined_alternate,
             // Built for every visible row on each redraw; the default font
             // name needs no allocation.
             time_font: if appearance.time_font.is_empty() {
@@ -8928,39 +8938,39 @@ struct ReiwaShapeKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MainRow {
+enum ChannelLogRow {
     Status,
     Message(usize),
 }
 
 /// Fixed rows shown above the selected log's messages.
-struct MainLayout {
+struct ChannelLogLayout {
     status: bool,
 }
 
-impl MainLayout {
+impl ChannelLogLayout {
     fn prefix(&self) -> usize {
         usize::from(self.status)
     }
 
-    fn row(&self, index: usize) -> MainRow {
+    fn row(&self, index: usize) -> ChannelLogRow {
         if self.status {
             if index == 0 {
-                return MainRow::Status;
+                return ChannelLogRow::Status;
             }
-            return MainRow::Message(index - 1);
+            return ChannelLogRow::Message(index - 1);
         }
-        MainRow::Message(index)
+        ChannelLogRow::Message(index)
     }
 }
 
 impl ChatWindow {
-    fn main_layout(&self) -> MainLayout {
+    fn channel_log_layout(&self) -> ChannelLogLayout {
         let registration_incomplete = self
             .selected_network_id()
             .and_then(|network| self.state.status(network))
             != Some(&ConnectionStatus::Registered);
-        MainLayout {
+        ChannelLogLayout {
             // A server's log always shows the connection status; a channel's
             // only while its connection is not up.
             status: self.state.selected_channel().is_none() || registration_incomplete,
@@ -8970,7 +8980,7 @@ impl ChatWindow {
     /// Updates the virtualized log lists to match application state before
     /// they lay out their visible rows.
     fn sync_log_lists(&mut self) {
-        let prefix = self.main_layout().prefix();
+        let prefix = self.channel_log_layout().prefix();
         let mut shapes: Vec<u8> = Vec::new();
         let sequences: Vec<u64> = match self.state.selected_channel() {
             Some(channel) => {
@@ -9008,7 +9018,7 @@ impl ChatWindow {
                 })
                 .unwrap_or_default(),
         };
-        self.main_lists
+        self.channel_log_lists
             .entry(self.state.selection())
             .or_insert_with(LogList::new)
             .sync_shaped(prefix, &sequences, &shapes);
@@ -9025,18 +9035,18 @@ impl ChatWindow {
             self.state.last_message_sequence(),
             self.state.log_revision(),
         );
-        if self.sub_source == Some(source) {
+        if self.combined_source == Some(source) {
             return;
         }
-        self.sub_source = Some(source);
-        let lines = newest_lines(self.state.conversations(), selected, SUB_LOG_LIMIT);
-        let rows = sub_rows(lines, self.state.system_messages(), SUB_LOG_LIMIT);
+        self.combined_source = Some(source);
+        let lines = newest_lines(self.state.conversations(), selected, COMBINED_LOG_LIMIT);
+        let rows = combined_rows(lines, self.state.system_messages(), COMBINED_LOG_LIMIT);
         let sequences: Vec<u64> = rows.iter().map(|(sequence, _)| *sequence).collect();
-        self.sub_list.sync(0, &sequences);
-        self.sub_rows = rows.into_iter().map(|(_, row)| row).collect();
+        self.combined_list.sync(0, &sequences);
+        self.combined_rows = rows.into_iter().map(|(_, row)| row).collect();
     }
 
-    fn render_main_row(
+    fn render_channel_log_row(
         &mut self,
         row: usize,
         _: &mut Window,
@@ -9044,8 +9054,8 @@ impl ChatWindow {
     ) -> AnyElement {
         let theme = theme::current(cx);
         let style = LogStyle::new(&self.appearance, theme::current(cx));
-        match self.main_layout().row(row) {
-            MainRow::Status => {
+        match self.channel_log_layout().row(row) {
+            ChannelLogRow::Status => {
                 let text = match self.selected_network_id() {
                     Some(network) => self.status_text(self.state.status(network)),
                     None => format!(
@@ -9062,7 +9072,7 @@ impl ChatWindow {
                     .child(text)
                     .into_any_element()
             }
-            MainRow::Message(index) => match self.state.selected_channel() {
+            ChannelLogRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
                     let Some(network) = self.selected_network_id() else {
@@ -9152,7 +9162,7 @@ impl ChatWindow {
                         .gap_1()
                         .py(px(1.))
                         .when(style.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(style.main_alt)
+                            d.bg(style.channel_alt)
                         })
                         .on_mouse_down(
                             MouseButton::Right,
@@ -9397,7 +9407,7 @@ impl ChatWindow {
             .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
-                d.bg(style.main_alt)
+                d.bg(style.channel_alt)
             })
             .when_some(
                 self.reveal_flash
@@ -9407,13 +9417,13 @@ impl ChatWindow {
                     .and_then(|(_, _, started)| reveal_strength(started.elapsed())),
                 |d, strength| {
                     let row = if style.alternate_rows && index % 2 == 1 {
-                        style.main_alt
+                        style.channel_alt
                     } else {
-                        theme.panes.main_log
+                        theme.panes.channel_log
                     };
                     d.bg(reveal_background(
                         row,
-                        theme.panes.main_log,
+                        theme.panes.channel_log,
                         theme.panes.highlight,
                         strength,
                     ))
@@ -9627,13 +9637,18 @@ impl ChatWindow {
         }
     }
 
-    fn render_sub_row(&mut self, row: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_combined_row(
+        &mut self,
+        row: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme::current(cx);
         let style = LogStyle::new(&self.appearance, theme::current(cx));
-        let (id, index) = match self.sub_rows.get(row) {
-            Some(&SubRow::Line(id, index)) => (id, index),
-            Some(&SubRow::System(index)) => {
-                return self.render_system_sub_row(row, index, &style, cx);
+        let (id, index) = match self.combined_rows.get(row) {
+            Some(&CombinedRow::Line(id, index)) => (id, index),
+            Some(&CombinedRow::System(index)) => {
+                return self.render_system_combined_row(row, index, &style, cx);
             }
             None => return div().into_any_element(),
         };
@@ -9651,7 +9666,7 @@ impl ChatWindow {
             .find(|network| network.id == conversation.network)
             .map(|network| self.network_label(network))
             .unwrap_or_default();
-        // Same flow as the main log's default layout: channel, network and
+        // Same flow as the channel log's default layout: channel, network and
         // nickname lead the text, so wrapped lines return to the text column.
         let prefix = if message.activity {
             format!(
@@ -9709,7 +9724,7 @@ impl ChatWindow {
             .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.sub_alt)
+                d.bg(style.combined_alt)
             })
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
@@ -9748,7 +9763,7 @@ impl ChatWindow {
 
     /// A system line (CTCP) in the combined log: `[network] text` in the
     /// system message color; a double-click opens the server log.
-    fn render_system_sub_row(
+    fn render_system_combined_row(
         &mut self,
         row: usize,
         index: usize,
@@ -9787,7 +9802,7 @@ impl ChatWindow {
             .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.sub_alt)
+                d.bg(style.combined_alt)
             })
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
@@ -10382,7 +10397,7 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
         KeyBinding::new("escape", CloseSearch, Some("LogSearch")),
         KeyBinding::new("shift-enter", SearchPrevious, Some("LogSearch")),
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
-        KeyBinding::new("secondary-c", CopyLogSelection, Some("MainLog")),
+        KeyBinding::new("secondary-c", CopyLogSelection, Some("ChannelLog")),
         KeyBinding::new("secondary-q", Quit, None),
     ];
     #[cfg(target_os = "macos")]

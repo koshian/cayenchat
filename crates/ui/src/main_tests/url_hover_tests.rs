@@ -105,7 +105,7 @@ fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut Te
         "text starts at {:?}",
         bounds.origin.x
     );
-    chat.read_with(cx, |chat, _| assert_eq!(chat.sub_rows.len(), 1));
+    chat.read_with(cx, |chat, _| assert_eq!(chat.combined_rows.len(), 1));
 }
 
 #[gpui::test]

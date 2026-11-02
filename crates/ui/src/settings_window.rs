@@ -92,21 +92,21 @@ pub(crate) struct SettingsForm {
     /// closing the window drops them.
     pub(crate) drafts: HashMap<String, Draft>,
     pub(crate) member_list_background: Entity<TextInput>,
-    pub(crate) main_log_background: Entity<TextInput>,
-    pub(crate) main_log_alternate: Entity<TextInput>,
+    pub(crate) channel_log_background: Entity<TextInput>,
+    pub(crate) channel_log_alternate: Entity<TextInput>,
     pub(crate) channel_event_color: Entity<TextInput>,
     pub(crate) notice_color: Entity<TextInput>,
     pub(crate) highlight_color: Entity<TextInput>,
-    pub(crate) sub_log_background: Entity<TextInput>,
-    pub(crate) sub_log_alternate: Entity<TextInput>,
+    pub(crate) combined_log_background: Entity<TextInput>,
+    pub(crate) combined_log_alternate: Entity<TextInput>,
     pub(crate) dark_member_list_background: Entity<TextInput>,
-    pub(crate) dark_main_log_background: Entity<TextInput>,
-    pub(crate) dark_main_log_alternate: Entity<TextInput>,
+    pub(crate) dark_channel_log_background: Entity<TextInput>,
+    pub(crate) dark_channel_log_alternate: Entity<TextInput>,
     pub(crate) dark_channel_event_color: Entity<TextInput>,
     pub(crate) dark_notice_color: Entity<TextInput>,
     pub(crate) dark_highlight_color: Entity<TextInput>,
-    pub(crate) dark_sub_log_background: Entity<TextInput>,
-    pub(crate) dark_sub_log_alternate: Entity<TextInput>,
+    pub(crate) dark_combined_log_background: Entity<TextInput>,
+    pub(crate) dark_combined_log_alternate: Entity<TextInput>,
     pub(crate) url_tooltip_color: Entity<TextInput>,
     pub(crate) dark_url_tooltip_color: Entity<TextInput>,
     pub(crate) link_color: Entity<TextInput>,
@@ -120,10 +120,10 @@ pub(crate) struct SettingsForm {
     pub(crate) dark_url_tooltip_text_color: Entity<TextInput>,
     /// Percent, as typed.
     pub(crate) url_tooltip_opacity: Entity<TextInput>,
-    pub(crate) main_log_font: Entity<TextInput>,
-    pub(crate) sub_log_font: Entity<TextInput>,
-    pub(crate) member_font: Entity<TextInput>,
-    pub(crate) channel_font: Entity<TextInput>,
+    pub(crate) channel_log_font: Entity<TextInput>,
+    pub(crate) combined_log_font: Entity<TextInput>,
+    pub(crate) member_list_font: Entity<TextInput>,
+    pub(crate) channel_tree_font: Entity<TextInput>,
     pub(crate) input_font: Entity<TextInput>,
     pub(crate) time_font: Entity<TextInput>,
     /// Comma-separated notification keywords.
@@ -231,13 +231,18 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            main_log_background: field(
+            channel_log_background: field(
                 "#FFFFFF",
-                &values.appearance.main_log_background,
+                &values.appearance.channel_log_background,
                 false,
                 cx,
             ),
-            main_log_alternate: field("#F2F5FF", &values.appearance.main_log_alternate, false, cx),
+            channel_log_alternate: field(
+                "#F2F5FF",
+                &values.appearance.channel_log_alternate,
+                false,
+                cx,
+            ),
             channel_event_color: field(
                 "#007D00",
                 &values.appearance.channel_event_color,
@@ -246,23 +251,33 @@ impl SettingsForm {
             ),
             notice_color: field("#7A838C", &values.appearance.notice_color, false, cx),
             highlight_color: field("#D46A8E", &values.appearance.highlight_color, false, cx),
-            sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
-            sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
+            combined_log_background: field(
+                "#F9FAFB",
+                &values.appearance.combined_log_background,
+                false,
+                cx,
+            ),
+            combined_log_alternate: field(
+                "#F2F5FF",
+                &values.appearance.combined_log_alternate,
+                false,
+                cx,
+            ),
             dark_member_list_background: field(
                 "#1F2124",
                 &values.appearance.dark.member_list_background,
                 false,
                 cx,
             ),
-            dark_main_log_background: field(
+            dark_channel_log_background: field(
                 "#1F2124",
-                &values.appearance.dark.main_log_background,
+                &values.appearance.dark.channel_log_background,
                 false,
                 cx,
             ),
-            dark_main_log_alternate: field(
+            dark_channel_log_alternate: field(
                 "#272B31",
-                &values.appearance.dark.main_log_alternate,
+                &values.appearance.dark.channel_log_alternate,
                 false,
                 cx,
             ),
@@ -279,15 +294,15 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            dark_sub_log_background: field(
+            dark_combined_log_background: field(
                 "#24272B",
-                &values.appearance.dark.sub_log_background,
+                &values.appearance.dark.combined_log_background,
                 false,
                 cx,
             ),
-            dark_sub_log_alternate: field(
+            dark_combined_log_alternate: field(
                 "#2C3036",
-                &values.appearance.dark.sub_log_alternate,
+                &values.appearance.dark.combined_log_alternate,
                 false,
                 cx,
             ),
@@ -342,27 +357,27 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            main_log_font: field(
+            channel_log_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.main_log_font,
+                &values.appearance.channel_log_font,
                 false,
                 cx,
             ),
-            sub_log_font: field(
+            combined_log_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.sub_log_font,
+                &values.appearance.combined_log_font,
                 false,
                 cx,
             ),
-            member_font: field(
+            member_list_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.member_font,
+                &values.appearance.member_list_font,
                 false,
                 cx,
             ),
-            channel_font: field(
+            channel_tree_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.channel_font,
+                &values.appearance.channel_tree_font,
                 false,
                 cx,
             ),
@@ -437,20 +452,20 @@ impl SettingsForm {
         [
             &self.member_list_background,
             &self.dark_member_list_background,
-            &self.main_log_background,
-            &self.dark_main_log_background,
-            &self.main_log_alternate,
-            &self.dark_main_log_alternate,
+            &self.channel_log_background,
+            &self.dark_channel_log_background,
+            &self.channel_log_alternate,
+            &self.dark_channel_log_alternate,
             &self.channel_event_color,
             &self.dark_channel_event_color,
             &self.notice_color,
             &self.dark_notice_color,
             &self.highlight_color,
             &self.dark_highlight_color,
-            &self.sub_log_background,
-            &self.dark_sub_log_background,
-            &self.sub_log_alternate,
-            &self.dark_sub_log_alternate,
+            &self.combined_log_background,
+            &self.dark_combined_log_background,
+            &self.combined_log_alternate,
+            &self.dark_combined_log_alternate,
             &self.link_color,
             &self.dark_link_color,
             &self.link_background,
@@ -496,13 +511,13 @@ impl SettingsForm {
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
-            main_log_background: value(&self.main_log_background),
-            main_log_alternate: value(&self.main_log_alternate),
+            channel_log_background: value(&self.channel_log_background),
+            channel_log_alternate: value(&self.channel_log_alternate),
             channel_event_color: value(&self.channel_event_color),
             notice_color: value(&self.notice_color),
             highlight_color: value(&self.highlight_color),
-            sub_log_background: value(&self.sub_log_background),
-            sub_log_alternate: value(&self.sub_log_alternate),
+            combined_log_background: value(&self.combined_log_background),
+            combined_log_alternate: value(&self.combined_log_alternate),
             url_tooltip_color: value(&self.url_tooltip_color),
             link_color: value(&self.link_color),
             link_background: value(&self.link_background),
@@ -520,21 +535,21 @@ impl SettingsForm {
             compact_urls: self.values.appearance.compact_urls,
             decode_char_refs: self.values.appearance.decode_char_refs,
             reiwa_mode: self.values.appearance.reiwa_mode,
-            main_log_font: value(&self.main_log_font),
-            sub_log_font: value(&self.sub_log_font),
-            member_font: value(&self.member_font),
-            channel_font: value(&self.channel_font),
+            channel_log_font: value(&self.channel_log_font),
+            combined_log_font: value(&self.combined_log_font),
+            member_list_font: value(&self.member_list_font),
+            channel_tree_font: value(&self.channel_tree_font),
             input_font: value(&self.input_font),
             time_font: value(&self.time_font),
             dark: DarkColors {
                 member_list_background: value(&self.dark_member_list_background),
-                main_log_background: value(&self.dark_main_log_background),
-                main_log_alternate: value(&self.dark_main_log_alternate),
+                channel_log_background: value(&self.dark_channel_log_background),
+                channel_log_alternate: value(&self.dark_channel_log_alternate),
                 channel_event_color: value(&self.dark_channel_event_color),
                 notice_color: value(&self.dark_notice_color),
                 highlight_color: value(&self.dark_highlight_color),
-                sub_log_background: value(&self.dark_sub_log_background),
-                sub_log_alternate: value(&self.dark_sub_log_alternate),
+                combined_log_background: value(&self.dark_combined_log_background),
+                combined_log_alternate: value(&self.dark_combined_log_alternate),
                 url_tooltip_color: value(&self.dark_url_tooltip_color),
                 link_color: value(&self.dark_link_color),
                 link_background: value(&self.dark_link_background),
@@ -690,21 +705,21 @@ impl SettingsForm {
             &self.sasl_username,
             &self.sasl_password,
             &self.member_list_background,
-            &self.main_log_background,
-            &self.main_log_alternate,
+            &self.channel_log_background,
+            &self.channel_log_alternate,
             &self.channel_event_color,
             &self.notice_color,
             &self.highlight_color,
-            &self.sub_log_background,
-            &self.sub_log_alternate,
+            &self.combined_log_background,
+            &self.combined_log_alternate,
             &self.dark_member_list_background,
-            &self.dark_main_log_background,
-            &self.dark_main_log_alternate,
+            &self.dark_channel_log_background,
+            &self.dark_channel_log_alternate,
             &self.dark_channel_event_color,
             &self.dark_notice_color,
             &self.dark_highlight_color,
-            &self.dark_sub_log_background,
-            &self.dark_sub_log_alternate,
+            &self.dark_combined_log_background,
+            &self.dark_combined_log_alternate,
             &self.url_tooltip_color,
             &self.dark_url_tooltip_color,
             &self.link_color,
@@ -716,10 +731,10 @@ impl SettingsForm {
             &self.url_tooltip_text_color,
             &self.dark_url_tooltip_text_color,
             &self.url_tooltip_opacity,
-            &self.main_log_font,
-            &self.sub_log_font,
-            &self.member_font,
-            &self.channel_font,
+            &self.channel_log_font,
+            &self.combined_log_font,
+            &self.member_list_font,
+            &self.channel_tree_font,
             &self.input_font,
             &self.time_font,
             &self.keywords,
@@ -1028,10 +1043,10 @@ pub(crate) enum SettingsTab {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FontTarget {
-    MainLog,
-    SubLog,
-    Members,
-    Channels,
+    ChannelLog,
+    CombinedLog,
+    MemberList,
+    ChannelTree,
     Input,
     Time,
 }
@@ -1268,10 +1283,10 @@ impl SettingsWindow {
                     "sasl_password"
                 },
             ),
-            (&self.settings.main_log_font, "font_system_placeholder"),
-            (&self.settings.sub_log_font, "font_system_placeholder"),
-            (&self.settings.member_font, "font_system_placeholder"),
-            (&self.settings.channel_font, "font_system_placeholder"),
+            (&self.settings.channel_log_font, "font_system_placeholder"),
+            (&self.settings.combined_log_font, "font_system_placeholder"),
+            (&self.settings.member_list_font, "font_system_placeholder"),
+            (&self.settings.channel_tree_font, "font_system_placeholder"),
             (&self.settings.input_font, "font_system_placeholder"),
             (&self.settings.time_font, "font_monospace_placeholder"),
         ] {
@@ -4249,10 +4264,10 @@ impl SettingsWindow {
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
         match target {
-            FontTarget::MainLog => self.settings.main_log_font.clone(),
-            FontTarget::SubLog => self.settings.sub_log_font.clone(),
-            FontTarget::Members => self.settings.member_font.clone(),
-            FontTarget::Channels => self.settings.channel_font.clone(),
+            FontTarget::ChannelLog => self.settings.channel_log_font.clone(),
+            FontTarget::CombinedLog => self.settings.combined_log_font.clone(),
+            FontTarget::MemberList => self.settings.member_list_font.clone(),
+            FontTarget::ChannelTree => self.settings.channel_tree_font.clone(),
             FontTarget::Input => self.settings.input_font.clone(),
             FontTarget::Time => self.settings.time_font.clone(),
         }
@@ -4577,14 +4592,14 @@ impl SettingsWindow {
             ))
             .child(self.color_pair(
                 &self.i18n.text("channel_log"),
-                &self.settings.main_log_background,
-                &self.settings.dark_main_log_background,
+                &self.settings.channel_log_background,
+                &self.settings.dark_channel_log_background,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("channel_log_alternate"),
-                &self.settings.main_log_alternate,
-                &self.settings.dark_main_log_alternate,
+                &self.settings.channel_log_alternate,
+                &self.settings.dark_channel_log_alternate,
                 cx,
             ))
             .child(self.color_pair(
@@ -4607,14 +4622,14 @@ impl SettingsWindow {
             ))
             .child(self.color_pair(
                 &self.i18n.text("combined_log"),
-                &self.settings.sub_log_background,
-                &self.settings.dark_sub_log_background,
+                &self.settings.combined_log_background,
+                &self.settings.dark_combined_log_background,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("combined_log_alternate"),
-                &self.settings.sub_log_alternate,
-                &self.settings.dark_sub_log_alternate,
+                &self.settings.combined_log_alternate,
+                &self.settings.dark_combined_log_alternate,
                 cx,
             ))
             .child(self.color_pair(
@@ -4670,10 +4685,10 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
-            .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
-            .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
-            .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
-            .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
+            .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
+            .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
+            .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
+            .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
             .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
             .when_some(self.status_message(), |d, feedback| {

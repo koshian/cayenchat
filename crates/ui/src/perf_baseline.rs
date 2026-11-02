@@ -19,7 +19,7 @@
 //! instead: every member has an avatar (one URL each, served by the same
 //! fetcher and cropped to a 32×32 square), so message and member rows draw
 //! avatar slots. All
-//! variants also time scrolling the main log and member list changes in a
+//! variants also time scrolling the channel log and member list changes in a
 //! 2,000-member channel, one at a time (`roster_2000`) and 32 in one event
 //! batch (`roster_burst_32`).
 //!
@@ -486,10 +486,12 @@ fn run_with(
     }
     unread.report();
 
-    // Scrolling the selected main log up through its history, 20 rows (one
+    // Scrolling the selected channel log up through its history, 20 rows (one
     // image line with previews on) per step, and back down.
     let selected = chat.read_with(cx, |chat, _| chat.state.selection());
-    let rows = chat.read_with(cx, |chat, _| chat.main_lists[&selected].state.item_count());
+    let rows = chat.read_with(cx, |chat, _| {
+        chat.channel_log_lists[&selected].state.item_count()
+    });
     let mut scrolling = Timings::new(servers, "scroll_20_rows");
     for index in 0..SCROLL_SAMPLES {
         let step = if index < SCROLL_SAMPLES / 2 {
@@ -501,7 +503,7 @@ fn run_with(
         scrolling.time(|| {
             cx.update(|window, cx| {
                 chat.update(cx, |chat, _| {
-                    chat.main_lists[&selected]
+                    chat.channel_log_lists[&selected]
                         .state
                         .scroll_to(gpui::ListOffset {
                             item_ix,
@@ -514,7 +516,7 @@ fn run_with(
         cx.run_until_parked();
         if index == SCROLL_SAMPLES / 2 - 1 {
             let top = chat.read_with(cx, |chat, _| {
-                chat.main_lists[&selected]
+                chat.channel_log_lists[&selected]
                     .state
                     .logical_scroll_top()
                     .item_ix

@@ -55,7 +55,7 @@ pub struct Layout {
     pub right_width: Option<f32>,
     /// Height of the member list in that column.
     pub members_height: Option<f32>,
-    /// Share of the left column's height that the main log takes.
+    /// Share of the left column's height that the channel log takes.
     pub log_split: Option<f32>,
 }
 

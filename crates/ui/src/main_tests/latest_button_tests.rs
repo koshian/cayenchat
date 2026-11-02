@@ -76,7 +76,7 @@ fn button_shown(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> bool {
 
 fn scroll_to_top(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
     chat.update(cx, |chat, _| {
-        chat.main_lists[&chat.state.selection()]
+        chat.channel_log_lists[&chat.state.selection()]
             .state
             .scroll_to(ListOffset {
                 item_ix: 0,
@@ -88,7 +88,7 @@ fn scroll_to_top(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
 
 fn behind(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> bool {
     chat.read_with(cx, |chat, _| {
-        chat.main_lists[&chat.state.selection()].is_behind_latest()
+        chat.channel_log_lists[&chat.state.selection()].is_behind_latest()
     })
 }
 
@@ -173,7 +173,7 @@ fn the_button_follows_a_resize_without_further_input(cx: &mut TestAppContext) {
     let (chat, cx) = open_chat(cx, 200);
     // One wheel step above the end of the log: the button shows.
     chat.update(cx, |chat, _| {
-        chat.main_lists[&chat.state.selection()]
+        chat.channel_log_lists[&chat.state.selection()]
             .state
             .scroll_to(ListOffset {
                 item_ix: 150,

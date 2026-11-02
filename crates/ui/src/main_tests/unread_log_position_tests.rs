@@ -43,7 +43,7 @@ fn open_chat(
             append(chat, "#b", &format!("line {n}"));
         }
         chat.sync_log_lists();
-        chat.main_lists[&Selection::Channel(b)]
+        chat.channel_log_lists[&Selection::Channel(b)]
             .state
             .scroll_to(ListOffset {
                 item_ix: 0,
@@ -80,7 +80,7 @@ fn select_b_follows_bottom(
         }
         assert_eq!(chat.state.is_unread(b), unread);
         chat.dispatch(Command::SelectChannel(b), window, cx);
-        let list = &chat.main_lists[&Selection::Channel(b)];
+        let list = &chat.channel_log_lists[&Selection::Channel(b)];
         list.state.logical_scroll_top().item_ix >= list.state.item_count()
     })
 }
