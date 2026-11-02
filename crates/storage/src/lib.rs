@@ -3308,8 +3308,10 @@ mod tests {
         assert_eq!(settings.appearance.channel_tree_background, "#EAF3FF");
         assert_eq!(settings.appearance.dark.channel_tree_background, "#1D2630");
 
-        let mut appearance = Appearance::default();
-        appearance.channel_tree_background = "blue".into();
+        let mut appearance = Appearance {
+            channel_tree_background: "blue".into(),
+            ..Appearance::default()
+        };
         assert!(appearance.validate().is_err());
         appearance.channel_tree_background = "#EAF3FF".into();
         appearance.dark.channel_tree_background = "blue".into();
