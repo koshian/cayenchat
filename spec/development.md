@@ -1366,6 +1366,23 @@ python3 scripts/screenshots/demo.py readme --language japanese --out assets/scre
 python3 scripts/screenshots/demo.py check
 ```
 
+`--variant no-avatars|reiwa|parts` takes the other README pictures
+(`cayenchat-{en,ja}-{noicon,reiwa,parts}.png`): `user_avatars` off for the
+demo server, `appearance.reiwa_mode` on, or the standard window with the four
+panes outlined and named (channel log, combined log, member list, channel
+tree; drawn by ImageMagick `convert` at fixed positions of the 1280×800
+picture, so the size must stay 1280×800). Nothing else differs from the
+standard settings.
+
+```sh
+python3 scripts/screenshots/demo.py readme --variant no-avatars --out assets/screenshots/cayenchat-en-noicon.png
+python3 scripts/screenshots/demo.py readme --variant reiwa --out assets/screenshots/cayenchat-en-reiwa.png
+python3 scripts/screenshots/demo.py readme --variant parts --out assets/screenshots/cayenchat-en-parts.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant no-avatars --out assets/screenshots/cayenchat-ja-noicon.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant reiwa --out assets/screenshots/cayenchat-ja-reiwa.png
+python3 scripts/screenshots/demo.py readme --language japanese --variant parts --out assets/screenshots/cayenchat-ja-parts.png
+```
+
 `readme` builds the `demo` build from the checked-out sources, starts the demo
 server and `scripts/e2e/gui_session.py` with `--wm openbox`, takes the picture with the pointer
 off the menu bar, then runs the app a second time with `show_toolbar` off and
@@ -1395,7 +1412,7 @@ from `demo.py run` without `--app`, which starts the build itself.
 `run` writes `provenance.json` next to its settings, and `readme` records
 the commit, whether the sources were uncommitted, features, the binary's and
 the picture's SHA-256, capture time, OS, language, theme and size for each picture in
-`assets/screenshots/provenance.json`. `check` fails when the English or Japanese picture has no entry, a
+`assets/screenshots/provenance.json`. `check` fails when a README picture has no entry, a
 file is not the recorded one (hash), or a recorded picture
 is more than 25 commits to `crates/ui` and `crates/app` behind `HEAD` (or was
 taken from uncommitted sources); run it before a release and after changes to

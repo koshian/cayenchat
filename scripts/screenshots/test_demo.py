@@ -18,6 +18,21 @@ class Settings(unittest.TestCase):
                 self.assertIs(settings["appearance"].get(key), True, f"{language}: {key}")
             self.assertIs(settings["servers"][0].get("user_avatars"), True, language)
 
+    def test_the_variants_switch_only_avatars_and_reiwa_mode(self):
+        for language, script in demo.SCRIPTS.items():
+            standard = demo.settings(script, 1234, language, "light")
+            self.assertNotIn("reiwa_mode", standard["appearance"])
+            self.assertEqual(standard, demo.settings(script, 1234, language, "light", True,
+                                                     "parts"))
+            plain = demo.settings(script, 1234, language, "light", True, "no-avatars")
+            self.assertIs(plain["servers"][0]["user_avatars"], False)
+            plain["servers"][0]["user_avatars"] = True
+            self.assertEqual(plain, standard)
+            reiwa = demo.settings(script, 1234, language, "light", True, "reiwa")
+            self.assertIs(reiwa["appearance"]["reiwa_mode"], True)
+            del reiwa["appearance"]["reiwa_mode"]
+            self.assertEqual(reiwa, standard)
+
     def test_the_toolbar_is_shown_unless_asked_otherwise(self):
         for language, script in demo.SCRIPTS.items():
             self.assertIs(demo.settings(script, 1234, language, "light")["show_toolbar"], True)

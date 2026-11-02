@@ -12,6 +12,14 @@ A compact native IRC desktop client written in Rust and GPUI, for macOS, Windows
 
 ![CayenChat on Linux: a channel log with avatars and an image preview, the member list and the channel tree](assets/screenshots/cayenchat-en.png)
 
+| Without avatars | Reiwa mode |
+|---|---|
+| ![CayenChat with avatars turned off](assets/screenshots/cayenchat-en-noicon.png) | ![CayenChat in Reiwa mode, where each avatar spans two lines](assets/screenshots/cayenchat-en-reiwa.png) |
+
+The four panes are the channel tree, the channel log, the combined log and the member list:
+
+![The four panes of the CayenChat window, named: channel log, combined log, member list and channel tree](assets/screenshots/cayenchat-en-parts.png)
+
 ## Build and run
 
 Requires Rust 1.88 or later.

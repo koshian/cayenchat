@@ -241,7 +241,51 @@ def write_images(directory, script):
 
 
 # ------------------------------------------------------------------ settings
-def settings(script, port, language, theme, toolbar=True):
+# Looks the README shows besides the standard one (--variant of `readme`).
+# "parts" is the standard window with the four panes named (annotate()).
+VARIANTS = ("standard", "no-avatars", "reiwa", "parts")
+
+# The names of spec/architecture.md ("Pane names"), as the README shows them,
+# and where each pane is in the 1280x800 README capture: left, top, right,
+# bottom of the pane and the point its label is centered on.
+PANE_LABELS = {
+    "english": ("Channel log", "Combined log", "Member list", "Channel tree"),
+    "japanese": ("チャンネルログ", "全体ログ", "メンバーリスト", "チャンネルツリー"),
+}
+PANES = (
+    ((52, 133, 986, 421), (520, 255)),   # channel log
+    ((52, 462, 986, 749), (520, 520)),   # combined log
+    ((991, 133, 1229, 441), (1110, 300)),  # member list
+    ((991, 446, 1229, 749), (1110, 640)),  # channel tree
+)
+LABEL_FONT = {"english": "DejaVu-Sans-Bold", "japanese": "Noto-Sans-CJK-JP-Bold"}
+
+
+def annotate(png, language, size):
+    """Outlines the four panes of the standard picture and names each one."""
+    if size != "1280x800":
+        sys.exit("the pane positions are for the 1280x800 picture; use --size 1280x800")
+    if shutil.which("convert") is None:
+        sys.exit("ImageMagick (convert) is required to name the panes")
+    command = ["convert", png, "-font", LABEL_FONT[language], "-pointsize", "22"]
+    for ((left, top, right, bottom), (x, y)), label in zip(PANES, PANE_LABELS[language]):
+        width = (14 if language == "english" else 24) * len(label) + 36
+        command += ["-fill", "none", "-stroke", "#d6336c", "-strokewidth", "3",
+                    "-draw", f"rectangle {left},{top} {right},{bottom}",
+                    "-stroke", "none", "-fill", "#d6336c",
+                    "-draw", f"roundrectangle {x - width // 2},{y - 22} "
+                             f"{x + width // 2},{y + 22} 8,8",
+                    "-fill", "white", "-gravity", "NorthWest",
+                    "-annotate", f"+{x - width // 2 + 18}+{y - 15}", label,
+                    "-gravity", "NorthWest"]
+    command.append(png)
+    subprocess.run(command, check=True)
+
+
+def settings(script, port, language, theme, toolbar=True, variant="standard"):
+    appearance = {"image_previews": True, "compact_urls": True}
+    if variant == "reiwa":
+        appearance["reiwa_mode"] = True
     return {
         "version": SETTINGS_VERSION,
         "language": language,
@@ -252,10 +296,10 @@ def settings(script, port, language, theme, toolbar=True):
         # The toolbar is on by default; saying so keeps the picture the same
         # if the default or an older saved file ever differs.
         "show_toolbar": toolbar,
-        "appearance": {"image_previews": True, "compact_urls": True},
+        "appearance": appearance,
         "servers": [{
             "id": "demo",
-            "user_avatars": True,
+            "user_avatars": variant != "no-avatars",
             "host": "127.0.0.1",
             "port": port,
             "use_tls": False,
@@ -429,7 +473,8 @@ async def serve(script, port, played, ready=None):
 
 # ------------------------------------------------------- build and provenance
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-REQUIRED_PICTURES = ("cayenchat-en.png", "cayenchat-ja.png")
+REQUIRED_PICTURES = tuple(f"cayenchat-{language}{suffix}.png" for language in ("en", "ja")
+                          for suffix in ("", "-noicon", "-reiwa", "-parts"))
 PROVENANCE = os.path.join(ROOT, "assets", "screenshots", "provenance.json")
 # Ends the README check: more commits than this to the app since a picture.
 README_MAX_BEHIND = 25
@@ -517,6 +562,7 @@ def provenance(app, args, size):
         "theme": args.theme,
         "size": size,
         "show_toolbar": True,
+        "variant": args.variant,
     }
 
 
@@ -620,7 +666,7 @@ def capture(args, script, directory, toolbar, name):
     write_images(images, script)
     settings_path = os.path.join(directory, f"settings-{name}.json")
     with open(settings_path, "w", encoding="utf-8") as file:
-        json.dump(settings(script, args.port, args.language, args.theme, toolbar), file, indent=2,
+        json.dump(settings(script, args.port, args.language, args.theme, toolbar, args.variant), file, indent=2,
                   ensure_ascii=False)
     session = os.path.join(directory, f"gui-{name}")
     env = dict(os.environ, CAYENCHAT_GUI_SESSION=session)
@@ -671,7 +717,7 @@ def command_readme(args):
     readme_window_geometry(args.size)
     script = script_for(args)
     args.app_path = resolve_app(args)
-    directory = os.path.join(ROOT, "target", "tmp", f"readme-shot-{args.language}-{args.theme}")
+    directory = os.path.join(ROOT, "target", "tmp", f"readme-shot-{args.language}-{args.theme}-{args.variant}")
     private_directory(directory)
     args.played, ready = threading.Event(), threading.Event()
     threading.Thread(target=lambda: asyncio.run(serve(script, args.port, args.played, ready)),
@@ -687,6 +733,8 @@ def command_readme(args):
         sys.exit("the toolbar is not on the screen: the top of the window is the same "
                  "with and without it; not using this picture")
     print("ok: the toolbar is rendered (the window differs from the toolbar-less one)")
+    if args.variant == "parts":
+        annotate(png, args.language, args.size)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     shutil.copyfile(png, args.out)
     try:
@@ -763,6 +811,9 @@ def main():
     command.add_argument("--theme", default="light", choices=["light", "dark"])
     command.add_argument("--size", default="1280x800", help="Xvfb screen size (window is smaller to show Openbox decorations)")
     command.add_argument("--display", default=":98", help="Xvfb display")
+    command.add_argument("--variant", default="standard", choices=VARIANTS,
+                         help="standard; no-avatars (user_avatars off); reiwa "
+                         "(appearance.reiwa_mode); parts (standard with the four panes named)")
     command.add_argument("--out", required=True, help="PNG to write, e.g. assets/screenshots/cayenchat-en.png")
     command.set_defaults(func=command_readme)
 
