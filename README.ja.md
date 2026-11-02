@@ -12,6 +12,14 @@ Rust と GPUI で作った、macOS・Windows・Linux 向けのコンパクトな
 
 ![Linux 版の CayenChat：アバターと画像プレビューのあるチャンネルのログ、メンバー一覧、チャンネル一覧](assets/screenshots/cayenchat-ja.png)
 
+| アイコンなし | 令和モード |
+|---|---|
+| ![アバターを表示しない CayenChat](assets/screenshots/cayenchat-ja-noicon.png) | ![アバターが2行にまたがる令和モードの CayenChat](assets/screenshots/cayenchat-ja-reiwa.png) |
+
+画面はチャンネルツリー、チャンネルログ、全体ログ、メンバーリストの4つのペインでできています。
+
+![CayenChat の4つのペインの名称：チャンネルログ、全体ログ、メンバーリスト、チャンネルツリー](assets/screenshots/cayenchat-ja-parts.png)
+
 ## ビルドと起動
 
 Rust 1.88 以降が必要です。
