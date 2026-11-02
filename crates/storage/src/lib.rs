@@ -601,6 +601,9 @@ const MAX_CHARSET_CHANNEL_BYTES: usize = 200;
 pub struct Appearance {
     #[serde(alias = "background")]
     pub member_list_background: String,
+    /// Channel tree background. Added after version 15 without a version
+    /// change; files without it read as the default.
+    pub channel_tree_background: String,
     #[serde(alias = "main_log_background")]
     pub channel_log_background: String,
     #[serde(alias = "main_log_alternate")]
@@ -697,6 +700,9 @@ pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
 #[serde(default)]
 pub struct DarkColors {
     pub member_list_background: String,
+    /// Added after version 15 without a version change; files without it
+    /// read as the default.
+    pub channel_tree_background: String,
     #[serde(alias = "main_log_background")]
     pub channel_log_background: String,
     #[serde(alias = "main_log_alternate")]
@@ -719,6 +725,7 @@ impl Default for DarkColors {
     fn default() -> Self {
         Self {
             member_list_background: "#1F2124".into(),
+            channel_tree_background: "#1D2630".into(),
             channel_log_background: "#1F2124".into(),
             channel_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
@@ -739,6 +746,7 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             member_list_background: "#FFFFFF".into(),
+            channel_tree_background: "#EAF3FF".into(),
             channel_log_background: "#FFFFFF".into(),
             channel_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
@@ -811,6 +819,7 @@ impl Appearance {
     pub fn validate(&self) -> Result<(), String> {
         for (label, value) in [
             ("Member list", &self.member_list_background),
+            ("Channel tree", &self.channel_tree_background),
             ("Channel log", &self.channel_log_background),
             ("Channel log alternate", &self.channel_log_alternate),
             ("System message", &self.channel_event_color),
@@ -827,6 +836,7 @@ impl Appearance {
             ("URL tooltip text", &self.url_tooltip_text_color),
             ("Dark URL tooltip text", &self.dark.url_tooltip_text_color),
             ("Dark member list", &self.dark.member_list_background),
+            ("Dark channel tree", &self.dark.channel_tree_background),
             ("Dark channel log", &self.dark.channel_log_background),
             (
                 "Dark channel log alternate",
@@ -3282,6 +3292,30 @@ mod tests {
         let reloaded = load_from(&path).unwrap().unwrap();
         assert!(!reloaded.appearance.decode_char_refs);
         assert_eq!(reloaded, settings);
+    }
+
+    #[test]
+    fn channel_tree_background_defaults_for_old_settings_and_is_validated() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = old["appearance"].as_object_mut().unwrap();
+        appearance.remove("channel_tree_background");
+        appearance["dark"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_tree_background");
+        let settings: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.appearance, Appearance::default());
+        assert_eq!(settings.appearance.channel_tree_background, "#EAF3FF");
+        assert_eq!(settings.appearance.dark.channel_tree_background, "#1D2630");
+
+        let mut appearance = Appearance {
+            channel_tree_background: "blue".into(),
+            ..Appearance::default()
+        };
+        assert!(appearance.validate().is_err());
+        appearance.channel_tree_background = "#EAF3FF".into();
+        appearance.dark.channel_tree_background = "blue".into();
+        assert!(appearance.validate().is_err());
     }
 
     #[test]

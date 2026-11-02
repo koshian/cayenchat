@@ -195,6 +195,7 @@
   "appearance": "Appearance",
   "appearance_intro": "Use #RRGGBB colors. Type in a font field to filter choices; leave it empty for the default.",
   "member_list_background": "Member list background",
+  "channel_tree_background": "Channel tree background",
   "channel_log": "Channel log",
   "channel_log_alternate": "Channel log alternate",
   "channel_event_color": "System message text",

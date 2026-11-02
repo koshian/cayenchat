@@ -182,6 +182,10 @@ impl SettingsWindow {
                 &appearance.member_list_background,
             ),
             (
+                &form.channel_tree_background,
+                &appearance.channel_tree_background,
+            ),
+            (
                 &form.channel_log_background,
                 &appearance.channel_log_background,
             ),
@@ -203,6 +207,10 @@ impl SettingsWindow {
             (
                 &form.dark_member_list_background,
                 &dark.member_list_background,
+            ),
+            (
+                &form.dark_channel_tree_background,
+                &dark.channel_tree_background,
             ),
             (
                 &form.dark_channel_log_background,

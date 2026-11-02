@@ -92,6 +92,7 @@ pub(crate) struct SettingsForm {
     /// closing the window drops them.
     pub(crate) drafts: HashMap<String, Draft>,
     pub(crate) member_list_background: Entity<TextInput>,
+    pub(crate) channel_tree_background: Entity<TextInput>,
     pub(crate) channel_log_background: Entity<TextInput>,
     pub(crate) channel_log_alternate: Entity<TextInput>,
     pub(crate) channel_event_color: Entity<TextInput>,
@@ -100,6 +101,7 @@ pub(crate) struct SettingsForm {
     pub(crate) combined_log_background: Entity<TextInput>,
     pub(crate) combined_log_alternate: Entity<TextInput>,
     pub(crate) dark_member_list_background: Entity<TextInput>,
+    pub(crate) dark_channel_tree_background: Entity<TextInput>,
     pub(crate) dark_channel_log_background: Entity<TextInput>,
     pub(crate) dark_channel_log_alternate: Entity<TextInput>,
     pub(crate) dark_channel_event_color: Entity<TextInput>,
@@ -231,6 +233,12 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            channel_tree_background: field(
+                "#EAF3FF",
+                &values.appearance.channel_tree_background,
+                false,
+                cx,
+            ),
             channel_log_background: field(
                 "#FFFFFF",
                 &values.appearance.channel_log_background,
@@ -266,6 +274,12 @@ impl SettingsForm {
             dark_member_list_background: field(
                 "#1F2124",
                 &values.appearance.dark.member_list_background,
+                false,
+                cx,
+            ),
+            dark_channel_tree_background: field(
+                "#1D2630",
+                &values.appearance.dark.channel_tree_background,
                 false,
                 cx,
             ),
@@ -448,10 +462,12 @@ impl SettingsForm {
     }
 
     /// The `#RRGGBB` code fields shown in the colors tab.
-    fn color_inputs(&self) -> [&Entity<TextInput>; 26] {
+    fn color_inputs(&self) -> [&Entity<TextInput>; 28] {
         [
             &self.member_list_background,
             &self.dark_member_list_background,
+            &self.channel_tree_background,
+            &self.dark_channel_tree_background,
             &self.channel_log_background,
             &self.dark_channel_log_background,
             &self.channel_log_alternate,
@@ -511,6 +527,7 @@ impl SettingsForm {
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
+            channel_tree_background: value(&self.channel_tree_background),
             channel_log_background: value(&self.channel_log_background),
             channel_log_alternate: value(&self.channel_log_alternate),
             channel_event_color: value(&self.channel_event_color),
@@ -543,6 +560,7 @@ impl SettingsForm {
             time_font: value(&self.time_font),
             dark: DarkColors {
                 member_list_background: value(&self.dark_member_list_background),
+                channel_tree_background: value(&self.dark_channel_tree_background),
                 channel_log_background: value(&self.dark_channel_log_background),
                 channel_log_alternate: value(&self.dark_channel_log_alternate),
                 channel_event_color: value(&self.dark_channel_event_color),
@@ -689,7 +707,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 49] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 51] {
         [
             &self.custom_host,
             &self.port,
@@ -705,6 +723,7 @@ impl SettingsForm {
             &self.sasl_username,
             &self.sasl_password,
             &self.member_list_background,
+            &self.channel_tree_background,
             &self.channel_log_background,
             &self.channel_log_alternate,
             &self.channel_event_color,
@@ -713,6 +732,7 @@ impl SettingsForm {
             &self.combined_log_background,
             &self.combined_log_alternate,
             &self.dark_member_list_background,
+            &self.dark_channel_tree_background,
             &self.dark_channel_log_background,
             &self.dark_channel_log_alternate,
             &self.dark_channel_event_color,
@@ -4588,6 +4608,12 @@ impl SettingsWindow {
                 &self.i18n.text("member_list_background"),
                 &self.settings.member_list_background,
                 &self.settings.dark_member_list_background,
+                cx,
+            ))
+            .child(self.color_pair(
+                &self.i18n.text("channel_tree_background"),
+                &self.settings.channel_tree_background,
+                &self.settings.dark_channel_tree_background,
                 cx,
             ))
             .child(self.color_pair(
