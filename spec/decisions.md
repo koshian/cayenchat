@@ -915,7 +915,7 @@ image's shorter side, the view shows it centered in twice its size so it
 can be adjusted precisely (otherwise the whole image), **Whole Image**
 starts over, and a small preview shows the result; the upload button names the
 host and is the confirmation. Only the selected square is uploaded, shrunk to at most
-256×256 (JPEG quality 88, or PNG when the image has transparency), so a
+256×256 and always encoded as PNG (D082), so a
 full-resolution photo never leaves the computer. PNG, JPEG, GIF, WebP,
 BMP and TIFF can be edited; HEIC/AVIF are refused with a hint to export
 JPEG. The upload goes through the same `ExternalUploader` as chat images
@@ -3590,3 +3590,14 @@ the start of the session.
   confirm, and show the image when ready. Avatars keep the old behavior.
 - **Accepted.** Rows drawn as text are remeasured when confirmed, like the
   existing remeasuring when a load ends.
+
+## D082 — Our own avatar is always encoded as PNG (#904)
+
+- **Decision.** `AvatarSource::encode` always writes PNG (extension `png`),
+  after the unchanged crop and Lanczos3 shrink to at most 256×256. The
+  transparency scan and the JPEG path (quality 88) are gone.
+- **Why.** JPEG smeared flat colors and hard edges (pixel art, drawings,
+  logos), and the 32 px display shrink made it worse. Output is at most
+  256 px a side, so even noise stays around 200 KB, well inside the avatar
+  fetch limit (`Limits::avatar`, 2 MiB); two formats were not worth it.
+- **Unchanged.** Display-side thumbnails and chat image uploads.
