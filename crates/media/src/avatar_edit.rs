@@ -11,9 +11,7 @@
 use std::io::Cursor;
 
 use cayenchat_model::attachment::ImageFormat as Sniffed;
-use image::{
-    DynamicImage, ImageDecoder, ImageFormat, codecs::jpeg::JpegEncoder, imageops::FilterType,
-};
+use image::{DynamicImage, ImageDecoder, ImageFormat, imageops::FilterType};
 
 use crate::{Limits, LoadError, decode::Thumbnail};
 
@@ -25,12 +23,10 @@ pub const AVATAR_OUTPUT_SIDE: u32 = 256;
 pub const MAX_WORKING_SIDE: u32 = 2048;
 /// Smallest square the user can select, in working pixels.
 const MIN_CROP_SIDE: f64 = 32.0;
-const JPEG_QUALITY: u8 = 88;
 
 /// A decoded, upright image being edited.
 pub struct AvatarSource {
     image: DynamicImage,
-    has_alpha: bool,
 }
 
 impl std::fmt::Debug for AvatarSource {
@@ -54,7 +50,7 @@ pub struct Crop {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedAvatar {
     pub bytes: Vec<u8>,
-    /// `png` or `jpg`, for the upload's file name.
+    /// Always `png`, for the upload's file name.
     pub extension: &'static str,
 }
 
@@ -112,11 +108,7 @@ pub fn open(bytes: &[u8]) -> Result<AvatarSource, LoadError> {
         );
         image = image.thumbnail_exact(width, height);
     }
-    let has_alpha = match &image {
-        DynamicImage::ImageRgba8(rgba) => rgba.pixels().any(|p| p[3] < 255),
-        other => other.color().has_alpha() && other.to_rgba8().pixels().any(|p| p[3] < 255),
-    };
-    Ok(AvatarSource { image, has_alpha })
+    Ok(AvatarSource { image })
 }
 
 impl AvatarSource {
@@ -234,8 +226,7 @@ impl AvatarSource {
     }
 
     /// The selected square scaled to [`AVATAR_OUTPUT_SIDE`] (never
-    /// enlarged beyond the selection), as PNG when the image has
-    /// transparency and JPEG otherwise.
+    /// enlarged beyond the selection), always as PNG.
     pub fn encode(&self, crop: Crop) -> Result<EncodedAvatar, LoadError> {
         let crop = self.clamp(crop);
         let side = crop.side.round().max(1.0) as u32;
@@ -249,19 +240,14 @@ impl AvatarSource {
             square.resize_exact(out, out, FilterType::Lanczos3)
         };
         let mut bytes = Vec::new();
-        let extension = if self.has_alpha {
-            square
-                .to_rgba8()
-                .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-                .map_err(|_| LoadError::Malformed)?;
-            "png"
-        } else {
-            JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY)
-                .encode_image(&square.to_rgb8())
-                .map_err(|_| LoadError::Malformed)?;
-            "jpg"
-        };
-        Ok(EncodedAvatar { bytes, extension })
+        square
+            .to_rgba8()
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .map_err(|_| LoadError::Malformed)?;
+        Ok(EncodedAvatar {
+            bytes,
+            extension: "png",
+        })
     }
 }
 
@@ -280,10 +266,10 @@ mod tests {
         assert_eq!(crop.side, 1365.0);
         assert!((crop.x - (2048.0 - 1365.0) / 2.0).abs() < 1.0);
         let out = source.encode(crop).unwrap();
-        assert_eq!(out.extension, "jpg");
+        assert_eq!(out.extension, "png");
         let decoded = image::load_from_memory(&out.bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (256, 256));
-        assert!(out.bytes.len() < 64 * 1024, "{}", out.bytes.len());
+        assert!(out.bytes.len() < 512 * 1024, "{}", out.bytes.len());
         // A small selection is not enlarged.
         let small = source.clamp(Crop {
             x: 10.0,
@@ -371,12 +357,12 @@ mod tests {
             source.encode(source.initial_crop()).unwrap().extension,
             "png"
         );
-        // Opaque PNG screenshots become JPEG.
+        // Opaque images are PNG too.
         let opaque = open(&encode(ImageFormat::Png, 64, 64)).unwrap();
-        assert_eq!(
-            opaque.encode(opaque.initial_crop()).unwrap().extension,
-            "jpg"
-        );
+        let out = opaque.encode(opaque.initial_crop()).unwrap();
+        assert_eq!(out.extension, "png");
+        let decoded = image::load_from_memory(&out.bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (64, 64));
     }
 
     #[test]
