@@ -314,7 +314,9 @@ impl HistoryRequests {
     /// Reads the connection's encoding (a WHATWG label); UTF-8 and unknown
     /// labels need no wire-side comparison.
     pub(crate) fn with_wire_encoding(mut self, label: &str) -> Self {
-        self.wire = Encoding::for_label(label.as_bytes()).filter(|e| *e != encoding_rs::UTF_8);
+        self.wire = irc::proto::charsets::Charset::for_label(label)
+            .map(|charset| charset.encoding)
+            .filter(|e| *e != encoding_rs::UTF_8);
         self
     }
 

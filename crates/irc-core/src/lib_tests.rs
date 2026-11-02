@@ -523,6 +523,40 @@ fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp
 }
 
 #[test]
+fn seven_bit_jis_counts_as_iso2022jp_for_auto_char_refs_and_keeps_half_width_kana() {
+    let channel = [ChannelEncoding {
+        channel: "#jp".into(),
+        decode: None,
+        encode: Some("7bit-jis".into()),
+        char_refs: None,
+    }];
+    // On the channel only; the connection's own encoding is not changed.
+    let (connection, mut queued) = queueing_connection("UTF-8", true, &channel);
+    connection.send_message("#jp", "😀ｱ", false).unwrap();
+    connection.send_message("#other", "😀ｱ", false).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("&#128512;ｱ".into(), "&#128512;ｱ".into()),
+            ("😀ｱ".into(), "😀ｱ".into())
+        ]
+    );
+    // As the connection's encoding too.
+    let (connection, mut queued) = queueing_connection("7bit-jis", true, &[]);
+    connection.send_message("#t", "😀ｱ", false).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [("&#128512;ｱ".into(), "&#128512;ｱ".into())]
+    );
+    // The bytes checked are the bytes written: half-width kana stay one
+    // byte each, full-width ones take two.
+    let kept = encode_strict("PRIVMSG #t :ｱ\r\n", "7bit-jis").unwrap();
+    let folded = encode_strict("PRIVMSG #t :ｱ\r\n", "ISO-2022-JP").unwrap();
+    assert_eq!(&*kept, b"PRIVMSG #t :\x1b(I\x31\x1b(B\r\n");
+    assert_eq!(&*folded, b"PRIVMSG #t :\x1b$B%\x22\x1b(B\r\n");
+}
+
+#[test]
 fn iso2022jp_compatible_mode_converts_whatever_the_wire_encoding_is() {
     let (mut connection, mut queued) = queueing_connection("UTF-8", true, &[]);
     // Auto leaves a UTF-8 line as it is.
@@ -1384,7 +1418,10 @@ fn every_offered_encoding_round_trips() {
     use cayenchat_storage::TextEncoding;
     let sample = |encoding: TextEncoding| match encoding {
         TextEncoding::Utf8 => "日本語 🙂",
-        TextEncoding::Iso2022Jp | TextEncoding::ShiftJis | TextEncoding::EucJp => "こんにちは",
+        TextEncoding::Iso2022Jp
+        | TextEncoding::SevenBitJis
+        | TextEncoding::ShiftJis
+        | TextEncoding::EucJp => "こんにちは",
         TextEncoding::EucKr => "한국어",
         TextEncoding::Windows1254 => "Çağrı şİ",
         TextEncoding::Windows1252 => "café €",
@@ -1412,7 +1449,7 @@ fn every_offered_encoding_round_trips() {
             let wire = Wire { label, charsets };
             let bytes =
                 encode_strict(&line, wire).unwrap_or_else(|error| panic!("{label}: {error}"));
-            let encoding_rs = charsets::resolve(label).unwrap();
+            let encoding_rs = charsets::resolve(label).unwrap().encoding;
             let back = irc::proto::charsets::decode_line(&bytes, encoding_rs, charsets);
             assert_eq!(back, line, "{label}");
         }
