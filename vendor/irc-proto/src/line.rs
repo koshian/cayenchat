@@ -272,6 +272,22 @@ mod tests {
         assert!(dst.is_empty());
     }
 
+    #[cfg(feature = "encoding")]
+    #[test]
+    fn a_line_after_one_ending_in_roman_starts_clean_in_iso_2022_jp() {
+        use tokio_util::codec::Encoder;
+        let mut codec = LineCodec::new("iso-2022-jp").unwrap();
+        let mut dst = BytesMut::new();
+        codec
+            .encode("PRIVMSG #a :abc \u{a5}\r\n".into(), &mut dst)
+            .unwrap();
+        codec.encode("PONG :token\r\n".into(), &mut dst).unwrap();
+        assert_eq!(
+            &dst[..],
+            &b"PRIVMSG #a :abc \x1b(J\\\x1b(B\r\nPONG :token\r\n"[..]
+        );
+    }
+
     #[test]
     fn a_line_with_cr_lf_or_nul_is_not_written() {
         use tokio_util::codec::Encoder;

@@ -512,6 +512,32 @@ mod tests {
     }
 
     #[test]
+    fn a_line_ending_in_kanji_returns_to_ascii_before_the_line_end() {
+        let (bytes, lost) = encode_line(
+            "PRIVMSG #a :abc \u{6f22}\r\n",
+            Charset::plain(encoding_rs::ISO_2022_JP),
+            None,
+        );
+        assert_eq!(
+            (&*bytes, lost),
+            (&b"PRIVMSG #a :abc \x1b$B4A\x1b(B\r\n"[..], None)
+        );
+    }
+
+    #[test]
+    fn keeping_kana_does_not_change_a_line_ending_in_roman() {
+        for (text, tail) in [
+            ("\u{a5}", &b"\x1b(J\\\x1b(B\r\n"[..]),
+            ("\u{203e}", b"\x1b(J~\x1b(B\r\n"),
+        ] {
+            let line = format!("PRIVMSG #a :abc {text}\r\n");
+            let (plain, _) = encode_line(&line, Charset::plain(encoding_rs::ISO_2022_JP), None);
+            assert_eq!(keep(&format!("abc {text}")), &*plain, "{text:?}");
+            assert!(plain.ends_with(tail), "{text:?}");
+        }
+    }
+
+    #[test]
     fn the_target_keeps_the_connection_encoding_and_tags_are_left_alone() {
         let wire = "@time=2026-01-01T00:00:00.000Z;+x=\u{3053} :n!u@h NOTICE #jp :\u{3053}\r\n";
         let (encoded, lost) = encode_line(wire, UTF8, Some(&Fixed));
