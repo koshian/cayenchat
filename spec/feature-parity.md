@@ -176,7 +176,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — plain timestamp/`nick: text` rows (optional Reiwa mode layout) with scrolling and follow-to-bottom unless the user scrolls away
 - DONE — jump to the latest message: shortcut `scroll_to_latest` (Ctrl+End, Cmd+J on macOS, changeable) and a button over the channel log while its end is out of view (D065)
 - TODO — light/dark appearance
-- PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
+- PARTIAL — selectable installed font families and font sizes (8–40 px, empty = standard) per pane; the standard size is the inherited one, except the channel tree and member list, whose standard is 14 px (one step smaller, #927); the time size also applies to the time column inside the Reiwa mode lead, whose fixed width does not grow with it; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
 - TODO — restrained theming
 
 ## Platform integration

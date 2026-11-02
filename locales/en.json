@@ -461,6 +461,8 @@
   "server_password_placeholder": "Optional server password",
   "sasl_account_placeholder": "Account name",
   "font_system_placeholder": "System",
+  "font_size_placeholder": "Size",
+  "font_size_invalid": "A font size must be empty (standard) or a whole number from 8 to 40.",
   "font_monospace_placeholder": "Monospace",
   "username": "Username (USER)",
   "username_placeholder": "Ident sent with USER",

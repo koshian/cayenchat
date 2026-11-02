@@ -461,6 +461,8 @@
   "server_password_placeholder": "任意のサーバーパスワード",
   "sasl_account_placeholder": "アカウント名",
   "font_system_placeholder": "システム標準",
+  "font_size_placeholder": "サイズ",
+  "font_size_invalid": "フォントサイズは空欄（標準）か 8～40 の整数で入力してください。",
   "font_monospace_placeholder": "等幅フォント",
   "username": "ユーザー名 (USER)",
   "username_placeholder": "USER で送る ident",

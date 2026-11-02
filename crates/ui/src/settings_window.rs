@@ -128,6 +128,9 @@ pub(crate) struct SettingsForm {
     pub(crate) channel_tree_font: Entity<TextInput>,
     pub(crate) input_font: Entity<TextInput>,
     pub(crate) time_font: Entity<TextInput>,
+    /// Pixel sizes as typed, one per [`FontTarget`] in its order; empty is
+    /// the standard size.
+    pub(crate) font_sizes: [Entity<TextInput>; 6],
     /// Comma-separated notification keywords.
     pub(crate) keywords: Entity<TextInput>,
     /// Comma-separated text that cancels the matches overlapping it.
@@ -407,6 +410,8 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            font_sizes: font_size_texts(&values.appearance)
+                .map(|text| field(&i18n.text("font_size_placeholder"), &text, false, cx)),
             keywords: field(
                 &i18n.text("keywords_placeholder"),
                 &values.notifications.keywords.join(", "),
@@ -558,6 +563,12 @@ impl SettingsForm {
             channel_tree_font: value(&self.channel_tree_font),
             input_font: value(&self.input_font),
             time_font: value(&self.time_font),
+            channel_log_font_size: font_size_value(&self.font_sizes[0], settings.language, cx)?,
+            combined_log_font_size: font_size_value(&self.font_sizes[1], settings.language, cx)?,
+            member_list_font_size: font_size_value(&self.font_sizes[2], settings.language, cx)?,
+            channel_tree_font_size: font_size_value(&self.font_sizes[3], settings.language, cx)?,
+            input_font_size: font_size_value(&self.font_sizes[4], settings.language, cx)?,
+            time_font_size: font_size_value(&self.font_sizes[5], settings.language, cx)?,
             dark: DarkColors {
                 member_list_background: value(&self.dark_member_list_background),
                 channel_tree_background: value(&self.dark_channel_tree_background),
@@ -707,7 +718,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 51] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
         [
             &self.custom_host,
             &self.port,
@@ -757,6 +768,12 @@ impl SettingsForm {
             &self.channel_tree_font,
             &self.input_font,
             &self.time_font,
+            &self.font_sizes[0],
+            &self.font_sizes[1],
+            &self.font_sizes[2],
+            &self.font_sizes[3],
+            &self.font_sizes[4],
+            &self.font_sizes[5],
             &self.keywords,
             &self.exclude_keywords,
             &self.avatar_url,
@@ -891,6 +908,41 @@ enum KeyFileError {
 /// The most of a key file that is read; a P-256 PEM key is a few hundred
 /// bytes, so anything near this size is not one.
 const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
+
+/// The pane font sizes as shown in their fields, in [`FontTarget`] order;
+/// the standard size (0) is an empty field.
+pub(crate) fn font_size_texts(appearance: &Appearance) -> [String; 6] {
+    [
+        appearance.channel_log_font_size,
+        appearance.combined_log_font_size,
+        appearance.member_list_font_size,
+        appearance.channel_tree_font_size,
+        appearance.input_font_size,
+        appearance.time_font_size,
+    ]
+    .map(|size| {
+        if size == 0 {
+            String::new()
+        } else {
+            size.to_string()
+        }
+    })
+}
+
+/// Reads a font size field: empty is the standard size (0), otherwise a
+/// whole number of px within the allowed range.
+fn font_size_value(field: &Entity<TextInput>, language: Language, cx: &App) -> Result<u16, String> {
+    let text = field.read(cx).text().trim().to_owned();
+    if text.is_empty() {
+        return Ok(0);
+    }
+    text.parse()
+        .ok()
+        .filter(|size| {
+            (cayenchat_storage::MIN_FONT_SIZE..=cayenchat_storage::MAX_FONT_SIZE).contains(size)
+        })
+        .ok_or_else(|| i18n_error(language, "font_size_invalid"))
+}
 
 /// Reads `path` as an unencrypted PKCS#8 or SEC1 PEM key. Only the first
 /// [`MAX_KEY_FILE_BYTES`] + 1 bytes are read, so a huge file is refused
@@ -1311,6 +1363,10 @@ impl SettingsWindow {
             (&self.settings.time_font, "font_monospace_placeholder"),
         ] {
             let placeholder = self.i18n.text(key);
+            field.update(cx, |field, cx| field.set_placeholder(&placeholder, cx));
+        }
+        let placeholder = self.i18n.text("font_size_placeholder");
+        for field in &self.settings.font_sizes {
             field.update(cx, |field, cx| field.set_placeholder(&placeholder, cx));
         }
         self.feedback = None;
@@ -4490,6 +4546,12 @@ impl SettingsWindow {
                 .gap_2()
                 .child(settings_theme::label_column().child(label.to_owned()))
                 .child(div().flex_1().min_w_0().child(input.clone()))
+                .child(
+                    div()
+                        .w(px(56.))
+                        .flex_shrink_0()
+                        .child(self.settings.font_sizes[target as usize].clone()),
+                )
                 .child(
                     div()
                         .id(("font-picker", target as u32))

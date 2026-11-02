@@ -262,6 +262,13 @@ impl SettingsWindow {
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
+        for (field, text) in form
+            .font_sizes
+            .iter()
+            .zip(crate::settings_window::font_size_texts(appearance))
+        {
+            field.update(cx, |field, cx| field.set_text(&text, cx));
+        }
         form.url_tooltip_opacity.update(cx, |field, cx| {
             field.set_text(&appearance.url_tooltip_opacity.to_string(), cx)
         });

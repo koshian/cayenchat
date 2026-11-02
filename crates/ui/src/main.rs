@@ -6576,6 +6576,19 @@ fn set_window_always_on_top(window: &Window, enabled: bool) -> Result<(), String
     Ok(())
 }
 
+/// Standard text size of the channel tree and member list, one step below
+/// the other panes' (the list panes are for overview, #927).
+const LIST_PANE_TEXT_SIZE: f32 = 14.;
+
+/// The text size a pane sets: the saved size clamped to the allowed range,
+/// or `standard` (None keeps the inherited size) when none is saved.
+fn pane_text_size(saved: u16, standard: Option<f32>) -> Option<Pixels> {
+    match cayenchat_storage::clamp_font_size(saved) {
+        0 => standard.map(px),
+        size => Some(px(f32::from(size))),
+    }
+}
+
 fn default_time_font() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -7132,6 +7145,10 @@ impl ChatWindow {
             .when(!appearance.channel_tree_font.is_empty(), |d| {
                 d.font_family(appearance.channel_tree_font.clone())
             })
+            .when_some(
+                pane_text_size(appearance.channel_tree_font_size, Some(LIST_PANE_TEXT_SIZE)),
+                |d, size| d.text_size(size),
+            )
             .border_t_1()
             .border_color(theme.border)
             .child(
@@ -7728,6 +7745,10 @@ impl ChatWindow {
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
+            .when_some(
+                pane_text_size(appearance.channel_log_font_size, None),
+                |d, size| d.text_size(size),
+            )
             .child(self.input_to_draft(&self.log_focus, cx))
             .child(panes.channel_log.clone().cached(pane_style()));
 
@@ -7743,6 +7764,10 @@ impl ChatWindow {
             .when(!appearance.combined_log_font.is_empty(), |d| {
                 d.font_family(appearance.combined_log_font.clone())
             })
+            .when_some(
+                pane_text_size(appearance.combined_log_font_size, None),
+                |d, size| d.text_size(size),
+            )
             .child(panes.combined_log.clone().cached(pane_style()));
 
         let members = div()
@@ -7763,6 +7788,10 @@ impl ChatWindow {
             .when(!appearance.member_list_font.is_empty(), |d| {
                 d.font_family(appearance.member_list_font.clone())
             })
+            .when_some(
+                pane_text_size(appearance.member_list_font_size, Some(LIST_PANE_TEXT_SIZE)),
+                |d, size| d.text_size(size),
+            )
             .child(self.input_to_draft(&self.members_focus, cx))
             .child(panes.member_list.clone().cached(pane_style()));
 
@@ -7819,6 +7848,10 @@ impl ChatWindow {
             .when(!appearance.input_font.is_empty(), |d| {
                 d.font_family(appearance.input_font.clone())
             })
+            .when_some(
+                pane_text_size(appearance.input_font_size, None),
+                |d, size| d.text_size(size),
+            )
             .id("draft-row")
             // Dropped image files join the same attachment flow as pasted ones.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
@@ -8919,6 +8952,7 @@ struct LogStyle {
     notice_color: Rgba,
     combined_alt: Rgba,
     time_font: SharedString,
+    time_size: Option<Pixels>,
     alternate_rows: bool,
     compact_urls: bool,
     decode_char_refs: bool,
@@ -8940,6 +8974,7 @@ impl LogStyle {
             } else {
                 appearance.time_font.clone().into()
             },
+            time_size: pane_text_size(appearance.time_font_size, None),
             alternate_rows: appearance.alternate_rows,
             compact_urls: appearance.compact_urls,
             decode_char_refs: appearance.decode_char_refs,
@@ -8952,6 +8987,7 @@ impl LogStyle {
             .w(px(TIME_WIDTH))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
+            .when_some(self.time_size, |d, size| d.text_size(size))
             .text_color(self.theme.time)
             .child(time.to_string())
     }
@@ -9494,6 +9530,7 @@ impl ChatWindow {
                         .mt(px(2.))
                         .text_xs()
                         .font_family(style.time_font.clone())
+                        .when_some(style.time_size, |d, size| d.text_size(size))
                         .text_color(theme.time)
                         .child(message.time.to_string()),
                 ),
@@ -9634,6 +9671,7 @@ impl ChatWindow {
                                     .flex_shrink_0()
                                     .text_xs()
                                     .font_family(style.time_font.clone())
+                                    .when_some(style.time_size, |d, size| d.text_size(size))
                                     .text_color(theme.time)
                                     .child(message.time.to_string()),
                             ),
@@ -11009,3 +11047,7 @@ mod send_key_tests;
 #[cfg(test)]
 #[path = "../../../vendor/gpui/src/platform/clipboard_data.rs"]
 mod clipboard_data_regression_tests;
+
+#[cfg(test)]
+#[path = "main_tests/pane_font_size_tests.rs"]
+mod pane_font_size_tests;
