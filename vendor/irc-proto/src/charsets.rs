@@ -195,6 +195,17 @@ enum JisState {
     Kanji,
 }
 
+/// The designation at the start of `rest` (which begins with ESC) and its length.
+fn designation(rest: &[u8]) -> Option<(JisState, usize)> {
+    match rest {
+        [_, b'(', b'B', ..] => Some((JisState::Ascii, 3)),
+        [_, b'(', b'J', ..] => Some((JisState::Roman, 3)),
+        [_, b'(', b'I', ..] => Some((JisState::Katakana, 3)),
+        [_, b'$', b'@' | b'B', ..] => Some((JisState::Kanji, 3)),
+        _ => None,
+    }
+}
+
 /// Rewrites each run of raw 0xA1-0xDF bytes found in the ASCII or Roman state
 /// as ESC ( I, the same bytes with the high bit cleared, and the escape that
 /// restores the state, so the existing decoder reads them as JIS X 0201
@@ -225,14 +236,7 @@ fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
     while at < bytes.len() {
         let byte = bytes[at];
         if byte == ESC {
-            let next = match bytes[at + 1..] {
-                [b'(', b'B', ..] => Some((JisState::Ascii, 3)),
-                [b'(', b'J', ..] => Some((JisState::Roman, 3)),
-                [b'(', b'I', ..] => Some((JisState::Katakana, 3)),
-                [b'$', b'@' | b'B', ..] => Some((JisState::Kanji, 3)),
-                _ => None,
-            };
-            if let Some((new_state, len)) = next {
+            if let Some((new_state, len)) = designation(&bytes[at..]) {
                 state = new_state;
                 out.extend_from_slice(&bytes[at..at + len]);
                 at += len;
@@ -277,7 +281,11 @@ fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
                     out.push(inner);
                 }
             }
-            if open && bytes.get(at) != Some(&ESC) && at < bytes.len() {
+            // Before a designation the restore is left out (two escapes in a
+            // row are an error); before any other ESC it is written, so the
+            // decoder is back in the tracked state when it meets that ESC.
+            let before_designation = bytes.get(at) == Some(&ESC) && designation(&bytes[at..]).is_some();
+            if open && at < bytes.len() && !before_designation {
                 out.extend_from_slice(&[ESC, b'(', restore]);
             }
             if bytes.get(at) == Some(&SI) {
@@ -663,6 +671,16 @@ mod tests {
         assert_eq!(jis(b"\x1b(J~\x0e\xc9\xbc\x0f~"), format!("\u{203e}{ino}\u{203e}"));
         // An ESC ends the section and is handled as usual.
         assert_eq!(jis(b"\x0e\xc9\x1b$B$3\x1b(B"), "\u{ff89}\u{3053}");
+        // An ESC that is no designation ends the section too, and what
+        // follows it (and the CR LF) is not read as katakana.
+        for tail in [&b"\x1b[1mhi\r\n"[..], b"\x1b\r\n", b"\x1b$(Dhi\r\n"] {
+            let mut wire = b"\x0e\xc9".to_vec();
+            wire.extend_from_slice(tail);
+            let decoded = jis(&wire);
+            assert!(decoded.starts_with('\u{ff89}'), "{wire:?}: {decoded:?}");
+            assert!(decoded.ends_with("\r\n"), "{wire:?}: {decoded:?}");
+            assert_eq!(decoded.matches('\u{fffd}').count(), 1, "{wire:?}: {decoded:?}");
+        }
         // Raw runs and shifted sections on one line.
         assert_eq!(jis(b"\xc9\x0e\xbc\x0f\xc9"), "\u{ff89}\u{ff7c}\u{ff89}");
     }
