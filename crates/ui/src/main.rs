@@ -7370,7 +7370,6 @@ impl ChatWindow {
                     .when(selection == Selection::Channel(id), |d| {
                         d.bg(theme.selected)
                     })
-                    .when(unread, |d| d.font_weight(FontWeight::BOLD))
                     .when(!joined, |d| d.text_color(theme.text_muted))
                     .when(highlighted, |d| d.text_color(theme.panes.highlight))
                     .hover(|d| d.bg(theme.hover_strong))
@@ -7387,8 +7386,11 @@ impl ChatWindow {
                         d.child(channel_groups::highlight_icon(theme.panes.highlight))
                     })
                     .child(
+                        // Only the name is bold when unread; the server label
+                        // and the drag digit keep the normal weight.
                         div()
                             .min_w_0()
+                            .when(unread, |d| d.font_weight(FontWeight::BOLD))
                             .child(display::neutralize_bidi(&conversation.name).into_owned()),
                     )
                     .when_some(server_label, |d, label| {
