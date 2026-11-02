@@ -198,6 +198,12 @@ per-server choice does not preserve noncanonical incoming ISO-2022-JP byte
 variants. Mixed encodings within one connection are supported only for the text
 of channel messages (D050).
 
+On receipt, ISO-2022-JP also reads a raw JIS X 0201 katakana byte (0xA1-0xDF, "8bit
+JIS") that stands in the ASCII or Roman state, outside any designation, as half-width
+katakana (U+FF61-U+FF9F), as nkf does; `encoding_rs` would give U+FFFD (#911). Bytes
+inside a JIS X 0208 or `ESC ( I` designation, other encodings and nkf's other repairs
+are unchanged. Only decoding is affected, not sending.
+
 Connection diagnostics report DNS, transport, and IRC registration stages plus
 directional, decoded IRC command/reply lines through core events. The chat window
 keeps a bounded in-memory transcript and copies it from the native menu. Known
