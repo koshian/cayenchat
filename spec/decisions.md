@@ -3365,7 +3365,7 @@ there is no network, bouncer or connection behind it.
   the tree that is over 64 characters is refused the same way, not shortened).
   The running state only drops what the file cannot tell: repeated names and
   channels of servers that no longer exist.
-- **Server folding (#866).** A real server heading also has a ▶/▼ arrow. Only
+- **Server folding (#866).** A real server heading also has a chevron arrow (chevron-right folded, chevron-down open; #924). Only
   the arrow folds or opens the server's channels and private conversations;
   the rest of the heading keeps its click (select the log) and double click
   (connect/disconnect), and the arrow's click does not reach it. A folded
@@ -3374,6 +3374,13 @@ there is no network, bouncer or connection behind it.
   `collapsed_servers` (profile IDs) in `channel-order.json`; an absent entry
   means open, files without the field read as before, and profiles that no
   longer exist are dropped at save.
+- **No text glyphs in the tree (#924).** Group and server folding use the
+  Lucide `chevron-right` / `chevron-down` icons (13px, row text color), not
+  `▶` / `▼`. Unread is shown by bold text only (the old `● ` is gone). A
+  keyword notification (highlighted) puts a `bell-dot` icon before the name of
+  a group, server or channel row, in the highlight color; no slot is reserved,
+  so the name moves when it appears. The member menu's CTCP submenu arrow is a
+  `chevron-right` too.
 - **Connection state icon (#895).** A real server heading shows its state as a
   13px Lucide icon between the arrow and the name (arrow, icon, name), not as
   text marks after the name: `link` registered, `ellipsis` connecting or
