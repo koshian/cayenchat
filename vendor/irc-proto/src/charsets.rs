@@ -250,7 +250,11 @@ fn wrap_raw_katakana(bytes: &[u8]) -> Cow<'_, [u8]> {
                 out.push(raw & 0x7f);
                 at += 1;
             }
-            out.extend_from_slice(&[ESC, b'(', restore]);
+            // Before a designation the restore is left out (two escapes in a
+            // row are an error); that designation sets the state anyway.
+            if !(bytes.get(at) == Some(&ESC) && designation(&bytes[at..]).is_some()) {
+                out.extend_from_slice(&[ESC, b'(', restore]);
+            }
             continue;
         }
         if matches!(state, JisState::Ascii | JisState::Roman) && byte == SI {
@@ -648,6 +652,23 @@ mod tests {
             decode_line(&wire, encoding_rs::UTF_8, Some(&Fixed)),
             "PRIVMSG #jp :\u{ff89}\u{ff7c}"
         );
+    }
+
+    #[test]
+    fn raw_katakana_before_a_designation_gives_no_replacement_character() {
+        let ino = "\u{ff89}\u{ff7c}";
+        // LimeChat's form: Roman state, closed by ESC ( B.
+        assert_eq!(jis(b"\x1b(J\xc9\xbc\x1b(B"), ino);
+        // Ascii state, then a designation.
+        assert_eq!(jis(b"\xc9\xbc\x1b(J~"), format!("{ino}\u{203e}"));
+        assert_eq!(jis(b"\xc9\xbc\x1b(B~"), format!("{ino}~"));
+        assert_eq!(jis(b"\x1b(J\xc9\xbc\x1b(J~"), format!("{ino}\u{203e}"));
+        // Kanji and katakana designations after the run.
+        assert_eq!(jis(b"\xc9\xbc\x1b$B$3\x1b(B"), format!("{ino}\u{3053}"));
+        assert_eq!(jis(b"\x1b(J\xc9\xbc\x1b$B$3\x1b(B"), format!("{ino}\u{3053}"));
+        assert_eq!(jis(b"\xc9\x1b(I\x3c\x1b(B"), "\u{ff89}\u{ff7c}");
+        // An ESC that is no designation still gets the restore first.
+        assert_eq!(jis(b"\x1b(J\xc9\x1b[1m~").matches('\u{fffd}').count(), 1);
     }
 
     #[test]
