@@ -954,6 +954,8 @@ struct ChatWindow {
     dragging_channel: Option<ConversationId>,
     /// The tree row under the pointer during that drag.
     drop_target: Option<ConversationId>,
+    /// Whether the pointer is in the lower half of that row.
+    drop_lower: bool,
     /// The group or server heading under the pointer during that drag.
     drop_heading: Option<HeadingTarget>,
     layout_save: Option<Task<()>>,
@@ -1551,6 +1553,7 @@ impl ChatWindow {
             order_file: None,
             dragging_channel: None,
             drop_target: None,
+            drop_lower: false,
             layout_save: None,
             layout_writes: 0,
             layout_written: Default::default(),
@@ -7338,9 +7341,9 @@ impl ChatWindow {
                     .filter(|(dragged, target)| dragged != target && *target == id)
                     .and_then(|(dragged, _)| {
                         // From another parent the dragged channel goes
-                        // before the row.
+                        // before the row, or after it from its lower half.
                         if self.tree_parents.get(&dragged) != parent.as_ref() {
-                            return Some(true);
+                            return Some(!self.drop_lower);
                         }
                         drop_line_on_top(&self.tree_rows, dragged, index)
                     });
@@ -7430,8 +7433,13 @@ impl ChatWindow {
                             };
                             let target = (event.bounds.contains(&event.event.position) && accepts)
                                 .then_some(id);
-                            if target.is_some() && this.drop_target != target {
+                            let lower = event.event.position.y
+                                > event.bounds.origin.y + event.bounds.size.height / 2.;
+                            if target.is_some()
+                                && (this.drop_target != target || this.drop_lower != lower)
+                            {
                                 this.drop_target = target;
+                                this.drop_lower = lower;
                                 cx.notify();
                             } else if target.is_none() && this.drop_target == Some(id) {
                                 this.drop_target = None;
@@ -7441,13 +7449,21 @@ impl ChatWindow {
                     ))
                     .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
                         this.dragging_channel = None;
+                        // The half the pointer was in at the last move.
+                        let after = this.drop_target == Some(id)
+                            && this.drop_lower
+                            && this.tree_parents.get(&dragged.id) != parent.as_ref();
                         this.drop_target = None;
                         let accepts = if grouped {
                             !dragged.private && !private
                         } else {
                             dragged.network == network && dragged.private == private
                         };
-                        if accepts {
+                        if accepts && after {
+                            if let Some(network) = this.state.move_after(dragged.id, id) {
+                                this.save_channel_layout(Some(network), cx);
+                            }
+                        } else if accepts {
                             this.move_conversation(dragged.id, MoveTo::Place(id), cx);
                         }
                         cx.notify();
