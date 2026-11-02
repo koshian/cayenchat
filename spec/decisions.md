@@ -988,8 +988,9 @@ redirects, response and decode limits, background decoding and the static
 first frame are shared. `{size}` becomes 128 (`ORIGINAL_PIXELS`, one
 fetch whose kept bytes serve every display size). Limits: 2 MiB response,
 10 s total, sources up to 4096 px a side and 4.2 MP, decoder allocation up
-to 24 MiB, centered square cropped to 32×32 px and shown at 16×16 logical
-px. A separate cache (256 records, 2 MiB charged at twice the BGRA bytes,
+to 24 MiB, centered square cropped to the slot size times the window's scale
+factor, rounded up (16 px at 1×, 24 at 1.5×, 32 at 2×, 48 at 3×), and shown
+at 16×16 logical px. A separate cache (256 records, 2 MiB charged at twice the BGRA bytes,
 32 queued, 2 in flight) keeps avatars and previews from evicting each
 other; fetches in flight are limited to 3 for avatars and previews
 together, and decoding stays one at a time in the process. Avatars do not

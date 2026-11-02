@@ -9043,7 +9043,7 @@ impl ChatWindow {
     fn render_channel_log_row(
         &mut self,
         row: usize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
@@ -9067,7 +9067,13 @@ impl ChatWindow {
                     .into_any_element()
             }
             ChannelLogRow::Message(index) => match self.state.selected_channel() {
-                Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
+                Some(channel) => self.render_channel_message(
+                    channel.id,
+                    index,
+                    &style,
+                    window.scale_factor(),
+                    cx,
+                ),
                 None => {
                     let Some(network) = self.selected_network_id() else {
                         return div().into_any_element();
@@ -9179,6 +9185,7 @@ impl ChatWindow {
         selected_channel: ConversationId,
         index: usize,
         style: &LogStyle,
+        scale_factor: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
@@ -9386,6 +9393,7 @@ impl ChatWindow {
                     } else {
                         avatars::SLOT
                     },
+                    scale_factor,
                     cx,
                 )
             });
@@ -9609,6 +9617,7 @@ impl ChatWindow {
         avatar: Option<Arc<str>>,
         nickname: &str,
         size: f32,
+        scale_factor: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         let slot = div()
@@ -9617,8 +9626,9 @@ impl ChatWindow {
             .mt(px(2.))
             .flex_shrink_0()
             .overflow_hidden();
+        let pixels = avatars::pixels_for(size, scale_factor);
         let shown = match &avatar {
-            Some(avatar) => self.avatars.lookup(avatar, avatars::PIXELS),
+            Some(avatar) => self.avatars.lookup(avatar, pixels),
             None => avatars::Shown::None,
         };
         match shown {
@@ -9627,7 +9637,9 @@ impl ChatWindow {
                 self.pump_avatars(cx);
                 slot
             }
-            avatars::Shown::None => slot.child(img(self.avatars.default_for(nickname)).size_full()),
+            avatars::Shown::None => {
+                slot.child(img(self.avatars.default_sized(nickname, pixels)).size_full())
+            }
         }
     }
 
@@ -9820,7 +9832,7 @@ impl ChatWindow {
     fn render_member_rows(
         &mut self,
         range: std::ops::Range<usize>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let theme = theme::current(cx);
@@ -9862,6 +9874,7 @@ impl ChatWindow {
                             avatar,
                             &nickname,
                             avatars::SLOT,
+                            window.scale_factor(),
                             cx,
                         ))
                     })
