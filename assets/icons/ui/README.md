@@ -34,6 +34,8 @@ and record that here.
 | `link.svg` | `link` | 1.56.0 | Log: marks a URL when "Show long URLs compactly" is on (the diagonal chain, not `link-2`); channel pane: a connected server |
 | `ellipsis.svg` | `ellipsis` | 1.56.0 | Channel pane: a server that is connecting |
 | `unlink.svg` | `unlink` | 1.56.0 | Channel pane: a disconnected server |
+| `chevron-right.svg` | `chevron-right` | 1.56.0 | Channel pane: a collapsed server or group; member menu: opens the CTCP submenu (`chevron-down` marks an expanded one) |
+| `bell-dot.svg` | `bell-dot` | 1.56.0 | Channel pane: a group, server or channel with a keyword notification |
 
 The files are unchanged from upstream (`stroke="currentColor"`); the toolbar
 draws them as a mask in the theme's text color, so they show in both light and

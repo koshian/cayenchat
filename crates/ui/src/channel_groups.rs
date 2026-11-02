@@ -519,36 +519,50 @@ impl ChatWindow {
         if let Some(edit) = renaming {
             return self.group_edit_row(row, edit.input.clone(), cx);
         }
-        row.child(format!(
-            "{} {}{}",
-            if collapsed { "▶" } else { "▼" },
-            if unread { "● " } else { "" },
-            name
-        ))
-        .on_drag_move(
-            cx.listener(move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
-                let inside =
-                    event.bounds.contains(&event.event.position) && !event.drag(cx).private;
-                this.set_heading_target(HeadingTarget::Group(id), inside, cx);
-            }),
-        )
-        .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
-            this.dragging_channel = None;
-            this.drop_target = None;
-            if !dragged.private {
-                this.drop_on_group(dragged, id, cx);
-            }
-        }))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                this.open_group_menu(id, event.position, window);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(id, cx)))
-        .into_any_element()
+        let color = if highlighted {
+            theme.panes.highlight
+        } else {
+            theme.text
+        };
+        row.flex()
+            .items_center()
+            .child(
+                tree_icon(
+                    if collapsed {
+                        "chevron-right"
+                    } else {
+                        "chevron-down"
+                    },
+                    color,
+                )
+                .mr_1(),
+            )
+            .when(highlighted, |d| d.child(highlight_icon(color)))
+            .child(div().min_w_0().truncate().child(name))
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
+                    let inside =
+                        event.bounds.contains(&event.event.position) && !event.drag(cx).private;
+                    this.set_heading_target(HeadingTarget::Group(id), inside, cx);
+                }),
+            )
+            .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
+                this.dragging_channel = None;
+                this.drop_target = None;
+                if !dragged.private {
+                    this.drop_on_group(dragged, id, cx);
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_group_menu(id, event.position, window);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(id, cx)))
+            .into_any_element()
     }
 
     /// The row of a group being created, with its name field.
@@ -581,6 +595,21 @@ impl ChatWindow {
             }))
             .into_any_element()
     }
+}
+
+/// A Lucide icon in a channel tree row (chevron, bell-dot), the size of the
+/// connection state icon (#903) and in the row's text color.
+pub(crate) fn tree_icon(name: &str, color: Rgba) -> Svg {
+    svg()
+        .path(format!("icons/ui/{name}.svg"))
+        .size(px(13.))
+        .flex_none()
+        .text_color(color)
+}
+
+/// The icon of a row with a keyword notification, before its name.
+pub(crate) fn highlight_icon(color: Rgba) -> Svg {
+    tree_icon("bell-dot", color).mr_1()
 }
 
 /// The server a conversation belongs to, as the tree row of a server heading

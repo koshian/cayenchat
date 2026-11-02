@@ -7206,11 +7206,18 @@ impl ChatWindow {
                         div()
                             .id(("server-fold", server_id.0))
                             .pr_1()
-                            .child(if self.server_collapsed(server_id) {
-                                "▶"
-                            } else {
-                                "▼"
-                            })
+                            .child(channel_groups::tree_icon(
+                                if self.server_collapsed(server_id) {
+                                    "chevron-right"
+                                } else {
+                                    "chevron-down"
+                                },
+                                if marks.highlighted {
+                                    theme.panes.highlight
+                                } else {
+                                    theme.text
+                                },
+                            ))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
@@ -7234,6 +7241,9 @@ impl ChatWindow {
                                 cx.new(|_| tooltip::TextTooltip(tip)).into()
                             }),
                     )
+                    .when(marks.highlighted, |d| {
+                        d.child(channel_groups::highlight_icon(theme.panes.highlight))
+                    })
                     .child(
                         div()
                             .min_w_0()
@@ -7347,7 +7357,8 @@ impl ChatWindow {
                     // The whole row width is the drop area, also while the
                     // digit gutter makes it a flex row.
                     .w_full()
-                    .when(dragging || grouped, |d| d.flex())
+                    .flex()
+                    .items_center()
                     .when(dragging, |d| d.pl_1())
                     .when(!dragging, |d| d.pl_4())
                     .pr_2()
@@ -7369,11 +7380,14 @@ impl ChatWindow {
                                 .children(digit.map(|digit| digit.to_string())),
                         )
                     })
-                    .child(format!(
-                        "{}{}",
-                        if unread { "● " } else { "" },
-                        display::neutralize_bidi(&conversation.name)
-                    ))
+                    .when(highlighted, |d| {
+                        d.child(channel_groups::highlight_icon(theme.panes.highlight))
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .child(display::neutralize_bidi(&conversation.name).into_owned()),
+                    )
                     .when_some(server_label, |d, label| {
                         d.child(
                             div()
@@ -8372,7 +8386,14 @@ impl ChatWindow {
                 .px_2()
                 .py_1()
                 .child(self.i18n.text("member_ctcp"))
-                .child("▶")
+                .child(channel_groups::tree_icon(
+                    "chevron-right",
+                    if enabled {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    },
+                ))
                 .when(enabled, |d| {
                     d.cursor_pointer()
                         .hover(|d| d.bg(theme.hover_strong))
