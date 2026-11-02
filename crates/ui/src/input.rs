@@ -202,6 +202,9 @@ pub struct TextInput {
     menu: Option<InputMenu>,
     /// The pending system clipboard read. A later Paste cancels this one.
     clipboard_read: Option<Task<()>>,
+    /// Links that arrived while composing; inserted once the composition ends,
+    /// because inserting would end it.
+    pending_links: Vec<String>,
 }
 
 impl TextInput {
@@ -314,7 +317,28 @@ impl TextInput {
     /// dropped), keeping one space between it and neighbouring text. The cursor
     /// stays where it was, before the inserted text. Undo restores the
     /// previous text.
+    ///
+    /// While the input is composing (IME), the link is held back and inserted
+    /// when the composition ends, so the unconfirmed text is not committed.
     pub fn insert_link(&mut self, link: &str, cx: &mut Context<Self>) {
+        if self.marked_range.is_some() {
+            self.pending_links.push(link.to_owned());
+            return;
+        }
+        self.insert_link_now(link, cx);
+    }
+
+    /// Inserts the links held back during a composition, once it has ended.
+    fn flush_pending_links(&mut self, cx: &mut Context<Self>) {
+        if self.marked_range.is_some() || self.pending_links.is_empty() {
+            return;
+        }
+        for link in std::mem::take(&mut self.pending_links) {
+            self.insert_link_now(&link, cx);
+        }
+    }
+
+    fn insert_link_now(&mut self, link: &str, cx: &mut Context<Self>) {
         self.record_edit();
         let at = self.cursor_offset();
         let before = self.content[..at].chars().next_back();
@@ -1206,6 +1230,7 @@ impl EntityInputHandler for TextInput {
         // composition without a text change must still tell them.
         if self.marked_range.take().is_some() {
             cx.notify();
+            self.flush_pending_links(cx);
         }
     }
 
@@ -1240,6 +1265,7 @@ impl EntityInputHandler for TextInput {
         self.selection_reversed = false;
         self.marked_range.take();
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -1290,6 +1316,7 @@ impl EntityInputHandler for TextInput {
 
         self.selection_reversed = false;
         cx.notify();
+        self.flush_pending_links(cx);
     }
 
     fn bounds_for_range(
@@ -1738,6 +1765,7 @@ impl Render for TextInput {
         // and does not deliver the commit here; keep the text, drop the mark.
         if self.marked_range.is_some() && !self.focus_handle.is_focused(window) {
             self.marked_range = None;
+            self.flush_pending_links(cx);
             cx.notify();
         }
         let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, cx));
@@ -1892,6 +1920,7 @@ impl TextInput {
             goal_x: None,
             menu: None,
             clipboard_read: None,
+            pending_links: Vec::new(),
         }
     }
 
@@ -2669,6 +2698,29 @@ mod tests {
             input.insert_link("L", cx);
             input.undo(&Undo, window, cx);
             assert_eq!(input.text(), "abc");
+        });
+    }
+
+    #[gpui::test]
+    fn insert_link_waits_for_composition_to_end(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_live("", cx));
+        input.update_in(cx, |input, window, cx| {
+            input.replace_and_mark_text_in_range(None, "へんかん", None, window, cx);
+            input.insert_link("L", cx);
+            // Nothing changed and the composition is still going.
+            assert_eq!(input.text(), "へんかん");
+            assert!(input.is_composing());
+            input.replace_text_in_range(None, "変換", window, cx);
+            assert!(!input.is_composing());
+            assert_eq!(input.text(), "変換 L");
+            assert!(input.pending_links.is_empty());
+        });
+        input.update_in(cx, |input, window, cx| {
+            input.replace_and_mark_text_in_range(None, "あ", None, window, cx);
+            input.insert_link("M", cx);
+            input.unmark_text(window, cx);
+            assert_eq!(input.text(), "変換あ M L");
         });
     }
 
