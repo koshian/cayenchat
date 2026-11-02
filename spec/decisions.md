@@ -3349,7 +3349,10 @@ there is no network, bouncer or connection behind it.
   group…), Return to original server. "New group…" adds a row in the tree
   with a name field; Enter creates the group and moves the channel, Escape or
   leaving the field changes nothing. Dragging a channel into a group (row or
-  heading; a heading appends) or within it reorders it, across servers. A
+  heading; a heading appends) or within it reorders it, across servers.
+  From another parent, a drop on the lower half of a row goes after it (the
+  drop line is under the row; after the last row it is the end of the parent,
+  #932); the upper half goes before it. A
   grouped channel can be dragged back only to its own server (row or
   heading); other servers do not accept it. The group menu renames and
   deletes; deleting a group that holds channels first says that they return

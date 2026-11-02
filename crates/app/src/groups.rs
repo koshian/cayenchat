@@ -435,6 +435,38 @@ impl AppState {
         }
     }
 
+    /// Moves a channel from another parent right after `other`: before the
+    /// row that follows it, or to the end of that parent when it is the last.
+    /// The rules of `MoveTo::Place` apply. Returns the network when the
+    /// display changed, as [`AppState::move_conversation`] does.
+    pub fn move_after(&mut self, id: ConversationId, other: ConversationId) -> Option<NetworkId> {
+        let network = self.conversation(id)?.network;
+        let tree = self.display_tree();
+        let parent = tree.parent_of(other)?;
+        if tree.parent_of(id)? == parent {
+            return None;
+        }
+        let siblings = tree.children(parent);
+        let at = siblings.iter().position(|c| *c == other)?;
+        if let Some(next) = siblings.get(at + 1) {
+            return self.move_conversation(id, MoveTo::Place(*next));
+        }
+        let (moved, target) = (self.conversation(id)?, self.conversation(other)?);
+        if moved.is_private() != target.is_private() {
+            return None;
+        }
+        match parent {
+            Parent::Group(group) => self.move_to_group(id, group, None).then_some(network),
+            Parent::Server(server) => {
+                if moved.network != server || !self.return_to_server(id) {
+                    return None;
+                }
+                self.move_conversation(id, MoveTo::Last);
+                Some(network)
+            }
+        }
+    }
+
     /// Reorders within a group for [`AppState::move_conversation`]. `None`
     /// when the channel is not in a group or nothing moves.
     pub(crate) fn move_in_group(
@@ -632,6 +664,40 @@ mod tests {
         assert!(state.delete_group(group));
         assert_eq!(state.display_parent(c), Some(Parent::Server(NetworkId(2))));
         assert_eq!(shown(&state, Parent::Server(NetworkId(2))).len(), 2);
+    }
+
+    #[test]
+    fn dropping_after_a_row_of_another_parent_goes_behind_it() {
+        let mut state = state();
+        let group = mixed(&mut state);
+        let (c, a1, a2) = (
+            id(&state, 2, "#c"),
+            id(&state, 1, "#a"),
+            id(&state, 2, "#a"),
+        );
+        // After the last row of the group is the end of the group.
+        let b = id(&state, 1, "#b");
+        assert_eq!(state.move_after(b, a2), Some(NetworkId(1)));
+        assert_eq!(shown(&state, Parent::Group(group))[3], (1, "#b".into()));
+        // After a middle row is before the next one.
+        let w = id(&state, 3, "#w");
+        assert_eq!(state.move_after(w, c), Some(NetworkId(3)));
+        assert_eq!(shown(&state, Parent::Group(group))[1], (3, "#w".into()));
+        // Within one parent nothing moves, and the server's rule stands.
+        assert_eq!(state.move_after(c, a1), None);
+        assert_eq!(state.move_after(a1, w), None);
+        // Back after the last row of the own server (same parent: nothing).
+        assert_eq!(
+            state.move_after(a1, id(&state, 1, "#b")),
+            None,
+            "#b is grouped"
+        );
+        assert!(state.return_to_server(b));
+        assert_eq!(state.move_after(a1, b), Some(NetworkId(1)));
+        assert_eq!(
+            shown(&state, Parent::Server(NetworkId(1))),
+            [(1, "#b".into()), (1, "#a".into())]
+        );
     }
 
     #[test]
