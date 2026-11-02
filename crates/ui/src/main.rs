@@ -7125,7 +7125,7 @@ impl ChatWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.channel_tree)
+            .bg(theme.panes.channel_tree)
             .when(!appearance.channel_tree_font.is_empty(), |d| {
                 d.font_family(appearance.channel_tree_font.clone())
             })

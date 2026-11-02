@@ -13,6 +13,7 @@ use gpui::{App, Global, Hsla, Rgba, WindowAppearance, hsla, rgb, rgba};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneColors {
     pub member_list: Rgba,
+    pub channel_tree: Rgba,
     pub channel_log: Rgba,
     pub channel_alternate: Rgba,
     pub channel_event: Rgba,
@@ -56,7 +57,6 @@ pub struct Theme {
     /// Inputs, menus, buttons and cards.
     pub surface: Rgba,
     pub tab_inactive: Rgba,
-    pub channel_tree: Rgba,
     pub selected: Rgba,
     /// Hover over selectable rows in the channel tree and menus.
     pub hover_strong: Rgba,
@@ -102,13 +102,13 @@ impl Theme {
             window: rgb(0xf5f6f8),
             surface: rgb(0xffffff),
             tab_inactive: rgb(0xe8ebef),
-            channel_tree: rgb(0xeaf3ff),
             selected: rgb(0xcbdbea),
             hover_strong: rgb(0xdce5ee),
             hover: rgb(0xe8eff6),
             text_selection: rgba(0x3311ff30),
             panes: PaneColors {
                 member_list: color(&appearance.member_list_background, 0xffffff),
+                channel_tree: color(&appearance.channel_tree_background, 0xeaf3ff),
                 channel_log: color(&appearance.channel_log_background, 0xffffff),
                 channel_alternate: color(&appearance.channel_log_alternate, 0xf2f5ff),
                 channel_event: color(&appearance.channel_event_color, 0x007d00),
@@ -146,13 +146,13 @@ impl Theme {
             window: rgb(0x202225),
             surface: rgb(0x2a2d32),
             tab_inactive: rgb(0x25282c),
-            channel_tree: rgb(0x1d2630),
             selected: rgb(0x35506c),
             hover_strong: rgb(0x2d3b4a),
             hover: rgb(0x2c3238),
             text_selection: rgba(0x5a8dee55),
             panes: PaneColors {
                 member_list: color(&colors.member_list_background, 0x1f2124),
+                channel_tree: color(&colors.channel_tree_background, 0x1d2630),
                 channel_log: color(&colors.channel_log_background, 0x1f2124),
                 channel_alternate: color(&colors.channel_log_alternate, 0x272b31),
                 channel_event: color(&colors.channel_event_color, 0x6cc46c),
