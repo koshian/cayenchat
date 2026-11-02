@@ -1152,11 +1152,23 @@ access times inconclusive; the GPUI tests cover it).
 
 ### Avatar downscaling quality (2026-10-16)
 
-`media::decode::thumbnail` shrinks avatars (`Limits::smooth_resize`, set by
+**Superseded (#906, 2026-11-02):** avatars were shrunk with Lanczos3
+(`Limits::smooth_resize`, premultiplied for transparency) to keep outlines
+sharp. In the 16 logical px slot that mixed colors of pixel art and
+illustrations, and a photo did not reliably gain. The maintainer chose to
+show the same image identically as a preview and as an avatar and to keep the
+code simple, so `thumbnail` now shrinks avatars with `thumbnail_exact` (area
+average) like previews; `smooth_resize` and `downscale` are removed. Accepted
+limitation: transparent pixels are no longer premultiplied, so the color of
+fully transparent pixels can tint an edge slightly, as in previews. The tests
+`avatars_use_the_area_average_of_previews_*` pin the result to
+`thumbnail_exact`. The text below is the earlier record.
+
+`media::decode::thumbnail` shrank avatars (`Limits::smooth_resize`, set by
 `Limits::avatar`) with Lanczos3 instead of `thumbnail_exact`, premultiplying
 images that have transparency before the filter so transparent pixels leave
 no dark or light fringe (output stays straight alpha). Link previews share
-`thumbnail` but keep `thumbnail_exact`: the filter needs an RGBA copy of the
+`thumbnail` but kept `thumbnail_exact`: the filter needs an RGBA copy of the
 source, which would exceed the 48 MiB decode budget for large previews.
 `avatar_edit.rs` (the own-avatar editor) also keeps `thumbnail_exact`, and
 uses it to reduce the decoded image to the 2048 px working size too: the

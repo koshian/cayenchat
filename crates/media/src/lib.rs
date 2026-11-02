@@ -68,10 +68,6 @@ pub struct Limits {
     pub thumbnail_height: u32,
     /// Crop the centered square before resizing (avatars).
     pub crop_square: bool,
-    /// Shrink with Lanczos3, premultiplied when the image has transparency
-    /// (avatars). Costs an RGBA copy of the source and a slower filter, so
-    /// previews keep the cheaper `thumbnail_exact`.
-    pub smooth_resize: bool,
 }
 
 impl Default for Limits {
@@ -87,7 +83,6 @@ impl Default for Limits {
             thumbnail_width: 400,
             thumbnail_height: 200,
             crop_square: false,
-            smooth_resize: false,
         }
     }
 }
@@ -107,7 +102,6 @@ impl Limits {
             thumbnail_width: size,
             thumbnail_height: size,
             crop_square: true,
-            smooth_resize: true,
         }
     }
 }
