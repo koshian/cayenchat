@@ -50,13 +50,13 @@ pub struct ChannelEncoding {
     pub char_refs: Option<CharRefMode>,
 }
 
-/// An encoding `encoding_rs` can both read and write, or `7bit-jis`, by its
-/// label (the one resolution the line codec shares).
+/// An encoding `encoding_rs` can both read and write (or the former
+/// `7bit-jis`, which is ISO-2022-JP), by its label (the one resolution the line codec shares).
 pub(crate) fn resolve(label: &str) -> Result<Charset, String> {
     Charset::for_label(label).ok_or_else(|| format!("Unsupported character encoding: {label}"))
 }
 
-/// [`resolve`] for the side that decodes, which has no katakana policy.
+/// [`resolve`] for the side that decodes, which has no write policy.
 fn decode_side(label: &str) -> Result<&'static Encoding, String> {
     resolve(label).map(|charset| charset.encoding)
 }
@@ -511,25 +511,17 @@ mod tests {
         Charset::plain(encoding)
     }
 
-    fn seven_bit_jis() -> Charset {
-        resolve("7bit-jis").unwrap()
-    }
-
     #[test]
-    fn seven_bit_jis_is_a_flag_of_the_channel_that_sets_it() {
+    fn the_former_7bit_jis_label_is_iso_2022_jp() {
         let charsets = one("#a", None, Some("7bit-jis"));
-        assert_eq!(charsets.encoder("#a"), Some(seven_bit_jis()));
-        assert!(charsets.encoder("#a").unwrap().is_iso_2022_jp());
-        assert_eq!(charsets.encoder("#b"), None);
-        // Decoding is ISO-2022-JP's own.
-        let charsets = one("#a", Some("7bit-jis"), None);
-        assert_eq!(charsets.decoder("#a"), Some(encoding_rs::ISO_2022_JP));
-        // ISO-2022-JP keeps folding.
-        let charsets = one("#a", None, Some("ISO-2022-JP"));
         assert_eq!(
             charsets.encoder("#a"),
             Some(plain(encoding_rs::ISO_2022_JP))
         );
+        assert_eq!(charsets.encoder("#b"), None);
+        // Decoding is ISO-2022-JP's own.
+        let charsets = one("#a", Some("7bit-jis"), None);
+        assert_eq!(charsets.decoder("#a"), Some(encoding_rs::ISO_2022_JP));
         // Not offered under UTF8ONLY.
         let charsets = one("#a", None, Some("7bit-jis"));
         charsets.set_utf8_only();
@@ -538,19 +530,16 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_keeps_the_policy_it_was_accepted_with() {
-        let charsets = one("#a", None, Some("7bit-jis"));
+    fn a_pin_keeps_the_encoding_it_was_accepted_with() {
+        let charsets = one("#a", None, Some("ISO-2022-JP"));
         let line = "PRIVMSG #a :ｱ\r\n";
         charsets.pin(line, charsets.encoder("#a"));
-        charsets.set("#a", None, Some("ISO-2022-JP"), None).unwrap();
+        charsets.set("#a", None, Some("UTF-8"), None).unwrap();
         assert_eq!(
             charsets.take_pin(line),
-            Some(Pin::Encoding(Some(seven_bit_jis())))
+            Some(Pin::Encoding(Some(plain(encoding_rs::ISO_2022_JP))))
         );
-        assert_eq!(
-            charsets.encoder("#a"),
-            Some(plain(encoding_rs::ISO_2022_JP))
-        );
+        assert_eq!(charsets.encoder("#a"), Some(plain(encoding_rs::UTF_8)));
     }
 
     #[test]

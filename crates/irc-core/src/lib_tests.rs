@@ -523,7 +523,7 @@ fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp
 }
 
 #[test]
-fn seven_bit_jis_counts_as_iso2022jp_for_auto_char_refs_and_keeps_half_width_kana() {
+fn iso2022jp_keeps_half_width_kana_and_the_former_7bit_jis_label_is_the_same() {
     let channel = [ChannelEncoding {
         channel: "#jp".into(),
         decode: None,
@@ -551,9 +551,9 @@ fn seven_bit_jis_counts_as_iso2022jp_for_auto_char_refs_and_keeps_half_width_kan
     // The bytes checked are the bytes written: half-width kana stay one
     // byte each, full-width ones take two.
     let kept = encode_strict("PRIVMSG #t :ｱ\r\n", "7bit-jis").unwrap();
-    let folded = encode_strict("PRIVMSG #t :ｱ\r\n", "ISO-2022-JP").unwrap();
+    let same = encode_strict("PRIVMSG #t :ｱ\r\n", "ISO-2022-JP").unwrap();
     assert_eq!(&*kept, b"PRIVMSG #t :\x1b(I\x31\x1b(B\r\n");
-    assert_eq!(&*folded, b"PRIVMSG #t :\x1b$B%\x22\x1b(B\r\n");
+    assert_eq!(kept, same);
 }
 
 #[test]
@@ -1418,10 +1418,7 @@ fn every_offered_encoding_round_trips() {
     use cayenchat_storage::TextEncoding;
     let sample = |encoding: TextEncoding| match encoding {
         TextEncoding::Utf8 => "日本語 🙂",
-        TextEncoding::Iso2022Jp
-        | TextEncoding::SevenBitJis
-        | TextEncoding::ShiftJis
-        | TextEncoding::EucJp => "こんにちは",
+        TextEncoding::Iso2022Jp | TextEncoding::ShiftJis | TextEncoding::EucJp => "こんにちは",
         TextEncoding::EucKr => "한국어",
         TextEncoding::Windows1254 => "Çağrı şİ",
         TextEncoding::Windows1252 => "café €",
