@@ -10,6 +10,7 @@ mod avatars;
 mod button_order;
 mod channel_groups;
 mod channel_keys;
+mod channel_look;
 mod channel_settings_dialog;
 mod char_refs;
 mod charset_command;
@@ -838,6 +839,8 @@ struct ChatWindow {
     state: AppState,
     // Virtualized logs keep a separate scroll position per server or channel.
     channel_log_lists: HashMap<Selection, LogList>,
+    // The wallpaper of the selected channel's log (#928).
+    wallpaper: channel_look::Wallpaper,
     combined_list: LogList,
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
@@ -1412,6 +1415,18 @@ impl ChatWindow {
     }
 
     /// The selected server; `None` only while no server is configured.
+    /// The selected channel's log look: its own settings over `theme`. A
+    /// server's log and the other panes have none.
+    fn channel_log_look(&self, theme: Theme) -> channel_look::ResolvedLook {
+        let own = self.state.selected_channel().and_then(|channel| {
+            let profile = &self.sessions.get(&channel.network)?.profile_id;
+            let mapping = self.state.casemapping(channel.network);
+            self.appearance
+                .channel_look(profile, &channel.name, |a, b| mapping.same(a, b))
+        });
+        channel_look::resolve(own, theme)
+    }
+
     fn selected_network_id(&self) -> Option<NetworkId> {
         self.state.selected_network().map(|network| network.id)
     }
@@ -1483,6 +1498,7 @@ impl ChatWindow {
         let mut this = Self {
             state,
             channel_log_lists: HashMap::new(),
+            wallpaper: channel_look::Wallpaper::default(),
             combined_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
@@ -7743,6 +7759,8 @@ impl ChatWindow {
             Selection::None => u32::MAX,
         };
         let border = theme.border;
+        let look = self.channel_log_look(theme);
+        let wallpaper = self.wallpaper.element(look.wallpaper.as_ref(), window, cx);
         let appearance = &self.appearance;
         let draft_row_height = self.draft_row_height();
         let input_size = pane_text_size(appearance.input_font_size, None);
@@ -7750,7 +7768,7 @@ impl ChatWindow {
         self.inputs[&selection].update(cx, |input, _| {
             input.set_font_size(input_size.map(f32::from));
         });
-        let channel_log_bg = theme.panes.channel_log;
+        let channel_log_bg = look.theme.panes.channel_log;
         let combined_bg = theme.panes.combined_log;
 
         // Panes that do not change while the draft is edited are separate cached
@@ -7780,6 +7798,8 @@ impl ChatWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.finish_log_selection()),
             )
+            .relative()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .flex_1()
@@ -7791,9 +7811,18 @@ impl ChatWindow {
                 d.font_family(appearance.channel_log_font.clone())
             })
             .when_some(
-                pane_text_size(appearance.channel_log_font_size, None),
+                pane_text_size(
+                    if look.font_size != 0 {
+                        look.font_size
+                    } else {
+                        appearance.channel_log_font_size
+                    },
+                    None,
+                ),
                 |d, size| d.text_size(size),
             )
+            .when_some(look.text, |d, color| d.text_color(color))
+            .children(wallpaper)
             .child(self.input_to_draft(&self.log_focus, cx))
             .child(panes.channel_log.clone().cached(pane_style()));
 
@@ -9176,7 +9205,13 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
-        let style = LogStyle::new(&self.appearance, theme::current(cx));
+        let look = self.channel_log_look(theme);
+        let mut style = LogStyle::new(&self.appearance, look.theme);
+        // The time column grows with the channel's own size as it does with
+        // the time size.
+        if style.time_size.is_none() {
+            style.time_size = pane_text_size(look.font_size, None);
+        }
         match self.channel_log_layout().row(row) {
             ChannelLogRow::Status => {
                 let text = match self.selected_network_id() {
@@ -9317,7 +9352,8 @@ impl ChatWindow {
         scale_factor: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = theme::current(cx);
+        // The channel's own colors are in the style's theme.
+        let theme = style.theme;
         let Some(channel) = self.state.selected_channel() else {
             return div().into_any_element();
         };
