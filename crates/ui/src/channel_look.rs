@@ -145,6 +145,8 @@ impl Wallpaper {
             Some((_, _, State::Ready(image))) => Some(
                 div()
                     .absolute()
+                    .top_0()
+                    .left_0()
                     .size_full()
                     .overflow_hidden()
                     .opacity(wanted.opacity)

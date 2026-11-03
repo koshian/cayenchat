@@ -7799,6 +7799,7 @@ impl ChatWindow {
                 cx.listener(|this, _, _, _| this.finish_log_selection()),
             )
             .relative()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .flex_1()
