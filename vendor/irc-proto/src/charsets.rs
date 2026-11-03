@@ -11,46 +11,40 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 use encoding_rs::Encoding;
 
-/// The label of ISO-2022-JP that keeps half-width katakana (Perl's `7bit-jis`).
-/// It is not a WHATWG label; see [`Charset::for_label`].
-pub const KEEP_KANA_LABEL: &str = "7bit-jis";
+/// The former label of the ISO-2022-JP variant that keeps half-width
+/// katakana (Perl's `7bit-jis`, #913). It is not a WHATWG label; it is still
+/// read, as ISO-2022-JP, so settings saved with it keep working.
+pub const LEGACY_KEEP_KANA_LABEL: &str = "7bit-jis";
 
-/// An encoding to write in, and how: `keep_kana` writes half-width katakana
-/// (U+FF61..=U+FF9F) of ISO-2022-JP text as they are, with `ESC ( I`, where
-/// `encoding_rs` turns them into full-width ones. It has no effect on any
-/// other encoding. Decoding is the encoding's own.
+/// An encoding to write in. ISO-2022-JP text is written with half-width
+/// katakana (U+FF61..=U+FF9F) as they are, with `ESC ( I`, where
+/// `encoding_rs` turns them into full-width ones. Decoding is the encoding's
+/// own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Charset {
     /// The encoding the text is converted with.
     pub encoding: &'static Encoding,
-    /// Whether half-width katakana are written as they are.
-    pub keep_kana: bool,
 }
 
 impl Charset {
-    /// A plain encoding.
+    /// A charset writing in `encoding`.
     pub const fn plain(encoding: &'static Encoding) -> Self {
-        Self {
-            encoding,
-            keep_kana: false,
-        }
+        Self { encoding }
     }
 
     /// The charset a label stands for: a WHATWG label whose encoder writes
-    /// the same encoding (not UTF-16 or "replacement"), or `7bit-jis`.
+    /// the same encoding (not UTF-16 or "replacement"), or the former
+    /// `7bit-jis`, which is ISO-2022-JP.
     pub fn for_label(label: &str) -> Option<Self> {
-        if label.trim().eq_ignore_ascii_case(KEEP_KANA_LABEL) {
-            return Some(Self {
-                encoding: encoding_rs::ISO_2022_JP,
-                keep_kana: true,
-            });
+        if label.trim().eq_ignore_ascii_case(LEGACY_KEEP_KANA_LABEL) {
+            return Some(Self::plain(encoding_rs::ISO_2022_JP));
         }
         Encoding::for_label(label.as_bytes())
             .filter(|encoding| encoding.output_encoding() == *encoding)
             .map(Self::plain)
     }
 
-    /// Whether this writes ISO-2022-JP, in either policy.
+    /// Whether this writes ISO-2022-JP.
     pub fn is_iso_2022_jp(self) -> bool {
         self.encoding == encoding_rs::ISO_2022_JP
     }
@@ -324,14 +318,14 @@ pub fn decode_line(
     decode_bytes(encoding, line).into_owned()
 }
 
-/// Encodes `text` in `charset`. With `keep_kana` in ISO-2022-JP, each run of
+/// Encodes `text` in `charset`. In ISO-2022-JP, each run of
 /// half-width katakana is written as `ESC ( I`, one byte per character
 /// (`c - 0xFF61 + 0x21`), and `ESC ( B`; the rest goes through `encoding_rs`.
 fn encode_text(text: &str, charset: Charset) -> (Cow<'_, [u8]>, bool) {
     fn is_kana(ch: char) -> bool {
         ('\u{ff61}'..='\u{ff9f}').contains(&ch)
     }
-    if !(charset.keep_kana && charset.is_iso_2022_jp() && text.chars().any(is_kana)) {
+    if !(charset.is_iso_2022_jp() && text.chars().any(is_kana)) {
         let (bytes, _, lost) = charset.encoding.encode(text);
         return (bytes, lost);
     }
@@ -395,10 +389,10 @@ fn encode_body<'a>(
     charsets: Option<&dyn BodyCharsets>,
 ) -> (Cow<'a, [u8]>, Option<&'static Encoding>) {
     let charsets = charsets.filter(|charsets| !charsets.is_empty());
-    if connection.keep_kana || charsets.is_some() {
+    if connection.is_iso_2022_jp() || charsets.is_some() {
         if let Some(span) = text_span(line.as_bytes()) {
             let own = charsets.and_then(|charsets| charsets.encoder(&line[span.target.clone()]));
-            if own.is_some() || connection.keep_kana {
+            if own.is_some() || connection.is_iso_2022_jp() {
                 let text_charset = own.unwrap_or(connection);
                 let (head, _, head_lost) = connection.encoding.encode(&line[..span.text]);
                 let (text, text_lost) = encode_text(&line[span.text..], text_charset);
@@ -437,10 +431,7 @@ mod tests {
 
     const UTF8: Charset = Charset::plain(encoding_rs::UTF_8);
     const SJIS: Charset = Charset::plain(encoding_rs::SHIFT_JIS);
-    const KEEP: Charset = Charset {
-        encoding: encoding_rs::ISO_2022_JP,
-        keep_kana: true,
-    };
+    const KEEP: Charset = Charset::plain(encoding_rs::ISO_2022_JP);
 
     struct Keep;
 
@@ -465,12 +456,10 @@ mod tests {
 
     #[test]
     fn labels_resolve_to_one_charset() {
+        // The former `7bit-jis` is ISO-2022-JP now.
         assert_eq!(Charset::for_label("7bit-jis"), Some(KEEP));
         assert_eq!(Charset::for_label(" 7BIT-JIS "), Some(KEEP));
-        assert_eq!(
-            Charset::for_label("ISO-2022-JP"),
-            Some(Charset::plain(encoding_rs::ISO_2022_JP))
-        );
+        assert_eq!(Charset::for_label("ISO-2022-JP"), Some(KEEP));
         assert_eq!(Charset::for_label("utf-8"), Some(UTF8));
         assert_eq!(Charset::for_label("utf-16le"), None);
         assert_eq!(Charset::for_label("nope"), None);
@@ -496,11 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn text_without_half_width_katakana_matches_iso_2022_jp() {
-        let plain = Charset::plain(encoding_rs::ISO_2022_JP);
+    fn text_without_half_width_katakana_matches_encoding_rs() {
         for text in ["", "abc", "こんにちは、世界", "ABC あいう DEF"] {
             let line = format!("PRIVMSG #a :{text}\r\n");
-            assert_eq!(encode_line(&line, KEEP, None), encode_line(&line, plain, None));
+            let (expected, _, _) = encoding_rs::ISO_2022_JP.encode(&line);
+            assert_eq!(&*encode_line(&line, KEEP, None).0, &*expected);
         }
     }
 
@@ -528,9 +517,6 @@ mod tests {
         // Half-width katakana in a connection's non-message line are folded.
         let (bytes, _) = encode_line("TOPIC #a :ｱ\r\n", KEEP, None);
         assert_eq!(&*bytes, b"TOPIC #a :\x1b$B%\x22\x1b(B\r\n");
-        // A channel can go back to folding on a keeping connection.
-        let (bytes, _) = encode_line("PRIVMSG #jp :ｱ\r\n", KEEP, Some(&Fixed));
-        assert_eq!(&*bytes, b"PRIVMSG #jp :\x1b$B%\x22\x1b(B\r\n");
     }
 
     #[test]
@@ -586,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn keeping_kana_does_not_change_a_line_ending_in_roman() {
+    fn a_line_ending_in_roman_returns_to_ascii_before_the_line_end() {
         for (text, tail) in [
             ("\u{a5}", &b"\x1b(J\\\x1b(B\r\n"[..]),
             ("\u{203e}", b"\x1b(J~\x1b(B\r\n"),

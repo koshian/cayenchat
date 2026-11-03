@@ -2294,8 +2294,8 @@ impl Connection {
             *encoder = self.charsets.encoder(target);
             // Converted here, after the encoding is fixed, so what is
             // checked, shown and written is the same text in that encoding.
-            // `7bit-jis` is ISO-2022-JP here too: only half-width katakana
-            // differ, and they are never referred to.
+            // Half-width katakana can be written, so they are never
+            // referred to.
             let sent_as_iso2022jp = encoder
                 .or_else(|| charsets::resolve(&self.encoding).ok())
                 .is_some_and(Charset::is_iso_2022_jp);

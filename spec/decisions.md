@@ -2286,8 +2286,8 @@ page. There is no re-decoding of lines already shown.
   the default mapping equates (`#a[` / `#a{` under `ascii`) stay separate.
 - **UTF8ONLY.** After `005 UTF8ONLY`, only UTF-8 overrides apply and `/charset`
   refuses others; a legacy server encoding still ends the connection.
-- **One list.** `TextEncoding::ALL` (16 encodings: UTF-8, ISO-2022-JP,
-  7bit-jis (D083), Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
+- **One list.** `TextEncoding::ALL` (15 encodings: UTF-8, ISO-2022-JP
+  (keeps half-width katakana, D083/D085), Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
   x-mac-cyrillic, Windows-1254, Windows-1252, GBK, Big5) feeds the server
   settings, `/charset` and its help. Aliases (`CP949`, `Windows-949`, `CP866`,
   `MacCyrillic`, …) are input names only and map to the canonical one; an
@@ -3626,7 +3626,7 @@ the start of the session.
   fetch limit (`Limits::avatar`, 2 MiB); two formats were not worth it.
 - **Unchanged.** Display-side thumbnails and chat image uploads.
 
-## D083 — `7bit-jis`: ISO-2022-JP that keeps half-width katakana (#913)
+## D083 — `7bit-jis`: ISO-2022-JP that keeps half-width katakana (#913; folded into `ISO-2022-JP` by D085)
 
 - **Decision.** `TextEncoding::SevenBitJis` (label `7bit-jis`, after
   ISO-2022-JP in `ALL`, so 16 encodings) is a send policy of ISO-2022-JP. The
@@ -3684,3 +3684,24 @@ the start of the session.
   cannot be read shows no wallpaper.
 - **Not done.** Other panes, a transparent background or window, and
   separate light/dark colors.
+
+## D085 — `7bit-jis` folded into `ISO-2022-JP` (#942)
+
+- **Decision.** Sending in `ISO-2022-JP` now keeps half-width katakana
+  (U+FF61–U+FF9F) as JIS X 0201, each run as `ESC ( I` … `ESC ( B` (D083's
+  encoder), and `TextEncoding::SevenBitJis` is removed (15 encodings). The two
+  differed only in text with half-width katakana, and the receiving side keeps
+  them already (lenient decoding, #911), so only the send default folded. Text
+  without half-width katakana is byte-identical to before (and to
+  `encoding_rs`), including the line-end state of #915/#917.
+- **Not WHATWG.** CayenChat's `ISO-2022-JP` is therefore a variant: WHATWG
+  `encoding_rs` and Perl's `Encode` `iso-2022-jp` turn half-width katakana into
+  full-width ones; CayenChat does not. A receiver that cannot read `ESC ( I`
+  shows such text garbled; this was accepted by the maintainer.
+- **Compatibility.** The label `7bit-jis` (any case, `-`/`_`) still resolves,
+  to ISO-2022-JP (`Charset::for_label`, `TextEncoding::parse`), and a saved
+  `seven_bit_jis` (server profile or channel entry) is read as `iso2022_jp`
+  (serde alias), written back as `iso2022_jp`.
+- **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
+  katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
+  count ISO-2022-JP only. A channel can no longer ask for the folding form.
