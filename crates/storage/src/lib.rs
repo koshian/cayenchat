@@ -746,6 +746,43 @@ pub struct ChannelLook {
     /// (0 to 100); unset is [`DEFAULT_WALLPAPER_OPACITY`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_opacity: Option<u8>,
+    /// Blur strength (sigma in px, 0 to [`MAX_WALLPAPER_BLUR`], 0 is none);
+    /// unset is [`DEFAULT_WALLPAPER_BLUR`]. Added without a version change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_blur: Option<u8>,
+    /// How far the wallpaper is moved toward the background color, in
+    /// percent (0 to 100, 0 is none); unset is [`DEFAULT_WALLPAPER_TINT`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_tint: Option<u8>,
+    /// How the wallpaper fits the log; unset is [`WallpaperFit::default`].
+    /// A name this version does not know reads as unset.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_fit"
+    )]
+    pub wallpaper_fit: Option<WallpaperFit>,
+}
+
+/// How a channel's wallpaper is fitted to its log (#950).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallpaperFit {
+    /// Stretched to the log's shape, ignoring the picture's proportions.
+    #[default]
+    Stretch,
+    /// Proportions kept, the log covered, the overflow cut off.
+    Cover,
+    /// Proportions kept, the whole picture shown, the rest background.
+    Contain,
+    /// Kept at its (filtered) size in the middle.
+    Center,
+}
+
+fn lenient_fit<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WallpaperFit>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 fn is_zero(value: &u16) -> bool {
@@ -758,6 +795,12 @@ pub const MAX_CHANNEL_LOOKS: usize = 256;
 /// The longest wallpaper path kept, in bytes.
 pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
 pub const DEFAULT_WALLPAPER_OPACITY: u8 = 40;
+/// The largest blur strength, in px of sigma.
+pub const MAX_WALLPAPER_BLUR: u8 = 20;
+/// Weaker than #928's fixed 8, which hid photos.
+pub const DEFAULT_WALLPAPER_BLUR: u8 = 3;
+/// Weaker than #928's fixed 60 %.
+pub const DEFAULT_WALLPAPER_TINT: u8 = 30;
 
 impl ChannelLook {
     /// Whether any field differs from the global appearance.
@@ -768,6 +811,9 @@ impl ChannelLook {
             || self.text.is_some()
             || self.wallpaper.is_some()
             || self.wallpaper_opacity.is_some()
+            || self.wallpaper_blur.is_some()
+            || self.wallpaper_tint.is_some()
+            || self.wallpaper_fit.is_some()
     }
 
     /// Makes every field usable: a size is clamped, a percentage capped, and
@@ -788,6 +834,8 @@ impl ChannelLook {
             self.wallpaper = None;
         }
         self.wallpaper_opacity = self.wallpaper_opacity.map(|p| p.min(100));
+        self.wallpaper_blur = self.wallpaper_blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
+        self.wallpaper_tint = self.wallpaper_tint.map(|p| p.min(100));
     }
 }
 
@@ -3328,6 +3376,24 @@ mod tests {
     }
 
     #[test]
+    fn a_look_without_the_filter_fields_reads_as_unset_and_an_unknown_fit_too() {
+        let old: ChannelLook =
+            serde_json::from_str(r##"{"server":"s","channel":"#a","wallpaper":"/p.png"}"##)
+                .unwrap();
+        assert_eq!(
+            (old.wallpaper_blur, old.wallpaper_tint, old.wallpaper_fit),
+            (None, None, None)
+        );
+        let odd: ChannelLook = serde_json::from_str(
+            r##"{"server":"s","channel":"#a","wallpaper_fit":"tile","wallpaper_blur":0}"##,
+        )
+        .unwrap();
+        assert_eq!((odd.wallpaper_fit, odd.wallpaper_blur), (None, Some(0)));
+        let set: ChannelLook = serde_json::from_str(r##"{"wallpaper_fit":"contain"}"##).unwrap();
+        assert_eq!(set.wallpaper_fit, Some(WallpaperFit::Contain));
+    }
+
+    #[test]
     fn channel_looks_are_replaced_removed_cleaned_and_limited() {
         let same = |a: &str, b: &str| a == b;
         let mut appearance = Appearance::default();
@@ -3338,6 +3404,9 @@ mod tests {
             background: Some("red".into()),
             text: Some("#abcdef".into()),
             wallpaper_opacity: Some(250),
+            wallpaper_blur: Some(250),
+            wallpaper_tint: Some(250),
+            wallpaper_fit: Some(WallpaperFit::Cover),
             ..ChannelLook::default()
         };
         assert!(
@@ -3351,6 +3420,9 @@ mod tests {
         assert_eq!(kept.background, None);
         assert_eq!(kept.text.as_deref(), Some("#abcdef"));
         assert_eq!(kept.wallpaper_opacity, Some(100));
+        assert_eq!(kept.wallpaper_blur, Some(MAX_WALLPAPER_BLUR));
+        assert_eq!(kept.wallpaper_tint, Some(100));
+        assert_eq!(kept.wallpaper_fit, Some(WallpaperFit::Cover));
         appearance.set_channel_look(look("#a"), same).unwrap();
         assert_eq!(appearance.channel_looks.len(), 1);
         let empty = ChannelLook {

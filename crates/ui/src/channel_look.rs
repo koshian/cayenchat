@@ -5,7 +5,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use cayenchat_media::{CancelFlag, wallpaper};
-use cayenchat_storage::{ChannelLook, DEFAULT_WALLPAPER_OPACITY, color_value};
+use cayenchat_storage::{
+    ChannelLook, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_OPACITY, DEFAULT_WALLPAPER_TINT,
+    MAX_WALLPAPER_BLUR, WallpaperFit, color_value,
+};
 use gpui::{prelude::*, *};
 
 use crate::{ChatWindow, theme::Theme};
@@ -22,12 +25,14 @@ pub(crate) struct ResolvedLook {
 }
 
 /// The wallpaper to show: the file, the log background it is tinted toward
-/// and how much of it shows.
+/// how it is filtered, how much of it shows and how it fits the log.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WallpaperRequest {
     pub(crate) path: String,
     pub(crate) tint: u32,
+    pub(crate) filter: wallpaper::Filter,
     pub(crate) opacity: f32,
+    pub(crate) fit: WallpaperFit,
 }
 
 /// `look` laid over `theme`. With a wallpaper the alternate rows are drawn
@@ -54,6 +59,17 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
     let wallpaper = look.wallpaper.as_ref().map(|path| WallpaperRequest {
         path: path.clone(),
         tint,
+        filter: wallpaper::Filter {
+            blur: look
+                .wallpaper_blur
+                .unwrap_or(DEFAULT_WALLPAPER_BLUR)
+                .min(MAX_WALLPAPER_BLUR),
+            tint_percent: look
+                .wallpaper_tint
+                .unwrap_or(DEFAULT_WALLPAPER_TINT)
+                .min(100),
+        },
+        fit: look.wallpaper_fit.unwrap_or_default(),
         opacity: f32::from(
             look.wallpaper_opacity
                 .unwrap_or(DEFAULT_WALLPAPER_OPACITY)
@@ -71,18 +87,36 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
     }
 }
 
+fn object_fit(fit: WallpaperFit) -> ObjectFit {
+    match fit {
+        WallpaperFit::Stretch => ObjectFit::Fill,
+        WallpaperFit::Cover => ObjectFit::Cover,
+        WallpaperFit::Contain => ObjectFit::Contain,
+        WallpaperFit::Center => ObjectFit::None,
+    }
+}
+
 enum State {
     Loading,
     Ready(Arc<RenderImage>),
     Failed,
 }
 
+/// What a loaded picture was made from. The fit is not part of it: it only
+/// changes how the held picture is drawn.
+#[derive(Clone, PartialEq)]
+struct Key {
+    path: PathBuf,
+    tint: u32,
+    filter: wallpaper::Filter,
+}
+
 /// The wallpaper of the channel on show. Only that one is kept, keyed by the
-/// file and the color it was tinted toward, so a result that arrives after
-/// the channel or the colors changed is dropped.
+/// file, the color it was tinted toward and the filter, so a result that
+/// arrives after the channel, the colors or the filter changed is dropped.
 #[derive(Default)]
 pub(crate) struct Wallpaper {
-    slot: Option<(PathBuf, u32, State)>,
+    slot: Option<(Key, State)>,
 }
 
 impl Wallpaper {
@@ -99,26 +133,31 @@ impl Wallpaper {
             self.release(window);
             return None;
         };
-        let path = PathBuf::from(&wanted.path);
-        let held = self
-            .slot
-            .as_ref()
-            .is_some_and(|(held, tint, _)| *held == path && *tint == wanted.tint);
+        let key = Key {
+            path: PathBuf::from(&wanted.path),
+            tint: wanted.tint,
+            filter: wanted.filter,
+        };
+        let held = self.slot.as_ref().is_some_and(|(held, _)| *held == key);
         if !held {
             self.release(window);
-            self.slot = Some((path.clone(), wanted.tint, State::Loading));
-            let tint = wanted.tint;
-            let loading = path.clone();
+            self.slot = Some((key.clone(), State::Loading));
+            let loading = key.clone();
             let loaded = cx.background_spawn(async move {
-                wallpaper::load(&loading, tint, &CancelFlag::default())
+                wallpaper::load(
+                    &loading.path,
+                    loading.tint,
+                    loading.filter,
+                    &CancelFlag::default(),
+                )
             });
             cx.spawn(async move |this, cx| {
                 let result = loaded.await;
                 let _ = this.update(cx, |this, cx| {
-                    let Some((held, held_tint, state)) = this.wallpaper.slot.as_mut() else {
+                    let Some((held, state)) = this.wallpaper.slot.as_mut() else {
                         return;
                     };
-                    if *held != path || *held_tint != tint {
+                    if *held != key {
                         return;
                     }
                     *state = match result {
@@ -141,8 +180,8 @@ impl Wallpaper {
             .detach();
         }
         match self.slot.as_ref() {
-            // Cover fit paints past the box, so the box clips it.
-            Some((_, _, State::Ready(image))) => Some(
+            // Cover and center paint past the box, so the box clips them.
+            Some((_, State::Ready(image))) => Some(
                 div()
                     .absolute()
                     .top_0()
@@ -150,14 +189,18 @@ impl Wallpaper {
                     .size_full()
                     .overflow_hidden()
                     .opacity(wanted.opacity)
-                    .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover)),
+                    .child(
+                        img(image.clone())
+                            .size_full()
+                            .object_fit(object_fit(wanted.fit)),
+                    ),
             ),
             _ => None,
         }
     }
 
     fn release(&mut self, window: &mut Window) {
-        if let Some((_, _, State::Ready(image))) = self.slot.take() {
+        if let Some((_, State::Ready(image))) = self.slot.take() {
             let _ = window.drop_image(image);
         }
     }
@@ -166,7 +209,10 @@ impl Wallpaper {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
-    use super::{ChannelLook, DEFAULT_WALLPAPER_OPACITY, Theme, resolve};
+    use super::{
+        ChannelLook, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_OPACITY, DEFAULT_WALLPAPER_TINT,
+        Theme, WallpaperFit, resolve,
+    };
     use cayenchat_storage::{Appearance, ThemeMode};
     use gpui::{WindowAppearance, rgb};
 
@@ -234,6 +280,26 @@ mod tests {
                 wallpaper.opacity,
                 f32::from(DEFAULT_WALLPAPER_OPACITY) / 100.
             );
+            assert_eq!(wallpaper.filter.blur, DEFAULT_WALLPAPER_BLUR);
+            assert_eq!(wallpaper.filter.tint_percent, DEFAULT_WALLPAPER_TINT);
+            assert_eq!(wallpaper.fit, WallpaperFit::Stretch);
         }
+    }
+
+    #[test]
+    fn the_filter_and_fit_follow_the_channel_and_zero_is_kept() {
+        let look = ChannelLook {
+            wallpaper: Some("/pic.png".into()),
+            wallpaper_blur: Some(0),
+            wallpaper_tint: Some(0),
+            wallpaper_fit: Some(WallpaperFit::Contain),
+            ..ChannelLook::default()
+        };
+        let wallpaper = resolve(Some(&look), theme(false)).wallpaper.unwrap();
+        assert_eq!(
+            (wallpaper.filter.blur, wallpaper.filter.tint_percent),
+            (0, 0)
+        );
+        assert_eq!(wallpaper.fit, WallpaperFit::Contain);
     }
 }

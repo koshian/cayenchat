@@ -3678,7 +3678,7 @@ the start of the session.
   the light and the dark theme. This happens once per file and tint, on a
   background thread; the window keeps one result (the selected channel's),
   keyed by file and tint, and drops a result that arrives for another key.
-  There is no strength setting for the filter: the wallpaper's strength
+  The filter is fixed here (D086 makes it settable): the wallpaper's strength
   (default 40 %) fades the picture over the background color. It is drawn
   stretched to cover the log (no tiling or position options). A file that
   cannot be read shows no wallpaper.
@@ -3705,3 +3705,27 @@ the start of the session.
 - **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
+
+## D086 — Wallpaper filter settings per channel (#950)
+
+- **Decision.** D084's fixed filter (sigma 8, 60 % tint) hid photos, so the
+  channel log look gains three settings, each unset by default and read as
+  the default below when the file lacks it (`wallpaper_blur`,
+  `wallpaper_tint`, `wallpaper_fit` of `ChannelLook`, no version change):
+  - **Blur**: sigma in px of the kept (≤ 640 px) picture, 0 to 20; 0 is no
+    blur. Default 3.
+  - **Tint**: percent moved toward the log background, 0 to 100; 0 leaves the
+    colors alone. Default 30.
+  - **Fit**: `stretch` (default, as before), `cover` (proportions kept, the
+    overflow cut off), `contain` (proportions kept, the margin is the log
+    background) or `center` (the kept picture at its size, centered; it is
+    already reduced to 640 px, so it is not the file's original size).
+    A name this version does not know reads as unset.
+- **Filtering.** Still once per file when loaded, on the background thread.
+  The window's one held picture is keyed by file, background color, blur and
+  tint; changing any of them loads again and drops a result for an older key.
+  The fit is not part of the key: it only changes how the held picture is
+  drawn, so changing it does not reload. Values in the file above the range
+  are capped on load.
+- **Defaults** are a starting point meant to be tried on real photos; the
+  strength setting (D084) still fades the picture over the background.

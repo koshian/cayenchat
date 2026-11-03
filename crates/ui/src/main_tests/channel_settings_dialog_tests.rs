@@ -97,12 +97,15 @@ fn the_dialog_saves_the_channel_log_look_and_rejects_a_bad_one(cx: &mut TestAppC
         })
     };
 
-    // Fields: size, background, alternate, text, wallpaper, strength.
+    // Fields: size, background, alternate, text, wallpaper, strength, blur,
+    // tint.
     let view = open(&chat, cx);
     view.update(cx, |view, cx| {
         view.set_look_field(0, "20", cx);
         view.set_look_field(1, "#102030", cx);
         view.set_look_field(5, "55", cx);
+        view.set_look_field(6, "0", cx);
+        view.set_look_field(7, "0", cx);
         view.set_look_field(3, "red", cx);
         view.save(cx);
     });
@@ -128,6 +131,11 @@ fn the_dialog_saves_the_channel_log_look_and_rejects_a_bad_one(cx: &mut TestAppC
         assert_eq!(look.background.as_deref(), Some("#102030"));
         assert_eq!(look.text.as_deref(), Some("#ABCDEF"));
         assert_eq!(look.wallpaper_opacity, Some(55));
+        // Zero is kept: no blur, no tint, not the defaults.
+        assert_eq!(
+            (look.wallpaper_blur, look.wallpaper_tint),
+            (Some(0), Some(0))
+        );
         // The live state follows the save.
         assert_eq!(
             chat.appearance.channel_looks,
@@ -256,10 +264,10 @@ fn the_dialog_opens_with_auto_join_focused(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_chat, view, _file, cx) = open_dialog_for_b(cx);
-    // Auto-join, decode, encode, four character references, the six log look
-    // fields with the wallpaper's Browse button, reset, cancel and save:
-    // seventeen stops. Seventeen Tabs make a full circle.
-    for _ in 0..17 {
+    // Auto-join, decode, encode, four character references, the eight log look
+    // fields with the wallpaper's Browse button, five fit buttons, reset,
+    // cancel and save: twenty-four stops. Twenty-four Tabs make a full circle.
+    for _ in 0..24 {
         tab(cx);
     }
     press(cx, "space");
@@ -286,10 +294,10 @@ fn tab_visits_the_controls_in_order(cx: &mut TestAppContext) {
             Some(crate::channel_settings_dialog::EncodingSide::Encode)
         );
     });
-    // Encode, then four character-reference stops, the log look's seven
-    // (six fields and Browse), reset and cancel: thirteen more Tabs reach
-    // Cancel, whose Enter closes the dialog unsaved.
-    for _ in 0..13 {
+    // Encode, then four character-reference stops, the log look's nine
+    // (eight fields and Browse), five fit buttons, reset and cancel:
+    // twenty more Tabs reach Cancel, whose Enter closes the dialog unsaved.
+    for _ in 0..20 {
         tab(cx);
     }
     press(cx, "enter");

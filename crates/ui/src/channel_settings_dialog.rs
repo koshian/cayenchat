@@ -8,8 +8,9 @@
 
 use cayenchat_model::{NetworkId, display, names::CaseMapping};
 use cayenchat_storage::{
-    AutoJoinEntry, ChannelLook, CharRefMode, MAX_FONT_SIZE, MAX_WALLPAPER_PATH_BYTES,
-    MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, color_value, format_auto_join,
+    AutoJoinEntry, ChannelLook, CharRefMode, MAX_FONT_SIZE, MAX_WALLPAPER_BLUR,
+    MAX_WALLPAPER_PATH_BYTES, MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, WallpaperFit,
+    color_value, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
@@ -174,7 +175,19 @@ struct LookFields {
     text: Entity<TextInput>,
     wallpaper: Entity<TextInput>,
     opacity: Entity<TextInput>,
+    blur: Entity<TextInput>,
+    tint: Entity<TextInput>,
+    /// `None` follows the default fit.
+    fit: Option<WallpaperFit>,
 }
+
+/// The wallpaper fits, with their label keys; "inherit" comes before them.
+const FIT_CHOICES: [(WallpaperFit, &str); 4] = [
+    (WallpaperFit::Stretch, "channel_look_fit_stretch"),
+    (WallpaperFit::Cover, "channel_look_fit_cover"),
+    (WallpaperFit::Contain, "channel_look_fit_contain"),
+    (WallpaperFit::Center, "channel_look_fit_center"),
+];
 
 impl LookFields {
     fn new(look: Option<&ChannelLook>, i18n: &Localizer, cx: &mut App) -> Self {
@@ -202,11 +215,24 @@ impl LookFields {
                     .unwrap_or_default(),
                 cx,
             ),
+            blur: field(
+                look.wallpaper_blur
+                    .map(|blur| blur.to_string())
+                    .unwrap_or_default(),
+                cx,
+            ),
+            tint: field(
+                look.wallpaper_tint
+                    .map(|percent| percent.to_string())
+                    .unwrap_or_default(),
+                cx,
+            ),
+            fit: look.wallpaper_fit,
         }
     }
 
     /// The fields in the order they are shown.
-    fn all(&self) -> [&Entity<TextInput>; 6] {
+    fn all(&self) -> [&Entity<TextInput>; 8] {
         [
             &self.font_size,
             &self.background,
@@ -214,13 +240,16 @@ impl LookFields {
             &self.text,
             &self.wallpaper,
             &self.opacity,
+            &self.blur,
+            &self.tint,
         ]
     }
 
-    fn clear(&self, cx: &mut App) {
+    fn clear(&mut self, cx: &mut App) {
         for field in self.all() {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
+        self.fit = None;
     }
 
     /// The look the fields hold, or why it cannot be used.
@@ -265,6 +294,20 @@ impl LookFields {
                     .ok_or_else(|| i18n.text("channel_look_opacity_invalid"))?,
             )
         };
+        let number = |field: &Entity<TextInput>, max: u8, key: &str| {
+            let value = text(field);
+            if value.is_empty() {
+                return Ok(None);
+            }
+            value
+                .parse::<u8>()
+                .ok()
+                .filter(|number| *number <= max)
+                .map(Some)
+                .ok_or_else(|| i18n.format(key, &[("max", &max.to_string())]))
+        };
+        let wallpaper_blur = number(&self.blur, MAX_WALLPAPER_BLUR, "channel_look_blur_invalid")?;
+        let wallpaper_tint = number(&self.tint, 100, "channel_look_tint_invalid")?;
         let wallpaper = text(&self.wallpaper);
         if wallpaper.len() > MAX_WALLPAPER_PATH_BYTES {
             return Err(i18n.text("channel_look_wallpaper_long"));
@@ -279,6 +322,9 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_opacity,
+            wallpaper_blur,
+            wallpaper_tint,
+            wallpaper_fit: self.fit,
             ..ChannelLook::default()
         })
     }
@@ -286,6 +332,8 @@ impl LookFields {
 
 /// The "inherit" radio plus one per `CHAR_REF_CHOICES` entry.
 const CHAR_REF_COUNT: usize = 4;
+/// The "inherit" button plus one per `FIT_CHOICES` entry.
+const FIT_COUNT: usize = 5;
 
 /// The focus handles of the dialog's controls.
 struct Controls {
@@ -294,6 +342,7 @@ struct Controls {
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
     browse: FocusHandle,
+    fit: [FocusHandle; FIT_COUNT],
     reset: FocusHandle,
     cancel: FocusHandle,
     save: FocusHandle,
@@ -308,6 +357,7 @@ impl Controls {
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
             browse: handle(),
+            fit: std::array::from_fn(|_| handle()),
             reset: handle(),
             cancel: handle(),
             save: handle(),
@@ -328,11 +378,21 @@ impl Controls {
                 .iter()
                 .map(|handle| (handle.clone(), Some(4))),
         );
-        let [size, background, alternate, text, wallpaper, opacity] = look.all();
+        let [
+            size,
+            background,
+            alternate,
+            text,
+            wallpaper,
+            opacity,
+            blur,
+            tint,
+        ] = look.all();
         let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
         order.extend([size, background, alternate, text, wallpaper].map(field));
         order.push((self.browse.clone(), Some(5)));
-        order.push(field(opacity));
+        order.extend([opacity, blur, tint].map(field));
+        order.extend(self.fit.iter().map(|handle| (handle.clone(), Some(5))));
         order.extend([
             (self.reset.clone(), None),
             (self.cancel.clone(), None),
@@ -503,6 +563,12 @@ impl ChannelSettingsView {
 
     fn set_char_refs(&mut self, mode: Option<CharRefMode>, cx: &mut Context<Self>) {
         self.choices.char_refs = mode;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn set_fit(&mut self, fit: Option<WallpaperFit>, cx: &mut Context<Self>) {
+        self.look.fit = fit;
         self.error = None;
         cx.notify();
     }
@@ -728,6 +794,20 @@ impl Render for ChannelSettingsView {
             .focus(move |style| style.border_color(ring))
             .child(self.i18n.text("channel_look_browse"))
             .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
+        let mut fits = div().flex().flex_wrap().gap_1();
+        let default = (None, "channel_look_fit_default");
+        let choices =
+            std::iter::once(default).chain(FIT_CHOICES.map(|(fit, key)| (Some(fit), key)));
+        for (index, (fit, key)) in choices.enumerate() {
+            fits = fits.child(
+                settings_theme::button(("channel-look-fit", index), self.look.fit == fit, cx)
+                    .track_focus(&self.controls.fit[index])
+                    .focus(move |style| style.border_color(ring))
+                    .child(self.i18n.text(key))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_fit(fit, cx))),
+            );
+        }
+        let fit = Self::field(self.i18n.text("channel_look_fit"), &palette).child(fits);
         let look = div()
             .id("channel-look")
             .debug_selector(|| "channel-look".into())
@@ -763,7 +843,10 @@ impl Render for ChannelSettingsView {
                     )
                     .child(browse),
             )
-            .child(row("channel_look_opacity", &self.look.opacity));
+            .child(row("channel_look_opacity", &self.look.opacity))
+            .child(row("channel_look_blur", &self.look.blur))
+            .child(row("channel_look_tint", &self.look.tint))
+            .child(fit);
 
         let body = div()
             .id("channel-settings-body")
