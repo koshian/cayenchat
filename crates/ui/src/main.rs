@@ -7800,9 +7800,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px_2()
-            .py_1()
-            .bg(channel_log_bg)
+            .map(|d| log_surface(d, channel_log_bg))
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
@@ -7819,9 +7817,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px_2()
-            .py_1()
-            .bg(combined_bg)
+            .map(|d| log_surface(d, combined_bg))
             .when(!appearance.combined_log_font.is_empty(), |d| {
                 d.font_family(appearance.combined_log_font.clone())
             })
@@ -9004,6 +9000,34 @@ fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoEle
     .with_priority(1)
 }
 
+/// Padding and background of a log pane. An opaque background is painted under
+/// the rows. A translucent one is painted as the padding's border instead and
+/// each row paints its own color (`row_background`), so a row never stacks on
+/// the pane background and every row shows the same opacity.
+fn log_surface<T: Styled>(d: T, bg: Rgba) -> T {
+    if bg.a >= 1. {
+        return d.px_2().py_1().bg(bg);
+    }
+    let mut d = d.border_color(bg);
+    let widths = &mut d.style().border_widths;
+    widths.left = Some(px(8.).into());
+    widths.right = Some(px(8.).into());
+    widths.top = Some(px(4.).into());
+    widths.bottom = Some(px(4.).into());
+    d
+}
+
+/// Background a log row paints itself: the alternate color on alternate rows;
+/// on a translucent pane every other row paints the pane color too, because
+/// the pane paints nothing under the rows (`log_surface`).
+fn row_background(alternate: bool, alt: Rgba, plain: Rgba) -> Option<Rgba> {
+    if alternate {
+        Some(alt)
+    } else {
+        (plain.a < 1.).then_some(plain)
+    }
+}
+
 /// Layout of a cached pane inside its column.
 fn pane_style() -> StyleRefinement {
     StyleRefinement::default().flex_1().min_h_0()
@@ -9013,6 +9037,8 @@ fn pane_style() -> StyleRefinement {
 struct LogStyle {
     theme: Theme,
     channel_alt: Rgba,
+    channel_bg: Rgba,
+    combined_bg: Rgba,
     event_color: Rgba,
     notice_color: Rgba,
     combined_alt: Rgba,
@@ -9029,6 +9055,8 @@ impl LogStyle {
         Self {
             theme,
             channel_alt: theme.panes.channel_alternate,
+            channel_bg: theme.panes.channel_log,
+            combined_bg: theme.panes.combined_log,
             event_color: theme.panes.channel_event,
             notice_color: theme.panes.notice,
             combined_alt: theme.panes.combined_alternate,
@@ -9045,6 +9073,24 @@ impl LogStyle {
             decode_char_refs: appearance.decode_char_refs,
             reiwa_mode: appearance.reiwa_mode,
         }
+    }
+
+    /// Background the channel log row at `index` paints itself, if any.
+    fn channel_row_bg(&self, index: usize) -> Option<Rgba> {
+        row_background(
+            self.alternate_rows && index % 2 == 1,
+            self.channel_alt,
+            self.channel_bg,
+        )
+    }
+
+    /// Background the combined log row at `index` paints itself, if any.
+    fn combined_row_bg(&self, index: usize) -> Option<Rgba> {
+        row_background(
+            self.alternate_rows && index % 2 == 1,
+            self.combined_alt,
+            self.combined_bg,
+        )
     }
 
     /// Width of the time column: grows with a time size above the standard.
@@ -9306,9 +9352,7 @@ impl ChatWindow {
                         .flex()
                         .gap_1()
                         .py(px(1.))
-                        .when(style.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(style.channel_alt)
-                        })
+                        .when_some(style.channel_row_bg(index), |d, color| d.bg(color))
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -9553,9 +9597,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && index % 2 == 1, |d| {
-                d.bg(style.channel_alt)
-            })
+            .when_some(style.channel_row_bg(index), |d, color| d.bg(color))
             .when_some(
                 self.reveal_flash
                     .filter(|&(id, sequence, _)| {
@@ -9876,9 +9918,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.combined_alt)
-            })
+            .when_some(style.combined_row_bg(row), |d, color| d.bg(color))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
             .child(style.time(message.time))
@@ -9954,9 +9994,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.combined_alt)
-            })
+            .when_some(style.combined_row_bg(row), |d, color| d.bg(color))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
             .child(style.time(message.time))
@@ -10925,6 +10963,18 @@ mod reveal_strength_tests {
         assert_eq!(reveal_background(row, log, highlight, 0.), row);
         let near = reveal_background(row, log, highlight, 0.001);
         assert!((near.b - row.b).abs() < 0.001);
+    }
+    #[test]
+    fn translucent_rows_paint_their_own_background() {
+        use super::row_background;
+        use gpui::rgba;
+        let alt = rgba(0x11223340);
+        let plain = rgba(0xffffff40);
+        // Every row paints once, so no row stacks on the pane background.
+        assert_eq!(row_background(true, alt, plain), Some(alt));
+        assert_eq!(row_background(false, alt, plain), Some(plain));
+        // An opaque pane paints its background under the rows instead.
+        assert_eq!(row_background(false, rgb(0x112233), rgb(0xffffff)), None);
     }
 }
 
