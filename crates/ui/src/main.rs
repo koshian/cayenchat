@@ -7828,6 +7828,7 @@ impl ChatWindow {
         let look = self.channel_log_look(theme);
         let wallpaper = self.wallpaper.element(look.wallpaper.as_ref(), window, cx);
         let appearance = &self.appearance;
+        let translucent = appearance.has_translucent_pane();
         let draft_row_height = self.draft_row_height();
         let input_size = pane_text_size(appearance.input_font_size, None);
         // The input draws its own text size, so the pane's size goes to it.
@@ -8788,7 +8789,9 @@ impl ChatWindow {
             // Relative, so a pane's own text size (#927) scales the line too.
             .line_height(relative(20. / 13.))
             .text_color(theme.text)
-            .bg(theme.surface)
+            // An opaque base here would hide the desktop behind a see-through
+            // pane (#930); the bars and the panes paint their own background.
+            .when(!translucent, |d| d.bg(theme.surface))
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::scroll_to_latest))
             .on_action(cx.listener(Self::toggle_selected_heading_action))
