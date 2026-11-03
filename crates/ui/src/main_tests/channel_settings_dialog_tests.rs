@@ -82,6 +82,75 @@ fn the_channel_menu_dialog_saves_without_opening_the_settings_window(cx: &mut Te
 }
 
 #[gpui::test]
+fn the_dialog_saves_the_channel_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) {
+    install_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    let same = |left: &str, right: &str| CaseMapping::default().same(left, right);
+    let open = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+        chat.update_in(cx, |chat, window, cx| {
+            chat.show_channel_settings(NetworkId(1), "#A", window, cx);
+            chat.channel_settings.as_ref().unwrap().view().clone()
+        })
+    };
+
+    // Fields: size, background, alternate, text, wallpaper, strength.
+    let view = open(&chat, cx);
+    view.update(cx, |view, cx| {
+        view.set_look_field(0, "20", cx);
+        view.set_look_field(1, "#102030", cx);
+        view.set_look_field(5, "55", cx);
+        view.set_look_field(3, "red", cx);
+        view.save(cx);
+    });
+    // A color that is not #RRGGBB keeps the dialog open with the reason.
+    chat.read_with(cx, |chat, cx| {
+        let prompt = chat.channel_settings.as_ref().unwrap();
+        assert!(prompt.view().read(cx).error.is_some());
+        assert!(chat.saved.appearance.channel_looks.is_empty());
+    });
+    view.update(cx, |view, cx| {
+        view.set_look_field(3, "#abcdef", cx);
+        view.save(cx);
+    });
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.channel_settings.is_none());
+        let look = chat
+            .saved
+            .appearance
+            .channel_look("1", "#a", same)
+            .or_else(|| chat.saved.appearance.channel_looks.first())
+            .unwrap();
+        assert_eq!(look.font_size, 20);
+        assert_eq!(look.background.as_deref(), Some("#102030"));
+        assert_eq!(look.text.as_deref(), Some("#ABCDEF"));
+        assert_eq!(look.wallpaper_opacity, Some(55));
+        // The live state follows the save.
+        assert_eq!(
+            chat.appearance.channel_looks,
+            chat.saved.appearance.channel_looks
+        );
+    });
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(on_file.appearance.channel_looks.len(), 1);
+
+    // Reopened, it shows what was saved; emptying every field removes it.
+    let view = open(&chat, cx);
+    view.update(cx, |view, cx| {
+        let look = view.look(cx).unwrap();
+        assert_eq!((look.font_size, look.wallpaper_opacity), (20, Some(55)));
+        view.reset(cx);
+        view.save(cx);
+    });
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert!(on_file.appearance.channel_looks.is_empty());
+    drop(file);
+}
+
+#[gpui::test]
 fn enter_and_space_act_once_on_the_focused_control(cx: &mut TestAppContext) {
     install_globals(cx);
     let settings = crate::settings_with_channels("-#a");
@@ -187,9 +256,10 @@ fn the_dialog_opens_with_auto_join_focused(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_chat, view, _file, cx) = open_dialog_for_b(cx);
-    // Auto-join, decode, encode, four character references, reset, cancel
-    // and save: ten stops. Ten Tabs make a full circle.
-    for _ in 0..10 {
+    // Auto-join, decode, encode, four character references, the six log look
+    // fields with the wallpaper's Browse button, reset, cancel and save:
+    // seventeen stops. Seventeen Tabs make a full circle.
+    for _ in 0..17 {
         tab(cx);
     }
     press(cx, "space");
@@ -216,9 +286,10 @@ fn tab_visits_the_controls_in_order(cx: &mut TestAppContext) {
             Some(crate::channel_settings_dialog::EncodingSide::Encode)
         );
     });
-    // Encode, then four character-reference stops, reset and cancel: six
-    // more Tabs reach Cancel, whose Enter closes the dialog unsaved.
-    for _ in 0..6 {
+    // Encode, then four character-reference stops, the log look's seven
+    // (six fields and Browse), reset and cancel: thirteen more Tabs reach
+    // Cancel, whose Enter closes the dialog unsaved.
+    for _ in 0..13 {
         tab(cx);
     }
     press(cx, "enter");
