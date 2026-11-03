@@ -7586,6 +7586,40 @@ impl ChatWindow {
         }
     }
 
+    /// On a translucent log pane the rows paint themselves and the pane paints
+    /// nothing under them (`log_surface`), so the part below the last row of a
+    /// short log would show the desktop at no opacity. This fills that part
+    /// with the plain row color from `unfilled` (`LogList::unfilled_from`).
+    /// The layout it follows is the previous frame's, so one check after this
+    /// frame redraws the pane if the answer changed.
+    fn log_tail_filler(
+        unfilled: Option<Pixels>,
+        bg: Rgba,
+        list: impl Fn(&Self) -> Option<&LogList> + 'static,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        if bg.a >= 1. {
+            return None;
+        }
+        let chat = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = chat.update(cx, |chat, cx| {
+                if list(chat).map(LogList::unfilled_from) != Some(unfilled) {
+                    cx.notify();
+                }
+            });
+        });
+        unfilled.map(|from| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .top(from)
+                .bg(bg)
+        })
+    }
+
     /// Content of a cached pane; see [`ChatPane`].
     fn render_pane(
         &mut self,
@@ -7642,6 +7676,12 @@ impl ChatWindow {
                         }
                     });
                 });
+                let filler = Self::log_tail_filler(
+                    main.unfilled_from(),
+                    theme.panes.channel_log,
+                    move |chat| chat.channel_log_lists.get(&selected),
+                    cx,
+                );
                 div()
                     .relative()
                     .size_full()
@@ -7652,26 +7692,36 @@ impl ChatWindow {
                         )
                         .size_full(),
                     )
+                    .children(filler)
                     .child(bar)
                     .children(latest_button)
                     .into_any_element()
             }
-            PaneKind::CombinedLog => div()
-                .relative()
-                .size_full()
-                .child(
-                    list(
-                        self.combined_list.state.clone(),
-                        cx.processor(Self::render_combined_row),
+            PaneKind::CombinedLog => {
+                let filler = Self::log_tail_filler(
+                    self.combined_list.unfilled_from(),
+                    theme.panes.combined_log,
+                    |chat| Some(&chat.combined_list),
+                    cx,
+                );
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        list(
+                            self.combined_list.state.clone(),
+                            cx.processor(Self::render_combined_row),
+                        )
+                        .size_full(),
                     )
-                    .size_full(),
-                )
-                .child(scrollbar::scrollbar(
-                    "scrollbar-sub",
-                    &self.combined_list.state,
-                    theme.text_muted,
-                ))
-                .into_any_element(),
+                    .children(filler)
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-sub",
+                        &self.combined_list.state,
+                        theme.text_muted,
+                    ))
+                    .into_any_element()
+            }
             PaneKind::MemberList => {
                 let member_count = self.participants().len();
                 div()
