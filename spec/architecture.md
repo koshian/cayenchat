@@ -735,7 +735,7 @@ configuration so reconnects keep them.
 The encoding the codec writes in is an `irc_proto::charsets::Charset`: an
 `encoding_rs` encoding, resolved from a label in one place
 (`Charset::for_label`; the former `7bit-jis` label resolves to ISO-2022-JP,
-D084). For ISO-2022-JP, `encode_line` writes half-width katakana in the text
+D085). For ISO-2022-JP, `encode_line` writes half-width katakana in the text
 of a `PRIVMSG`/`NOTICE` as `ESC ( I` runs instead of folding them to
 full-width (D083), so CayenChat's `ISO-2022-JP` is a variant, unlike WHATWG
 and Perl's `iso-2022-jp`. The charset travels with the channel's entry and

@@ -2287,7 +2287,7 @@ page. There is no re-decoding of lines already shown.
 - **UTF8ONLY.** After `005 UTF8ONLY`, only UTF-8 overrides apply and `/charset`
   refuses others; a legacy server encoding still ends the connection.
 - **One list.** `TextEncoding::ALL` (15 encodings: UTF-8, ISO-2022-JP
-  (keeps half-width katakana, D083/D084), Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
+  (keeps half-width katakana, D083/D085), Shift_JIS, EUC-JP, EUC-KR, Windows-1251, KOI8-R, KOI8-U, IBM866, ISO-8859-5,
   x-mac-cyrillic, Windows-1254, Windows-1252, GBK, Big5) feeds the server
   settings, `/charset` and its help. Aliases (`CP949`, `Windows-949`, `CP866`,
   `MacCyrillic`, …) are input names only and map to the canonical one; an
@@ -3626,7 +3626,7 @@ the start of the session.
   fetch limit (`Limits::avatar`, 2 MiB); two formats were not worth it.
 - **Unchanged.** Display-side thumbnails and chat image uploads.
 
-## D083 — `7bit-jis`: ISO-2022-JP that keeps half-width katakana (#913; folded into `ISO-2022-JP` by D084)
+## D083 — `7bit-jis`: ISO-2022-JP that keeps half-width katakana (#913; folded into `ISO-2022-JP` by D085)
 
 - **Decision.** `TextEncoding::SevenBitJis` (label `7bit-jis`, after
   ISO-2022-JP in `ALL`, so 16 encodings) is a send policy of ISO-2022-JP. The
