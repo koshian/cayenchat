@@ -3654,3 +3654,33 @@ the start of the session.
 - **Effect.** Half-width katakana round-trip, so echo matching by text no
   longer misses them. Not changed: the default, lenient decoding (#911),
   generalizing echo matching, and commands other than `PRIVMSG`/`NOTICE`.
+
+## D084 — Per-channel log looks: size, colors and a wallpaper (#928)
+
+- **Decision.** The channel settings dialog (D076) has a "channel log look"
+  section: a font size, a background, an alternate row and a text color, a
+  wallpaper file and its strength in percent. An empty field follows the
+  global appearance. The values are `Appearance::channel_looks`, a list
+  keyed by server profile id and channel name (matched with the network's
+  case mapping, as the encodings are), not part of the server profile:
+  looks are appearance, the encodings belong to the connection. Files
+  without the list read as no overrides, and entries with a bad color, size
+  or percentage are cleaned on load; at most 256 channels.
+- **Applies to** the channel log only, to its text size, background and
+  alternate rows, and the default text color (time, nicknames, links and
+  the other colored parts keep theirs). The colors are one set for both
+  themes. A wallpaper makes the alternate rows half transparent, so it
+  shows through them.
+- **Wallpaper.** `media::wallpaper` reads a local file (≤ 16 MiB, through
+  the preview decoder's limits and decode gate), keeps at most 640 px a side,
+  blurs it (sigma 8) and moves every pixel 60 % toward the log's
+  background color, so a high-contrast photo leaves the text readable in
+  the light and the dark theme. This happens once per file and tint, on a
+  background thread; the window keeps one result (the selected channel's),
+  keyed by file and tint, and drops a result that arrives for another key.
+  There is no strength setting for the filter: the wallpaper's strength
+  (default 40 %) fades the picture over the background color. It is drawn
+  stretched to cover the log (no tiling or position options). A file that
+  cannot be read shows no wallpaper.
+- **Not done.** Other panes, a transparent background or window, and
+  separate light/dark colors.

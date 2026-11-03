@@ -23,6 +23,7 @@ pub mod fetch;
 pub mod policy;
 #[cfg(test)]
 mod testing;
+pub mod wallpaper;
 
 use std::{
     sync::{

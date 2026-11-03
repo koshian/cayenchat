@@ -700,6 +700,9 @@ pub struct Appearance {
     /// At most [`MAX_SAVED_COLORS`], without repeats. Added after version 15
     /// without a version change; files without it read as empty.
     pub saved_colors: Vec<String>,
+    /// Per-channel looks of the channel log (#928), keyed by server profile
+    /// and channel.
+    pub channel_looks: Vec<ChannelLook>,
 }
 
 /// Colors the palette holds.
@@ -730,6 +733,77 @@ pub fn clamp_font_size(size: u16) -> u16 {
         0
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+}
+
+/// Looks of one channel's log that differ from the global appearance (#928).
+/// A field left unset follows the global settings. Added after version 15
+/// without a version change; files without any read as no overrides.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelLook {
+    /// The server profile's id.
+    pub server: String,
+    pub channel: String,
+    /// Font size in px; 0 follows the pane's size.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub font_size: u16,
+    /// `#RRGGBB` for both themes, like the next two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Path of an image file drawn behind the log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper: Option<String>,
+    /// How much of the wallpaper shows over the background, in percent
+    /// (0 to 100); unset is [`DEFAULT_WALLPAPER_OPACITY`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_opacity: Option<u8>,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
+}
+
+/// Overrides of the log looks kept in all. A settings file can hold more, but
+/// the extra entries are dropped when it is read.
+pub const MAX_CHANNEL_LOOKS: usize = 256;
+/// The longest wallpaper path kept, in bytes.
+pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
+pub const DEFAULT_WALLPAPER_OPACITY: u8 = 40;
+
+impl ChannelLook {
+    /// Whether any field differs from the global appearance.
+    pub fn is_set(&self) -> bool {
+        self.font_size != 0
+            || self.background.is_some()
+            || self.alternate.is_some()
+            || self.text.is_some()
+            || self.wallpaper.is_some()
+            || self.wallpaper_opacity.is_some()
+    }
+
+    /// Makes every field usable: a size is clamped, a percentage capped, and
+    /// a color that is not `#RRGGBB` or a path that is empty or too long is
+    /// unset.
+    fn clean(&mut self) {
+        self.font_size = clamp_font_size(self.font_size);
+        for color in [&mut self.background, &mut self.alternate, &mut self.text] {
+            if color.as_deref().is_some_and(|c| color_value(c).is_none()) {
+                *color = None;
+            }
+        }
+        if self
+            .wallpaper
+            .as_deref()
+            .is_some_and(|p| p.trim().is_empty() || p.len() > MAX_WALLPAPER_PATH_BYTES)
+        {
+            self.wallpaper = None;
+        }
+        self.wallpaper_opacity = self.wallpaper_opacity.map(|p| p.min(100));
     }
 }
 
@@ -820,11 +894,68 @@ impl Default for Appearance {
             time_font_size: 0,
             dark: DarkColors::default(),
             saved_colors: Vec::new(),
+            channel_looks: Vec::new(),
         }
     }
 }
 
 impl Appearance {
+    /// The look kept for `channel` of server profile `server`; `same` tells
+    /// whether two channel names are the same (the network's case mapping).
+    pub fn channel_look(
+        &self,
+        server: &str,
+        channel: &str,
+        same: impl Fn(&str, &str) -> bool,
+    ) -> Option<&ChannelLook> {
+        self.channel_looks
+            .iter()
+            .find(|look| look.server == server && same(&look.channel, channel))
+    }
+
+    /// Replaces the look of `look.channel`; one with nothing set removes the
+    /// entry. Fails when there is no room for one more.
+    pub fn set_channel_look(
+        &mut self,
+        mut look: ChannelLook,
+        same: impl Fn(&str, &str) -> bool,
+    ) -> Result<(), String> {
+        if !valid_charset_channel(&look.channel) {
+            return Err("Invalid channel name.".to_owned());
+        }
+        look.clean();
+        let at = self
+            .channel_looks
+            .iter()
+            .position(|old| old.server == look.server && same(&old.channel, &look.channel));
+        match (at, look.is_set()) {
+            (Some(at), true) => self.channel_looks[at] = look,
+            (Some(at), false) => {
+                self.channel_looks.remove(at);
+            }
+            (None, true) if self.channel_looks.len() >= MAX_CHANNEL_LOOKS => {
+                return Err(format!(
+                    "At most {MAX_CHANNEL_LOOKS} channels can have their own look."
+                ));
+            }
+            (None, true) => self.channel_looks.push(look),
+            (None, false) => {}
+        }
+        Ok(())
+    }
+
+    /// Drops looks that cannot be used, and any beyond the limit, so a
+    /// hand-edited file cannot keep the settings from loading.
+    fn clean_channel_looks(&mut self) {
+        self.channel_looks
+            .retain(|look| !look.server.is_empty() && valid_charset_channel(&look.channel));
+        for look in &mut self.channel_looks {
+            look.clean();
+        }
+        self.channel_looks.retain(ChannelLook::is_set);
+        self.channel_looks.truncate(MAX_CHANNEL_LOOKS);
+    }
+
     /// Saves `color` (`#RRGGBB`, any case) to the palette. A color already
     /// saved is not added again.
     pub fn save_color(&mut self, color: &str) -> Result<(), String> {
@@ -1815,6 +1946,7 @@ impl Settings {
     fn normalize(mut self) -> Self {
         self.appearance.clean_palette();
         self.appearance.clamp_font_sizes();
+        self.appearance.clean_channel_looks();
         let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
@@ -3187,6 +3319,93 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded.appearance.saved_colors, ["#AABBCC", "#112233"]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn channel_looks_are_absent_in_old_files_and_survive_a_reload() {
+        let dir = std::env::temp_dir().join(format!("cayenchat-looks-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        let mut value = serde_json::to_value(&settings).unwrap();
+        value["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_looks");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.appearance.channel_looks.is_empty());
+
+        let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        let look = ChannelLook {
+            server: "s".into(),
+            channel: "#Rust".into(),
+            font_size: 18,
+            background: Some("#102030".into()),
+            wallpaper: Some("/pics/a.png".into()),
+            wallpaper_opacity: Some(55),
+            ..ChannelLook::default()
+        };
+        settings
+            .appearance
+            .set_channel_look(look.clone(), same)
+            .unwrap();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.appearance.channel_looks, [look]);
+        let found = loaded.appearance.channel_look("s", "#rust", same).unwrap();
+        assert_eq!(found.alternate, None);
+        assert!(loaded.appearance.channel_look("t", "#rust", same).is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn channel_looks_are_replaced_removed_cleaned_and_limited() {
+        let same = |a: &str, b: &str| a == b;
+        let mut appearance = Appearance::default();
+        let look = |channel: &str| ChannelLook {
+            server: "s".into(),
+            channel: channel.into(),
+            font_size: 3,
+            background: Some("red".into()),
+            text: Some("#abcdef".into()),
+            wallpaper_opacity: Some(250),
+            ..ChannelLook::default()
+        };
+        assert!(
+            appearance
+                .set_channel_look(look("nochannel"), same)
+                .is_err()
+        );
+        appearance.set_channel_look(look("#a"), same).unwrap();
+        let kept = appearance.channel_look("s", "#a", same).unwrap();
+        assert_eq!(kept.font_size, MIN_FONT_SIZE);
+        assert_eq!(kept.background, None);
+        assert_eq!(kept.text.as_deref(), Some("#abcdef"));
+        assert_eq!(kept.wallpaper_opacity, Some(100));
+        appearance.set_channel_look(look("#a"), same).unwrap();
+        assert_eq!(appearance.channel_looks.len(), 1);
+        let empty = ChannelLook {
+            server: "s".into(),
+            channel: "#a".into(),
+            ..ChannelLook::default()
+        };
+        appearance.set_channel_look(empty, same).unwrap();
+        assert!(appearance.channel_looks.is_empty());
+        for index in 0..MAX_CHANNEL_LOOKS {
+            appearance
+                .set_channel_look(look(&format!("#c{index}")), same)
+                .unwrap();
+        }
+        assert!(appearance.set_channel_look(look("#over"), same).is_err());
+        appearance.channel_looks.push(look("#more"));
+        appearance.channel_looks.push(ChannelLook {
+            server: "s".into(),
+            channel: "#none".into(),
+            ..ChannelLook::default()
+        });
+        appearance.clean_channel_looks();
+        assert_eq!(appearance.channel_looks.len(), MAX_CHANNEL_LOOKS);
     }
 
     #[test]

@@ -178,6 +178,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — jump to the latest message: shortcut `scroll_to_latest` (Ctrl+End, Cmd+J on macOS, changeable) and a button over the channel log while its end is out of view (D065)
 - TODO — light/dark appearance
 - PARTIAL — selectable installed font families and font sizes (8–40 px, empty = standard) per pane; the standard size is the inherited one, except the channel tree and member list, whose standard is 12 px (one step smaller than 13 px, #927); the time size also applies to the time column inside the Reiwa mode lead, and the column widens with a size above 13 px; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
+- DONE — per-channel look of the channel log (font size, background, alternate row and text colors, a blurred and tinted wallpaper with its strength) in the channel settings dialog (D084)
 - TODO — restrained theming
 
 ## Platform integration

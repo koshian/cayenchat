@@ -611,6 +611,7 @@ impl SettingsForm {
                 url_tooltip_text_color: value(&self.dark_url_tooltip_text_color),
             },
             saved_colors: self.values.appearance.saved_colors.clone(),
+            channel_looks: self.values.appearance.channel_looks.clone(),
         };
         settings.appearance.validate()?;
         settings.notifications.keywords =
@@ -1629,6 +1630,16 @@ impl SettingsWindow {
             }
         }
         self.follow_channel_values(&file.servers, cx);
+        // The channel dialog writes the channels' log looks (#928); this
+        // window never edits them, but its save writes the whole file back.
+        for appearance in [
+            &mut self.saved.appearance,
+            &mut self.settings.values.appearance,
+        ] {
+            appearance
+                .channel_looks
+                .clone_from(&file.appearance.channel_looks);
+        }
         if let Some(profile) = self.settings.values.selected_profile() {
             let (server, sasl) = saved_passwords(profile);
             for (which, saved) in [(Credential::Server, server), (Credential::Sasl, sasl)] {
@@ -3319,14 +3330,21 @@ impl SettingsWindow {
             return;
         };
         let choices = Choices::of(profile, channel, mapping);
+        let look = self
+            .settings
+            .values
+            .appearance
+            .channel_look(&profile.id, channel, |a, b| mapping.same(a, b))
+            .cloned();
         let server = if profile.display_name.is_empty() {
             profile.host.clone()
         } else {
             profile.display_name.clone()
         };
         let i18n = self.i18n.clone();
-        let view =
-            cx.new(|cx| ChannelSettingsView::new(channel, mapping, server, choices, i18n, cx));
+        let view = cx.new(|cx| {
+            ChannelSettingsView::new(channel, mapping, server, choices, look.as_ref(), i18n, cx)
+        });
         let subscription =
             cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
                 ChannelSettingsEvent::Save => this.save_channel_settings(window, cx),
@@ -3364,9 +3382,21 @@ impl SettingsWindow {
             return;
         };
         let view = dialog.view.clone();
-        let (channel, mapping, choices) = {
+        let (channel, mapping, choices, look) = {
             let view = view.read(cx);
-            (view.channel().to_owned(), view.mapping(), view.choices)
+            (
+                view.channel().to_owned(),
+                view.mapping(),
+                view.choices,
+                view.look(cx),
+            )
+        };
+        let look = match look {
+            Ok(look) => look,
+            Err(error) => {
+                view.update(cx, |view, cx| view.set_error(Some(error), cx));
+                return;
+            }
         };
         let Some(profile_id) = self
             .settings
@@ -3392,6 +3422,7 @@ impl SettingsWindow {
             &channel,
             mapping,
             choices,
+            look,
             utf8_only,
             &i18n,
         ) {

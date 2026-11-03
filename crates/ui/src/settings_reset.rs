@@ -47,6 +47,7 @@ impl SettingsWindow {
                 // shown here.
                 let appearance = Appearance {
                     saved_colors: current.appearance.saved_colors.clone(),
+                    channel_looks: current.appearance.channel_looks.clone(),
                     image_previews: current.appearance.image_previews,
                     reiwa_mode: current.appearance.reiwa_mode,
                     compact_urls: current.appearance.compact_urls,
@@ -120,6 +121,7 @@ impl SettingsWindow {
                 let current = &mut self.settings.values.appearance;
                 let appearance = Appearance {
                     saved_colors: std::mem::take(&mut current.saved_colors),
+                    channel_looks: std::mem::take(&mut current.channel_looks),
                     image_previews: current.image_previews,
                     reiwa_mode: current.reiwa_mode,
                     compact_urls: current.compact_urls,

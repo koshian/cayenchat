@@ -8,13 +8,14 @@
 
 use cayenchat_model::{NetworkId, display, names::CaseMapping};
 use cayenchat_storage::{
-    AutoJoinEntry, CharRefMode, ServerProfile, Settings, TextEncoding, format_auto_join,
+    AutoJoinEntry, ChannelLook, CharRefMode, MAX_FONT_SIZE, MAX_WALLPAPER_PATH_BYTES,
+    MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, color_value, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, FocusNextField, FocusPreviousField, localization::Localizer, settings_file,
-    settings_theme,
+    ChatWindow, FocusNextField, FocusPreviousField, input::TextInput, localization::Localizer,
+    settings_file, settings_theme, settings_window::settings_field,
 };
 
 /// Widest the panel gets; a smaller window keeps [`MARGIN`] around it.
@@ -135,21 +136,152 @@ pub(crate) fn apply_auto_join(
 /// of `settings`: the encodings and the reference mode, then the auto-join
 /// choice. Returns a copy of the updated profile. It reads and writes no file
 /// and touches no host copy; an error leaves `settings` as it was.
+#[allow(clippy::too_many_arguments)] // The dialog's values and where they are written.
 pub(crate) fn save_channel_choices(
     settings: &mut Settings,
     profile_id: &str,
     channel: &str,
     mapping: CaseMapping,
     choices: Choices,
+    mut look: ChannelLook,
     utf8_only: bool,
     i18n: &Localizer,
 ) -> Result<ServerProfile, String> {
-    let profile = settings
-        .profile_mut(profile_id)
-        .ok_or_else(|| format!("unknown server profile: {profile_id}"))?;
-    apply_charsets(profile, channel, mapping, choices, utf8_only, i18n)?;
+    look.server = profile_id.to_owned();
+    look.channel = channel.to_owned();
+    let old_looks = settings.appearance.channel_looks.clone();
+    settings
+        .appearance
+        .set_channel_look(look, |left, right| mapping.same(left, right))?;
+    let Some(profile) = settings.profile_mut(profile_id) else {
+        settings.appearance.channel_looks = old_looks;
+        return Err(format!("unknown server profile: {profile_id}"));
+    };
+    if let Err(error) = apply_charsets(profile, channel, mapping, choices, utf8_only, i18n) {
+        settings.appearance.channel_looks = old_looks;
+        return Err(error);
+    }
     apply_auto_join(profile, channel, mapping, choices.enabled);
     Ok(profile.clone())
+}
+
+/// The fields of the channel log look, empty where the global appearance
+/// applies.
+struct LookFields {
+    font_size: Entity<TextInput>,
+    background: Entity<TextInput>,
+    alternate: Entity<TextInput>,
+    text: Entity<TextInput>,
+    wallpaper: Entity<TextInput>,
+    opacity: Entity<TextInput>,
+}
+
+impl LookFields {
+    fn new(look: Option<&ChannelLook>, i18n: &Localizer, cx: &mut App) -> Self {
+        let unset = i18n.text("channel_look_unset");
+        let field = |value: String, cx: &mut App| {
+            cx.new(|cx| TextInput::new_settings_field(&unset, &value, false, cx))
+        };
+        let look = look.cloned().unwrap_or_default();
+        let color = |value: Option<String>| value.unwrap_or_default();
+        Self {
+            font_size: field(
+                match look.font_size {
+                    0 => String::new(),
+                    size => size.to_string(),
+                },
+                cx,
+            ),
+            background: field(color(look.background), cx),
+            alternate: field(color(look.alternate), cx),
+            text: field(color(look.text), cx),
+            wallpaper: field(look.wallpaper.unwrap_or_default(), cx),
+            opacity: field(
+                look.wallpaper_opacity
+                    .map(|percent| percent.to_string())
+                    .unwrap_or_default(),
+                cx,
+            ),
+        }
+    }
+
+    /// The fields in the order they are shown.
+    fn all(&self) -> [&Entity<TextInput>; 6] {
+        [
+            &self.font_size,
+            &self.background,
+            &self.alternate,
+            &self.text,
+            &self.wallpaper,
+            &self.opacity,
+        ]
+    }
+
+    fn clear(&self, cx: &mut App) {
+        for field in self.all() {
+            field.update(cx, |field, cx| field.set_text("", cx));
+        }
+    }
+
+    /// The look the fields hold, or why it cannot be used.
+    fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
+        let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
+            let value = text(field);
+            if value.is_empty() {
+                Ok(None)
+            } else if color_value(&value).is_some() {
+                Ok(Some(value.to_ascii_uppercase()))
+            } else {
+                Err(i18n.format("channel_look_color_invalid", &[("label", &i18n.text(key))]))
+            }
+        };
+        let size = text(&self.font_size);
+        let font_size = if size.is_empty() {
+            0
+        } else {
+            size.parse::<u16>()
+                .ok()
+                .filter(|size| (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(size))
+                .ok_or_else(|| {
+                    i18n.format(
+                        "channel_look_size_invalid",
+                        &[
+                            ("min", &MIN_FONT_SIZE.to_string()),
+                            ("max", &MAX_FONT_SIZE.to_string()),
+                        ],
+                    )
+                })?
+        };
+        let opacity = text(&self.opacity);
+        let wallpaper_opacity = if opacity.is_empty() {
+            None
+        } else {
+            Some(
+                opacity
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|percent| *percent <= 100)
+                    .ok_or_else(|| i18n.text("channel_look_opacity_invalid"))?,
+            )
+        };
+        let wallpaper = text(&self.wallpaper);
+        if wallpaper.len() > MAX_WALLPAPER_PATH_BYTES {
+            return Err(i18n.text("channel_look_wallpaper_long"));
+        }
+        if !wallpaper.is_empty() && !std::path::Path::new(&wallpaper).is_file() {
+            return Err(i18n.text("channel_look_wallpaper_missing"));
+        }
+        Ok(ChannelLook {
+            font_size,
+            background: color(&self.background, "channel_look_background")?,
+            alternate: color(&self.alternate, "channel_look_alternate")?,
+            text: color(&self.text, "channel_look_text")?,
+            wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
+            wallpaper_opacity,
+            ..ChannelLook::default()
+        })
+    }
 }
 
 /// The "inherit" radio plus one per `CHAR_REF_CHOICES` entry.
@@ -161,6 +293,7 @@ struct Controls {
     decode: FocusHandle,
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
+    browse: FocusHandle,
     reset: FocusHandle,
     cancel: FocusHandle,
     save: FocusHandle,
@@ -174,6 +307,7 @@ impl Controls {
             decode: handle(),
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
+            browse: handle(),
             reset: handle(),
             cancel: handle(),
             save: handle(),
@@ -182,21 +316,29 @@ impl Controls {
 
     /// The controls in Tab order, each with the body child to scroll into
     /// view when it takes the focus. The body's children are the hint, then
-    /// one per control group.
-    fn tab_order(&self) -> [(&FocusHandle, Option<usize>); 6 + CHAR_REF_COUNT] {
-        let [r0, r1, r2, r3] = &self.char_refs;
-        [
-            (&self.auto_join, Some(1)),
-            (&self.decode, Some(2)),
-            (&self.encode, Some(3)),
-            (r0, Some(4)),
-            (r1, Some(4)),
-            (r2, Some(4)),
-            (r3, Some(4)),
-            (&self.reset, None),
-            (&self.cancel, None),
-            (&self.save, None),
-        ]
+    /// one per control group, the last being the log look.
+    fn tab_order(&self, look: &LookFields, cx: &App) -> Vec<(FocusHandle, Option<usize>)> {
+        let mut order = vec![
+            (self.auto_join.clone(), Some(1)),
+            (self.decode.clone(), Some(2)),
+            (self.encode.clone(), Some(3)),
+        ];
+        order.extend(
+            self.char_refs
+                .iter()
+                .map(|handle| (handle.clone(), Some(4))),
+        );
+        let [size, background, alternate, text, wallpaper, opacity] = look.all();
+        let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
+        order.extend([size, background, alternate, text, wallpaper].map(field));
+        order.push((self.browse.clone(), Some(5)));
+        order.push(field(opacity));
+        order.extend([
+            (self.reset.clone(), None),
+            (self.cancel.clone(), None),
+            (self.save.clone(), None),
+        ]);
+        order
     }
 }
 
@@ -212,6 +354,7 @@ pub(crate) struct ChannelSettingsView {
     highlight: usize,
     pub(crate) error: Option<String>,
     controls: Controls,
+    look: LookFields,
     /// The first control takes the focus on the first draw.
     focus_pending: bool,
     body_scroll: ScrollHandle,
@@ -227,10 +370,12 @@ impl ChannelSettingsView {
         mapping: CaseMapping,
         server: String,
         choices: Choices,
+        look: Option<&ChannelLook>,
         i18n: Localizer,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            look: LookFields::new(look, &i18n, cx),
             channel: channel.to_owned(),
             mapping,
             server,
@@ -259,15 +404,56 @@ impl ChannelSettingsView {
         cx.notify();
     }
 
-    /// Reset to default: the encodings and the reference mode follow the
-    /// server again, once saved. The auto-join choice is not one of them.
+    /// The log look the dialog holds, or why it cannot be saved.
+    pub(crate) fn look(&self, cx: &App) -> Result<ChannelLook, String> {
+        self.look.read(&self.i18n, cx)
+    }
+
+    /// Opens the file chooser for the wallpaper.
+    fn browse_wallpaper(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(self.i18n.text("channel_look_wallpaper").into()),
+            filter: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                let path = path.to_string_lossy().into_owned();
+                this.look
+                    .wallpaper
+                    .update(cx, |field, cx| field.set_text(&path, cx));
+                this.error = None;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Reset to default: the encodings, the reference mode and the log look
+    /// follow the server and the global appearance again, once saved. The
+    /// auto-join choice is not one of them.
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
         self.choices.decode = None;
         self.choices.encode = None;
         self.choices.char_refs = None;
+        self.look.clear(cx);
         self.open_list = None;
         self.error = None;
         cx.notify();
+    }
+
+    /// Types `text` into the look field at `index` (the order they are shown).
+    #[cfg(test)]
+    pub(crate) fn set_look_field(&mut self, index: usize, text: &str, cx: &mut Context<Self>) {
+        self.look.all()[index].update(cx, |field, cx| field.set_text(text, cx));
     }
 
     #[cfg(test)]
@@ -358,17 +544,17 @@ impl ChannelSettingsView {
 
     /// Tab / Shift+Tab: only the dialog's own controls are reachable.
     fn step_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let order = self.controls.tab_order();
+        let order = self.controls.tab_order(&self.look, cx);
         let len = order.len();
         let step = if forward { 1 } else { len - 1 };
         let at = order
             .iter()
             .position(|(handle, _)| handle.is_focused(window));
-        let (handle, scroll_to) = order[at.map_or(0, |at| (at + step) % len)];
+        let (handle, scroll_to) = &order[at.map_or(0, |at| (at + step) % len)];
         // An open list belongs to its selector.
         self.open_list = None;
         window.focus(handle);
-        if let Some(child) = scroll_to {
+        if let Some(child) = *scroll_to {
             self.body_scroll.scroll_to_item(child);
         }
         cx.notify();
@@ -534,6 +720,51 @@ impl Render for ChannelSettingsView {
                     .child(self.i18n.text("iso2022jp_char_refs_hint")),
             );
 
+        let row = |key: &str, input: &Entity<TextInput>| {
+            settings_field(&self.i18n.text(key), input.clone())
+        };
+        let browse = settings_theme::button("channel-look-browse", false, cx)
+            .track_focus(&self.controls.browse)
+            .focus(move |style| style.border_color(ring))
+            .child(self.i18n.text("channel_look_browse"))
+            .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
+        let look = div()
+            .id("channel-look")
+            .debug_selector(|| "channel-look".into())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_color(palette.text)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(self.i18n.text("channel_look_heading")),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(palette.text_secondary)
+                    .child(self.i18n.text("channel_look_hint")),
+            )
+            .child(row("channel_look_font_size", &self.look.font_size))
+            .child(row("channel_look_background", &self.look.background))
+            .child(row("channel_look_alternate", &self.look.alternate))
+            .child(row("channel_look_text", &self.look.text))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(row("channel_look_wallpaper", &self.look.wallpaper)),
+                    )
+                    .child(browse),
+            )
+            .child(row("channel_look_opacity", &self.look.opacity));
+
         let body = div()
             .id("channel-settings-body")
             .track_scroll(&self.body_scroll)
@@ -566,7 +797,8 @@ impl Render for ChannelSettingsView {
                 &palette,
                 cx,
             ))
-            .child(char_refs);
+            .child(char_refs)
+            .child(look);
 
         // Outside the scrolling body, so a rejected save is always visible.
         let error = self.error.clone().map(|error| {
@@ -728,14 +960,20 @@ impl ChatWindow {
             Ok(Some(settings)) if settings.profile(&profile_id).is_some() => Some(settings),
             _ => None,
         };
-        let Some(profile) = latest.as_ref().unwrap_or(&self.saved).profile(&profile_id) else {
+        let values = latest.as_ref().unwrap_or(&self.saved);
+        let Some(profile) = values.profile(&profile_id) else {
             return;
         };
         let choices = Choices::of(profile, channel, mapping);
+        let look = values
+            .appearance
+            .channel_look(&profile_id, channel, |a, b| mapping.same(a, b))
+            .cloned();
         let server = self.prompt_server_label(network);
         let i18n = self.i18n.clone();
-        let view =
-            cx.new(|cx| ChannelSettingsView::new(channel, mapping, server, choices, i18n, cx));
+        let view = cx.new(|cx| {
+            ChannelSettingsView::new(channel, mapping, server, choices, look.as_ref(), i18n, cx)
+        });
         let subscription =
             cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
                 ChannelSettingsEvent::Save => this.save_channel_settings_prompt(window, cx),
@@ -783,12 +1021,21 @@ impl ChatWindow {
             prompt.profile_id.clone(),
             prompt.view.clone(),
         );
-        let (channel, mapping, choices) = {
+        let (channel, mapping, choices, look) = {
             let view = view.read(cx);
-            (view.channel().to_owned(), view.mapping(), view.choices)
+            (
+                view.channel().to_owned(),
+                view.mapping(),
+                view.choices,
+                view.look(cx),
+            )
         };
         let fail = |error: String, cx: &mut Context<Self>| {
             view.update(cx, |view, cx| view.set_error(Some(error), cx));
+        };
+        let look = match look {
+            Ok(look) => look,
+            Err(error) => return fail(error, cx),
         };
         // The server may have been removed while the dialog was open.
         if self.sessions.get(&network).map(|s| s.profile_id.as_str()) != Some(profile_id.as_str()) {
@@ -811,6 +1058,7 @@ impl ChatWindow {
             &channel,
             mapping,
             choices,
+            look,
             utf8_only,
             &self.i18n,
         ) {
