@@ -122,6 +122,9 @@ pub(crate) struct SettingsForm {
     pub(crate) dark_url_tooltip_text_color: Entity<TextInput>,
     /// Percent, as typed.
     pub(crate) url_tooltip_opacity: Entity<TextInput>,
+    /// Pane background opacities in percent, as typed, in the order of
+    /// [`pane_opacity_texts`].
+    pub(crate) pane_opacities: [Entity<TextInput>; 4],
     pub(crate) channel_log_font: Entity<TextInput>,
     pub(crate) combined_log_font: Entity<TextInput>,
     pub(crate) member_list_font: Entity<TextInput>,
@@ -374,6 +377,8 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            pane_opacities: pane_opacity_texts(&values.appearance)
+                .map(|text| field("100", &text, false, cx)),
             channel_log_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.channel_log_font,
@@ -552,6 +557,26 @@ impl SettingsForm {
                     (cayenchat_storage::MIN_URL_TOOLTIP_OPACITY..=100).contains(percent)
                 })
                 .ok_or_else(|| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
+            member_list_opacity: pane_opacity_value(
+                &self.pane_opacities[0],
+                settings.language,
+                cx,
+            )?,
+            channel_tree_opacity: pane_opacity_value(
+                &self.pane_opacities[1],
+                settings.language,
+                cx,
+            )?,
+            channel_log_opacity: pane_opacity_value(
+                &self.pane_opacities[2],
+                settings.language,
+                cx,
+            )?,
+            combined_log_opacity: pane_opacity_value(
+                &self.pane_opacities[3],
+                settings.language,
+                cx,
+            )?,
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             compact_urls: self.values.appearance.compact_urls,
@@ -718,7 +743,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 61] {
         [
             &self.custom_host,
             &self.port,
@@ -762,6 +787,10 @@ impl SettingsForm {
             &self.url_tooltip_text_color,
             &self.dark_url_tooltip_text_color,
             &self.url_tooltip_opacity,
+            &self.pane_opacities[0],
+            &self.pane_opacities[1],
+            &self.pane_opacities[2],
+            &self.pane_opacities[3],
             &self.channel_log_font,
             &self.combined_log_font,
             &self.member_list_font,
@@ -911,6 +940,33 @@ const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
 
 /// The pane font sizes as shown in their fields, in [`FontTarget`] order;
 /// the standard size (0) is an empty field.
+/// The pane opacity fields' texts: member list, channel tree, channel log,
+/// combined log.
+pub(crate) fn pane_opacity_texts(appearance: &Appearance) -> [String; 4] {
+    [
+        appearance.member_list_opacity,
+        appearance.channel_tree_opacity,
+        appearance.channel_log_opacity,
+        appearance.combined_log_opacity,
+    ]
+    .map(|percent| percent.to_string())
+}
+
+fn pane_opacity_value(
+    field: &Entity<TextInput>,
+    language: Language,
+    cx: &App,
+) -> Result<u8, String> {
+    field
+        .read(cx)
+        .text()
+        .trim()
+        .parse()
+        .ok()
+        .filter(|percent| (cayenchat_storage::MIN_PANE_OPACITY..=100).contains(percent))
+        .ok_or_else(|| i18n_error(language, "pane_opacity_invalid"))
+}
+
 pub(crate) fn font_size_texts(appearance: &Appearance) -> [String; 6] {
     [
         appearance.channel_log_font_size,
@@ -4672,11 +4728,19 @@ impl SettingsWindow {
                 &self.settings.dark_member_list_background,
                 cx,
             ))
+            .child(settings_field(
+                &self.i18n.text("member_list_opacity"),
+                self.settings.pane_opacities[0].clone(),
+            ))
             .child(self.color_pair(
                 &self.i18n.text("channel_tree_background"),
                 &self.settings.channel_tree_background,
                 &self.settings.dark_channel_tree_background,
                 cx,
+            ))
+            .child(settings_field(
+                &self.i18n.text("channel_tree_opacity"),
+                self.settings.pane_opacities[1].clone(),
             ))
             .child(self.color_pair(
                 &self.i18n.text("channel_log"),
@@ -4689,6 +4753,10 @@ impl SettingsWindow {
                 &self.settings.channel_log_alternate,
                 &self.settings.dark_channel_log_alternate,
                 cx,
+            ))
+            .child(settings_field(
+                &self.i18n.text("channel_log_opacity"),
+                self.settings.pane_opacities[2].clone(),
             ))
             .child(self.color_pair(
                 &self.i18n.text("channel_event_color"),
@@ -4719,6 +4787,10 @@ impl SettingsWindow {
                 &self.settings.combined_log_alternate,
                 &self.settings.dark_combined_log_alternate,
                 cx,
+            ))
+            .child(settings_field(
+                &self.i18n.text("combined_log_opacity"),
+                self.settings.pane_opacities[3].clone(),
             ))
             .child(self.color_pair(
                 &self.i18n.text("link_color"),

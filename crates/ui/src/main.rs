@@ -972,6 +972,9 @@ struct ChatWindow {
     window_display: Option<String>,
     /// The native window title last set from `render`.
     shown_title: String,
+    /// The native window was last made transparent because a pane background
+    /// is see-through (set from `render`).
+    window_transparent: bool,
     /// Keep every CayenChat window above ordinary windows (Windows only).
     /// Applied to the windows opened later; the native state is set by
     /// `apply_always_on_top`, never while building a window.
@@ -1563,6 +1566,7 @@ impl ChatWindow {
             window_bounds: None,
             window_display: None,
             shown_title: String::new(),
+            window_transparent: false,
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: saved.connection_diagnostics,
@@ -6854,6 +6858,18 @@ impl Render for ChatWindow {
         if title != self.shown_title {
             window.os_set_title(&title);
             self.shown_title = title.clone();
+        }
+        // A see-through pane needs a window without an opaque base. Where the
+        // platform cannot show the desktop through (no compositing), the
+        // window keeps its base and the pane shows over it.
+        let transparent = self.appearance.has_translucent_pane();
+        if transparent != self.window_transparent {
+            window.set_background_appearance(if transparent {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            });
+            self.window_transparent = transparent;
         }
         self.check_double_enter(window, cx);
         let content = self.render_chat(window, cx);

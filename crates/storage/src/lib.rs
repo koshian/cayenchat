@@ -641,6 +641,16 @@ pub struct Appearance {
     /// for plain URLs, a faint tint of the link color for shortened ones.
     /// Added after version 15 without a version change.
     pub link_background: String,
+    /// How opaque each pane's background is, in percent
+    /// (`MIN_PANE_OPACITY` to 100), applied to its background color and its
+    /// alternate row color alike; below 100 the window is transparent and
+    /// the desktop shows through. The text and buttons stay opaque. One
+    /// value per pane for both themes. Added after version 15 without a
+    /// version change; files without them read as 100.
+    pub member_list_opacity: u8,
+    pub channel_tree_opacity: u8,
+    pub channel_log_opacity: u8,
+    pub combined_log_opacity: u8,
     pub alternate_rows: bool,
     /// Inline thumbnails of direct image links in the channel log
     /// (version 14). Off by default, also for settings saved before it existed.
@@ -705,6 +715,9 @@ const HOVER_POPUP_TEXT_COLOR: &str = "#E3E6EA";
 /// would be hard to read.
 pub const MIN_URL_TOOLTIP_OPACITY: u8 = 20;
 pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
+/// Least opacity of a pane background, in percent; below it the text would
+/// be hard to read.
+pub const MIN_PANE_OPACITY: u8 = 10;
 
 /// Range of a pane font size in px. 0 means "standard size" and is kept as
 /// is; any other value is clamped into the range on load and on use.
@@ -784,6 +797,10 @@ impl Default for Appearance {
             url_tooltip_opacity: DEFAULT_URL_TOOLTIP_OPACITY,
             link_color: "#0645AD".into(),
             link_background: String::new(),
+            member_list_opacity: 100,
+            channel_tree_opacity: 100,
+            channel_log_opacity: 100,
+            combined_log_opacity: 100,
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
@@ -913,7 +930,32 @@ impl Appearance {
                 "URL tooltip opacity must be {MIN_URL_TOOLTIP_OPACITY} to 100."
             ));
         }
+        for (label, percent) in [
+            ("Member list", self.member_list_opacity),
+            ("Channel tree", self.channel_tree_opacity),
+            ("Channel log", self.channel_log_opacity),
+            ("Combined log", self.combined_log_opacity),
+        ] {
+            if !(MIN_PANE_OPACITY..=100).contains(&percent) {
+                return Err(format!(
+                    "{label} opacity must be {MIN_PANE_OPACITY} to 100."
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Whether any pane background is see-through, so the window must be
+    /// transparent for the desktop to show.
+    pub fn has_translucent_pane(&self) -> bool {
+        [
+            self.member_list_opacity,
+            self.channel_tree_opacity,
+            self.channel_log_opacity,
+            self.combined_log_opacity,
+        ]
+        .iter()
+        .any(|&percent| percent < 100)
     }
 }
 
@@ -3429,6 +3471,34 @@ mod tests {
         assert!(appearance.validate().is_err());
         appearance.dark.url_tooltip_link_color = "#78AAFF".into();
         appearance.url_tooltip_text_color = "white".into();
+        assert!(appearance.validate().is_err());
+    }
+
+    #[test]
+    fn pane_opacity_reads_as_opaque_for_old_settings_and_is_validated() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = old["appearance"].as_object_mut().unwrap();
+        for key in [
+            "member_list_opacity",
+            "channel_tree_opacity",
+            "channel_log_opacity",
+            "combined_log_opacity",
+        ] {
+            assert!(appearance.remove(key).is_some());
+        }
+        let settings: Settings = serde_json::from_value(old).unwrap();
+        let appearance = settings.appearance;
+        assert_eq!(appearance, Appearance::default());
+        assert_eq!(appearance.channel_log_opacity, 100);
+        assert!(!appearance.has_translucent_pane());
+
+        let mut appearance = appearance;
+        appearance.combined_log_opacity = MIN_PANE_OPACITY;
+        assert!(appearance.validate().is_ok());
+        assert!(appearance.has_translucent_pane());
+        appearance.combined_log_opacity = MIN_PANE_OPACITY - 1;
+        assert!(appearance.validate().is_err());
+        appearance.combined_log_opacity = 101;
         assert!(appearance.validate().is_err());
     }
 

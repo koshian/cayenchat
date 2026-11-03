@@ -107,15 +107,39 @@ impl Theme {
             hover: rgb(0xe8eff6),
             text_selection: rgba(0x3311ff30),
             panes: PaneColors {
-                member_list: color(&appearance.member_list_background, 0xffffff),
-                channel_tree: color(&appearance.channel_tree_background, 0xeaf3ff),
-                channel_log: color(&appearance.channel_log_background, 0xffffff),
-                channel_alternate: color(&appearance.channel_log_alternate, 0xf2f5ff),
+                member_list: pane_color(
+                    &appearance.member_list_background,
+                    0xffffff,
+                    appearance.member_list_opacity,
+                ),
+                channel_tree: pane_color(
+                    &appearance.channel_tree_background,
+                    0xeaf3ff,
+                    appearance.channel_tree_opacity,
+                ),
+                channel_log: pane_color(
+                    &appearance.channel_log_background,
+                    0xffffff,
+                    appearance.channel_log_opacity,
+                ),
+                channel_alternate: pane_color(
+                    &appearance.channel_log_alternate,
+                    0xf2f5ff,
+                    appearance.channel_log_opacity,
+                ),
                 channel_event: color(&appearance.channel_event_color, 0x007d00),
                 notice: color(&appearance.notice_color, 0x7a838c),
                 highlight: color(&appearance.highlight_color, 0xd46a8e),
-                combined_log: color(&appearance.combined_log_background, 0xf9fafb),
-                combined_alternate: color(&appearance.combined_log_alternate, 0xf2f5ff),
+                combined_log: pane_color(
+                    &appearance.combined_log_background,
+                    0xf9fafb,
+                    appearance.combined_log_opacity,
+                ),
+                combined_alternate: pane_color(
+                    &appearance.combined_log_alternate,
+                    0xf2f5ff,
+                    appearance.combined_log_opacity,
+                ),
                 url_tooltip: translucent(
                     color(&appearance.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
@@ -151,15 +175,39 @@ impl Theme {
             hover: rgb(0x2c3238),
             text_selection: rgba(0x5a8dee55),
             panes: PaneColors {
-                member_list: color(&colors.member_list_background, 0x1f2124),
-                channel_tree: color(&colors.channel_tree_background, 0x1d2630),
-                channel_log: color(&colors.channel_log_background, 0x1f2124),
-                channel_alternate: color(&colors.channel_log_alternate, 0x272b31),
+                member_list: pane_color(
+                    &colors.member_list_background,
+                    0x1f2124,
+                    appearance.member_list_opacity,
+                ),
+                channel_tree: pane_color(
+                    &colors.channel_tree_background,
+                    0x1d2630,
+                    appearance.channel_tree_opacity,
+                ),
+                channel_log: pane_color(
+                    &colors.channel_log_background,
+                    0x1f2124,
+                    appearance.channel_log_opacity,
+                ),
+                channel_alternate: pane_color(
+                    &colors.channel_log_alternate,
+                    0x272b31,
+                    appearance.channel_log_opacity,
+                ),
                 channel_event: color(&colors.channel_event_color, 0x6cc46c),
                 notice: color(&colors.notice_color, 0x8c949c),
                 highlight: color(&colors.highlight_color, 0xefa0be),
-                combined_log: color(&colors.combined_log_background, 0x24272b),
-                combined_alternate: color(&colors.combined_log_alternate, 0x2c3036),
+                combined_log: pane_color(
+                    &colors.combined_log_background,
+                    0x24272b,
+                    appearance.combined_log_opacity,
+                ),
+                combined_alternate: pane_color(
+                    &colors.combined_log_alternate,
+                    0x2c3036,
+                    appearance.combined_log_opacity,
+                ),
                 url_tooltip: translucent(
                     color(&colors.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
@@ -175,6 +223,15 @@ impl Theme {
 
 fn color(value: &str, fallback: u32) -> Rgba {
     rgb(color_value(value).unwrap_or(fallback))
+}
+
+/// A pane background at its opacity; a settings file may hold a value
+/// outside the range, which is clamped here.
+fn pane_color(value: &str, fallback: u32, percent: u8) -> Rgba {
+    translucent(
+        color(value, fallback),
+        percent.clamp(cayenchat_storage::MIN_PANE_OPACITY, 100),
+    )
 }
 
 /// `color` at `percent` opacity.
@@ -232,6 +289,25 @@ mod tests {
 
         assert!(Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance).dark);
         assert!(!Theme::new(ThemeMode::Light, WindowAppearance::Dark, &appearance).dark);
+    }
+
+    #[test]
+    fn pane_opacity_applies_to_background_and_alternate_of_that_pane_only() {
+        let appearance = Appearance {
+            channel_log_opacity: 40,
+            member_list_opacity: 0,
+            ..Default::default()
+        };
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let panes = Theme::new(mode, WindowAppearance::Light, &appearance).panes;
+            assert_eq!(panes.channel_log.a, 0.4);
+            assert_eq!(panes.channel_alternate.a, 0.4);
+            // Out of range values are clamped to the lower limit.
+            assert_eq!(panes.member_list.a, 0.1);
+            assert_eq!(panes.channel_tree.a, 1.);
+            assert_eq!(panes.combined_log.a, 1.);
+            assert_eq!(panes.combined_alternate.a, 1.);
+        }
     }
 
     #[test]
