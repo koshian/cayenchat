@@ -733,11 +733,13 @@ encoding still covers everything but that text. The UI keeps the overrides in
 `ServerProfile::channel_charsets` and copies them into the profile's active
 configuration so reconnects keep them.
 The encoding the codec writes in is an `irc_proto::charsets::Charset`: an
-`encoding_rs` encoding plus a `keep_kana` flag, resolved from a label in one
-place (`Charset::for_label`). `7bit-jis` (D083) is ISO-2022-JP with the flag
-set: `encode_line` writes half-width katakana in the text of a
-`PRIVMSG`/`NOTICE` as `ESC ( I` runs instead of folding them to full-width.
-The flag travels with the channel's entry and with the pin of a queued line.
+`encoding_rs` encoding, resolved from a label in one place
+(`Charset::for_label`; the former `7bit-jis` label resolves to ISO-2022-JP,
+D084). For ISO-2022-JP, `encode_line` writes half-width katakana in the text
+of a `PRIVMSG`/`NOTICE` as `ESC ( I` runs instead of folding them to
+full-width (D083), so CayenChat's `ISO-2022-JP` is a variant, unlike WHATWG
+and Perl's `iso-2022-jp`. The charset travels with the channel's entry and
+with the pin of a queued line.
 With `ConnectionConfig::char_refs` (`ServerProfile::char_refs`, `Auto` by
 default, D060, D073) the text of a message sent in ISO-2022-JP (`Auto`), or in
 any encoding (`Iso2022Jp`, for a proxy that converts onwards), has the scalar

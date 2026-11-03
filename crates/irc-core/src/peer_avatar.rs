@@ -138,8 +138,8 @@ pub(crate) fn realname(base: &str, advertise: bool) -> String {
     }
 }
 
-/// Whether a connection in `encoding` (a WHATWG label, or `7bit-jis`) can
-/// carry KVIrc's mark. ISO-2022-JP, in either policy, cannot: SI (0x0F) is
+/// Whether a connection in `encoding` (a WHATWG label) can
+/// carry KVIrc's mark. ISO-2022-JP cannot: SI (0x0F) is
 /// its shift-in code and `encoding_rs` turns it into U+FFFD on receiving and
 /// `&#65533;` on sending.
 pub(crate) fn carries_mark(encoding: &str) -> bool {
@@ -1249,7 +1249,6 @@ mod tests {
         assert!(carries_mark("Shift_JIS"));
         assert!(carries_mark("EUC-JP"));
         assert!(!carries_mark("ISO-2022-JP"));
-        assert!(!carries_mark("7bit-jis"));
         let marked = realname("名前", true);
         let (bytes, _, _) = encoding_rs::ISO_2022_JP.encode(&marked);
         let (back, _) = encoding_rs::ISO_2022_JP.decode_without_bom_handling(&bytes);

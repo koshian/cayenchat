@@ -313,10 +313,11 @@ fn char_refs_or_legacy<'de, D: serde::Deserializer<'de>>(
 pub enum TextEncoding {
     #[default]
     Utf8,
-    Iso2022Jp,
     /// ISO-2022-JP that keeps half-width katakana (`ESC ( I`) instead of
-    /// turning them into full-width ones, as Perl's `7bit-jis` does.
-    SevenBitJis,
+    /// turning them into full-width ones (unlike WHATWG). `seven_bit_jis` is
+    /// the former `7bit-jis` (#913), read as this and saved as this.
+    #[serde(alias = "seven_bit_jis")]
+    Iso2022Jp,
     ShiftJis,
     EucJp,
     EucKr,
@@ -477,10 +478,9 @@ impl TextEncoding {
     /// Every supported character encoding in the order the server settings
     /// list them. The server settings, `/charset` and its help all read this
     /// one list.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 15] = [
         Self::Utf8,
         Self::Iso2022Jp,
-        Self::SevenBitJis,
         Self::ShiftJis,
         Self::EucJp,
         Self::EucKr,
@@ -497,13 +497,11 @@ impl TextEncoding {
     ];
 
     /// The canonical name, which is also a WHATWG label `encoding_rs`
-    /// understands, except `7bit-jis`: the encoding layer
-    /// (`irc_proto::charsets::Charset::for_label`) resolves that one itself.
+    /// understands.
     pub fn label(self) -> &'static str {
         match self {
             Self::Utf8 => "UTF-8",
             Self::Iso2022Jp => "ISO-2022-JP",
-            Self::SevenBitJis => "7bit-jis",
             Self::ShiftJis => "Shift_JIS",
             Self::EucJp => "EUC-JP",
             Self::EucKr => "EUC-KR",
@@ -525,8 +523,7 @@ impl TextEncoding {
     fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Utf8 => &[],
-            Self::Iso2022Jp => &[],
-            Self::SevenBitJis => &[],
+            Self::Iso2022Jp => &["7bit-jis"],
             Self::ShiftJis => &["sjis", "windows-31j", "cp932"],
             Self::EucJp => &[],
             Self::EucKr => &["cp949", "windows-949", "uhc"],
@@ -2314,12 +2311,11 @@ mod tests {
         let mut labels: Vec<_> = TextEncoding::ALL.map(TextEncoding::label).to_vec();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels.len(), 16);
-        assert_eq!(TextEncoding::ALL[2], TextEncoding::SevenBitJis);
-        assert_eq!(TextEncoding::SevenBitJis.label(), "7bit-jis");
+        assert_eq!(labels.len(), 15);
         for (name, expected) in [
-            ("7BIT-JIS", TextEncoding::SevenBitJis),
-            ("7bit_jis", TextEncoding::SevenBitJis),
+            // The former `7bit-jis` (#942).
+            ("7BIT-JIS", TextEncoding::Iso2022Jp),
+            ("7bit_jis", TextEncoding::Iso2022Jp),
             ("shift-jis", TextEncoding::ShiftJis),
             ("sjis", TextEncoding::ShiftJis),
             ("CP949", TextEncoding::EucKr),
@@ -2335,6 +2331,20 @@ mod tests {
         for name in ["", "latin1", "ISO-8859-1", "klingon", "utf-16"] {
             assert_eq!(TextEncoding::parse(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn the_former_7bit_jis_is_read_as_iso_2022_jp() {
+        let saved: ChannelCharset = serde_json::from_str(
+            r##"{"channel":"#a","decode":"seven_bit_jis","encode":"seven_bit_jis"}"##,
+        )
+        .unwrap();
+        assert_eq!(saved.decode, Some(TextEncoding::Iso2022Jp));
+        assert_eq!(saved.encode, Some(TextEncoding::Iso2022Jp));
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""encode":"iso2022_jp""#), "{json}");
+        let server: TextEncoding = serde_json::from_str(r#""seven_bit_jis""#).unwrap();
+        assert_eq!(server, TextEncoding::Iso2022Jp);
     }
 
     #[test]
