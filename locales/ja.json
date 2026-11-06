@@ -70,6 +70,7 @@
   "channel_settings_reset": "デフォルトに戻す",
   "channel_settings_autosave": "自動で保存されます",
   "channel_settings_busy": "設定の転送中です。終わってからやり直してください。",
+  "channel_settings_server_unsaved": "先にサーバーを保存してから、チャンネルの設定を開いてください。",
   "channel_look_heading": "チャンネルログの見た目",
   "channel_look_hint": "空欄の項目は全体の外観設定に従います。色は #RRGGBB で、ライト・ダーク共通です。壁紙はログの背景色の後ろに置かれ、ぼかしは読み込み時に1回だけかけます。",
   "channel_look_unset": "全体の設定を使う",

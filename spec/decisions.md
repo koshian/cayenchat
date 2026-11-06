@@ -3724,12 +3724,13 @@ the start of the session.
     it the pane background with its alpha; `ResolvedLook::background`).
     The maintainer decided (2026-11-06) that this issue builds it and #930
     is redone on it, so #930 reuses `backdrop` for the other panes and
-    keeps this value as the channel's override. Alternate rows take the
-    same alpha as the background instead of a fixed one; they still lie
-    over the background layer, not in place of it (accepted
-    approximation: where the picture is bright the stripe is a little
-    weaker than a replacing stripe would be). Making the window see through
-    to the desktop belongs to #930.
+    keeps this value as the channel's override. An alternate row replaces
+    the background instead of lying over it (so the opacity is not added
+    twice and the stripe keeps its strength): it paints the picture again
+    over its own area (`channel_look::alternate_row`, the picture placed as
+    the pane placed it) and its color, with the same alpha, over that. A row
+    that is flashing by a jump keeps the plain color meanwhile. Making the
+    window see through to the desktop belongs to #930.
   - **Fit**: `stretch` (default, as before), `cover`, `contain` or `center`,
     laid out by `channel_look::fit_bounds` on the log's real box (GPUI's
     image element forces the picture's own proportions on its box, so the

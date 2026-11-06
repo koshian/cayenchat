@@ -148,6 +148,8 @@ fn closing_the_window_saves_an_edit_still_waiting(cx: &mut TestAppContext) {
     let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
     view.update(wcx, |view, cx| view.set_opacity(51, cx));
     assert!(wcx.simulate_close());
+    // Written once the close event is over, not inside it.
+    wcx.run_until_parked();
     let on_file = crate::settings_file::load().unwrap().unwrap();
     assert_eq!(
         on_file.appearance.channel_looks[0].background_opacity,
@@ -483,4 +485,39 @@ fn escape_closes_the_list_before_the_window(cx: &mut TestAppContext) {
     assert_eq!(app.update(|app| app.windows().len()), 2);
     cx.simulate_keystrokes("escape");
     assert_eq!(app.update(|app| app.windows().len()), 1);
+}
+
+#[gpui::test]
+fn an_edit_taken_back_before_the_save_restores_the_chat_window(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    let shown = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+        chat.read_with(cx, |chat, _| {
+            chat.appearance
+                .channel_look(&chat.saved.servers[0].id, "#a", same)
+                .and_then(|look| look.background_opacity)
+        })
+    };
+    view.update(wcx, |view, cx| view.set_opacity(60, cx));
+    assert_eq!(shown(&chat, cx), Some(60));
+    view.update(wcx, |view, cx| {
+        view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx)
+    });
+    // Back at the opened value: the saved one (the default) is shown again.
+    assert_eq!(shown(&chat, cx), None);
+    drop(file);
+}
+
+#[gpui::test]
+fn quitting_the_application_saves_an_edit_still_waiting(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    view.update(wcx, |view, cx| view.set_opacity(51, cx));
+    assert!(view.update(wcx, |view, cx| view.flush_to_file(cx)));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(
+        on_file.appearance.channel_looks[0].background_opacity,
+        Some(51)
+    );
+    drop(file);
 }

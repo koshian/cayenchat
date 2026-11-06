@@ -3216,6 +3216,12 @@ impl SettingsWindow {
             return;
         };
         let profile_id = profile.id.clone();
+        // A server still being added is not known to the chat window.
+        if self.saved.profile(&profile_id).is_none() {
+            self.feedback = Some(self.i18n.text("channel_settings_server_unsaved"));
+            cx.notify();
+            return;
+        }
         // The channel gets a window of its own, opened by the chat window
         // (which also shows its changes). It saves by itself.
         let _ = self.owner.update(cx, |owner, window, cx| {

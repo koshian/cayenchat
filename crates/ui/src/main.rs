@@ -9030,6 +9030,9 @@ struct LogStyle {
     time_font: SharedString,
     time_size: Option<Pixels>,
     alternate_rows: bool,
+    /// The channel's wallpaper, which an alternate row replaces the
+    /// background over.
+    slice: Option<channel_look::Slice>,
     compact_urls: bool,
     decode_char_refs: bool,
     reiwa_mode: bool,
@@ -9052,6 +9055,7 @@ impl LogStyle {
             },
             time_size: pane_text_size(appearance.time_font_size, None),
             alternate_rows: appearance.alternate_rows,
+            slice: None,
             compact_urls: appearance.compact_urls,
             decode_char_refs: appearance.decode_char_refs,
             reiwa_mode: appearance.reiwa_mode,
@@ -9205,6 +9209,7 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let look = self.channel_log_look(theme);
         let mut style = LogStyle::new(&self.appearance, look.theme);
+        style.slice = self.wallpaper.slice(look.background.a);
         // The time column grows with the channel's own size as it does with
         // the time size.
         if style.time_size.is_none() {
@@ -9324,7 +9329,7 @@ impl ChatWindow {
                         .gap_1()
                         .py(px(1.))
                         .when(style.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(style.channel_alt)
+                            channel_look::alternate_row(d, style.channel_alt, style.slice.as_ref())
                         })
                         .on_mouse_down(
                             MouseButton::Right,
@@ -9565,6 +9570,10 @@ impl ChatWindow {
         // Only a message line names a speaker to open a conversation with;
         // activity lines (JOIN, MODE, ...) offer the rest of the menu only.
         let speaker = (!message.activity).then(|| message.sender.clone());
+        let flash = self
+            .reveal_flash
+            .filter(|&(id, sequence, _)| id == selected_channel && sequence == message.sequence)
+            .and_then(|(_, _, started)| reveal_strength(started.elapsed()));
         let row = div()
             .w_full()
             .flex()
@@ -9572,28 +9581,25 @@ impl ChatWindow {
             .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
-                d.bg(style.channel_alt)
+                // The flash below is the row's own background, which a
+                // picture layer would hide: the row keeps the plain color
+                // while it flashes.
+                let slice = style.slice.as_ref().filter(|_| flash.is_none());
+                channel_look::alternate_row(d, style.channel_alt, slice)
             })
-            .when_some(
-                self.reveal_flash
-                    .filter(|&(id, sequence, _)| {
-                        id == selected_channel && sequence == message.sequence
-                    })
-                    .and_then(|(_, _, started)| reveal_strength(started.elapsed())),
-                |d, strength| {
-                    let row = if style.alternate_rows && index % 2 == 1 {
-                        style.channel_alt
-                    } else {
-                        theme.panes.channel_log
-                    };
-                    d.bg(reveal_background(
-                        row,
-                        theme.panes.channel_log,
-                        theme.panes.highlight,
-                        strength,
-                    ))
-                },
-            )
+            .when_some(flash, |d, strength| {
+                let row = if style.alternate_rows && index % 2 == 1 {
+                    style.channel_alt
+                } else {
+                    theme.panes.channel_log
+                };
+                d.bg(reveal_background(
+                    row,
+                    theme.panes.channel_log,
+                    theme.panes.highlight,
+                    strength,
+                ))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -10173,6 +10179,28 @@ fn request_quit_anywhere(cx: &mut App) {
 /// be asked (never treated as saved). On failure the settings window is
 /// brought to the front with the form and the error intact.
 fn settings_block_quit(cx: &mut App) -> bool {
+    // Channel settings windows hold an edit for a moment before it is saved;
+    // it goes to the file only, as the chat window may be mid-update.
+    let mut blocked = false;
+    for channel in cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<channel_settings_dialog::ChannelSettingsView>())
+    {
+        let saved = channel
+            .update(cx, |view, window, cx| {
+                let saved = view.flush_to_file(cx);
+                if !saved {
+                    window.activate_window();
+                }
+                saved
+            })
+            .unwrap_or(false);
+        blocked |= !saved;
+    }
+    if blocked {
+        return true;
+    }
     let Some(settings) = cx
         .windows()
         .into_iter()

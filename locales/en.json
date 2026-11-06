@@ -70,6 +70,7 @@
   "channel_settings_reset": "Reset to default",
   "channel_settings_autosave": "Saved automatically",
   "channel_settings_busy": "A settings transfer is running. Try again when it is done.",
+  "channel_settings_server_unsaved": "Save the server first, then open the channel settings.",
   "channel_look_heading": "Channel log look",
   "channel_look_hint": "Empty items follow the global appearance. Colors are #RRGGBB and apply to both themes. A wallpaper lies behind the log background color; it is blurred once, when loaded.",
   "channel_look_unset": "Use the global setting",

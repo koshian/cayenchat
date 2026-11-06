@@ -2,7 +2,7 @@
 //! The look of one channel's log (#928): the channel's own font size, colors
 //! and wallpaper over the global appearance, and the wallpaper's loading.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 
 use cayenchat_media::{CancelFlag, wallpaper};
 use cayenchat_storage::{
@@ -79,9 +79,7 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
     });
     let mut background = theme.panes.channel_log;
     if wallpaper.is_some() {
-        let alpha = f32::from(background_opacity_of(look)) / 100.;
-        background.a = alpha;
-        theme.panes.channel_alternate.a = alpha;
+        background.a = f32::from(background_opacity_of(look)) / 100.;
     }
     ResolvedLook {
         background,
@@ -133,6 +131,48 @@ pub(crate) fn backdrop(picture: Option<Div>, background: Rgba) -> Div {
         .child(div().absolute().top_0().left_0().size_full().bg(background))
 }
 
+/// The picture as an alternate row needs it. A row replaces the background
+/// (it is not laid over it, which would add the opacity twice): it paints the
+/// picture again over its own area, where it lay under the background, and
+/// its color over that.
+#[derive(Clone)]
+pub(crate) struct Slice {
+    image: Arc<RenderImage>,
+    /// Where the pane placed the picture, set while it paints.
+    placed: Rc<Cell<Bounds<Pixels>>>,
+    /// The opacity of the row color.
+    alpha: f32,
+}
+
+/// `row` with the alternate `color` as its background. With a `slice` it
+/// replaces the pane background, by the same opacity; without one (no
+/// wallpaper, or not loaded) the color is opaque.
+pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div {
+    let Some(slice) = slice else {
+        return row.bg(color);
+    };
+    let (image, placed) = (slice.image.clone(), slice.placed.clone());
+    let picture = canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                let _ = window.paint_image(placed.get(), Corners::default(), image, 0, false);
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let color = Rgba {
+        a: slice.alpha,
+        ..color
+    };
+    row.relative()
+        .child(picture)
+        .child(div().absolute().top_0().left_0().size_full().bg(color))
+}
+
 enum State {
     Loading,
     Ready(Arc<RenderImage>),
@@ -154,9 +194,23 @@ struct Key {
 #[derive(Default)]
 pub(crate) struct Wallpaper {
     slot: Option<(Key, State)>,
+    placed: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl Wallpaper {
+    /// The picture for alternate rows, with the row color's `alpha`, when it
+    /// is shown.
+    pub(crate) fn slice(&self, alpha: f32) -> Option<Slice> {
+        match self.slot.as_ref() {
+            Some((_, State::Ready(image))) => Some(Slice {
+                image: image.clone(),
+                placed: self.placed.clone(),
+                alpha,
+            }),
+            _ => None,
+        }
+    }
+
     /// The picture for `wanted`, as the first child of the log; starts its
     /// loading when it is not the one held. Nothing while it loads or when
     /// the file cannot be used.
@@ -215,13 +269,14 @@ impl Wallpaper {
             // The picture is the backmost layer, the pane background (with
             // its opacity) lies over it, and the rows over both.
             Some((_, State::Ready(image))) => {
-                let (image, fit) = (image.clone(), wanted.fit);
+                let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
                         |_, _, _| (),
                         move |bounds, (), window, _| {
                             let size = image.size(0);
                             let placed = fit_bounds(fit, bounds, size);
+                            shared.set(placed);
                             let _ = window.paint_image(placed, Corners::default(), image, 0, false);
                         },
                     )
@@ -288,9 +343,9 @@ mod tests {
             };
             let resolved = resolve(Some(&look), base);
             assert_eq!(resolved.theme.panes.channel_log, rgb(0x102030));
-            // The picture shows through the alternate rows as through the
-            // background, by the same opacity.
-            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.7);
+            // The alternate color keeps its own alpha; a row applies the
+            // opacity itself where it replaces the background.
+            assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);
             let wallpaper = resolved.wallpaper.unwrap();

@@ -472,14 +472,33 @@ impl ChannelSettingsView {
             .collect();
         let saved = look.read(&i18n, cx).ok().map(|look| (choices, look));
         let base = saved.clone().unwrap_or((choices, opened_look));
-        // Leaving saves an edit still waiting out its pause.
+        // Leaving saves an edit still waiting out its pause. This runs inside
+        // the platform's close event, which holds the app: the windows are
+        // updated only after it returns.
         let view = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
-            let _ = view.update(cx, |this, cx| {
-                if this.autosave.is_some() {
-                    this.save_now(window, cx);
-                }
-            });
+        window.on_window_should_close(cx, move |_, cx| {
+            let job = view
+                .update(cx, |this, _| {
+                    this.autosave = None;
+                })
+                .ok()
+                .and_then(|()| view.read_with(cx, |this, cx| this.job(cx)).ok())
+                .and_then(Result::ok)
+                .flatten();
+            if let Some(job) = job {
+                // A task, not `defer`: a deferred call still runs before the
+                // platform's event handler returns.
+                cx.spawn(async move |cx| {
+                    let _ = cx.update(|cx| {
+                        if !matches!(job.run(cx), Ok(Ok(()))) {
+                            let _ = job
+                                .owner
+                                .update(cx, |chat, _, cx| chat.discard_look_preview(cx));
+                        }
+                    });
+                })
+                .detach();
+            }
             true
         });
         Self {
@@ -547,36 +566,21 @@ impl ChannelSettingsView {
     /// last good state stays saved.
     pub(crate) fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.autosave = None;
-        let look = match self.look(cx) {
-            Ok(look) => look,
+        let job = match self.job(cx) {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                self.error = None;
+                cx.notify();
+                return;
+            }
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();
                 return;
             }
         };
-        let current = (self.choices, look);
-        if self.saved.as_ref() == Some(&current) {
-            self.error = None;
-            cx.notify();
-            return;
-        }
-        let (choices, look) = current.clone();
-        let base = self.base.clone();
-        let (profile_id, channel, mapping) =
-            (self.profile_id.clone(), self.channel.clone(), self.mapping);
-        let result = self.owner.update(cx, |chat, window, cx| {
-            chat.apply_channel_settings(
-                &profile_id,
-                &channel,
-                mapping,
-                &base,
-                choices,
-                look,
-                window,
-                cx,
-            )
-        });
+        let current = (job.choices, job.look.clone());
+        let result = job.run(cx);
         match result {
             Ok(Ok(())) => {
                 self.base = current.clone();
@@ -594,6 +598,68 @@ impl ChannelSettingsView {
             Err(_) => window.remove_window(),
         }
         cx.notify();
+    }
+
+    /// What would be written now: `None` when it is what was saved already,
+    /// the reason when a value cannot be used.
+    fn job(&self, cx: &App) -> Result<Option<SaveJob>, String> {
+        let look = self.look(cx)?;
+        if self.saved.as_ref() == Some(&(self.choices, look.clone())) {
+            return Ok(None);
+        }
+        Ok(Some(SaveJob {
+            owner: self.owner,
+            profile_id: self.profile_id.clone(),
+            channel: self.channel.clone(),
+            mapping: self.mapping,
+            base: self.base.clone(),
+            choices: self.choices,
+            look,
+        }))
+    }
+
+    /// Writes an edit still waiting, to the settings file alone: the way out
+    /// of the application, where no window may be updated (the chat window
+    /// can be in the middle of the quit). Returns whether nothing is left
+    /// unsaved.
+    pub(crate) fn flush_to_file(&mut self, cx: &mut Context<Self>) -> bool {
+        self.autosave = None;
+        let job = match self.job(cx) {
+            Ok(None) => return true,
+            Ok(Some(job)) => job,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return false;
+            }
+        };
+        let current = (job.choices, job.look.clone());
+        let utf8_only = self
+            .owner
+            .read_with(cx, |chat, _| {
+                chat.channel_settings_context(&job.profile_id).1
+            })
+            .unwrap_or(false);
+        let written = match settings_file::load() {
+            Ok(Some(mut settings)) if settings.profile(&job.profile_id).is_some() => {
+                merge_into_settings(&mut settings, &job, utf8_only, &self.i18n)
+                    .and_then(|()| settings_file::save(&settings))
+            }
+            Ok(_) => Err(self
+                .i18n
+                .format("settings_open_failed", &[("error", "settings file")])),
+            Err(error) => Err(error),
+        };
+        match written {
+            Ok(()) => {
+                self.base = current.clone();
+                self.saved = Some(current);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+        self.error.is_none()
     }
 
     /// Opens the file chooser for the wallpaper.
@@ -1311,14 +1377,18 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         let same = |a: &str, b: &str| mapping.same(a, b);
+        // Always from the saved values, never from an earlier preview: a field
+        // edited back to its base value is then the saved one again.
         let mut merged = merge_look(
-            self.appearance.channel_look(profile_id, channel, same),
+            self.saved
+                .appearance
+                .channel_look(profile_id, channel, same),
             base,
             look,
         );
         merged.server = profile_id.to_owned();
         merged.channel = channel.to_owned();
-        let mut appearance = self.appearance.clone();
+        let mut appearance = self.saved.appearance.clone();
         if appearance.set_channel_look(merged, same).is_ok() {
             self.apply_appearance(appearance, self.theme_mode, cx);
         }
@@ -1353,31 +1423,75 @@ impl ChatWindow {
             _ => self.saved.clone(),
         };
         let utf8_only = self.channel_settings_context(profile_id).1;
-        // Only what the window changed is written; the rest is the file's.
-        let latest = settings
-            .profile(profile_id)
-            .map_or(base.0, |profile| Choices::of(profile, channel, mapping));
-        let choices = merge_choices(latest, base.0, choices);
-        let latest_look = settings
-            .appearance
-            .channel_look(profile_id, channel, |a, b| mapping.same(a, b));
-        let look = merge_look(latest_look, &base.1, &look);
-        save_channel_choices(
-            &mut settings,
-            profile_id,
-            channel,
+        let job = SaveJob {
+            owner: window.window_handle().downcast::<ChatWindow>().unwrap(),
+            profile_id: profile_id.to_owned(),
+            channel: channel.to_owned(),
             mapping,
+            base: base.clone(),
             choices,
             look,
-            utf8_only,
-            &self.i18n,
-        )?;
+        };
+        merge_into_settings(&mut settings, &job, utf8_only, &self.i18n)?;
         settings_file::save(&settings)?;
         let previous = self.saved.clone();
         self.apply_settings_change(&previous, settings, true, window, cx);
         // An open settings window takes the file's values over itself.
         Ok(())
     }
+}
+
+/// An edit of the channel settings window, ready to be written: the values
+/// it holds and the state they were changed from.
+pub(crate) struct SaveJob {
+    owner: WindowHandle<ChatWindow>,
+    profile_id: String,
+    channel: String,
+    mapping: CaseMapping,
+    base: (Choices, ChannelLook),
+    choices: Choices,
+    look: ChannelLook,
+}
+
+impl SaveJob {
+    /// Writes it through the chat window, which shows it at once.
+    fn run(&self, cx: &mut App) -> gpui::Result<Result<(), String>> {
+        self.owner.update(cx, |chat, window, cx| {
+            chat.apply_channel_settings(
+                &self.profile_id,
+                &self.channel,
+                self.mapping,
+                &self.base,
+                self.choices,
+                self.look.clone(),
+                window,
+                cx,
+            )
+        })
+    }
+}
+
+/// Puts the job's edit into `settings`: only what the window changed from
+/// its base, the rest being the latest values of `settings`.
+fn merge_into_settings(
+    settings: &mut Settings,
+    job: &SaveJob,
+    utf8_only: bool,
+    i18n: &Localizer,
+) -> Result<(), String> {
+    let (profile_id, channel, mapping) = (&job.profile_id, &job.channel, job.mapping);
+    let latest = settings
+        .profile(profile_id)
+        .map_or(job.base.0, |profile| Choices::of(profile, channel, mapping));
+    let choices = merge_choices(latest, job.base.0, job.choices);
+    let latest_look = settings
+        .appearance
+        .channel_look(profile_id, channel, |a, b| mapping.same(a, b));
+    let look = merge_look(latest_look, &job.base.1, &job.look);
+    save_channel_choices(
+        settings, profile_id, channel, mapping, choices, look, utf8_only, i18n,
+    )
+    .map(|_| ())
 }
 
 /// A channel settings window that is open, so a second request raises it.
