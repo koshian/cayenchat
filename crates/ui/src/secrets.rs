@@ -8,7 +8,7 @@
 //! the moment a test binary reads the user's "CayenChat" item.
 
 use std::future::Future;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use cayenchat_storage::credentials::{MemoryBackend, SystemBackend};
@@ -22,8 +22,9 @@ pub struct Credentials(pub CredentialStore);
 impl Global for Credentials {}
 
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
-    cx.set_global(Credentials(CredentialStore::open(kind)));
-    cx.set_global(Worker::start());
+    let store = CredentialStore::open(kind);
+    cx.set_global(Credentials(store.clone()));
+    cx.set_global(Worker::start(store));
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -36,12 +37,17 @@ type Job = Box<dyn FnOnce() + Send>;
 #[derive(Clone)]
 pub struct Worker {
     queue: mpsc::Sender<Job>,
+    /// The store the next job uses. Only the store thread changes it, at the
+    /// end of a job that switches the store, so every job sees the store
+    /// that is current at its place in the queue, not the one that was
+    /// installed when it was queued.
+    current: Arc<Mutex<CredentialStore>>,
 }
 
 impl Global for Worker {}
 
 impl Worker {
-    pub fn start() -> Self {
+    pub fn start(store: CredentialStore) -> Self {
         let (queue, jobs) = mpsc::channel::<Job>();
         let spawned = std::thread::Builder::new()
             .name("credential-store".into())
@@ -55,38 +61,65 @@ impl Worker {
             // callers' receivers are dropped with it.
             eprintln!("CayenChat: credential store thread: {error}");
         }
-        Self { queue }
+        Self {
+            queue,
+            current: Arc::new(Mutex::new(store)),
+        }
     }
 }
 
-/// Runs `job` against the installed store on the store thread and resolves
+/// Runs `job` against the current store on the store thread and resolves
 /// with its result, `None` if the thread is gone. Jobs run one at a time in
-/// the order they were queued. A store switched meanwhile does not change
-/// which store a queued job uses: it is the one installed when `run` was
-/// called. Without a worker (tests with an in-memory store) the job runs
-/// at once; the result is still delivered through the returned future.
+/// the order they were queued, and each uses the store that is current at
+/// its place in the queue: a switch of the store (`run_switching`) applies
+/// to the jobs queued after it and to none before it. Without a worker
+/// (tests with an in-memory store) the job runs at once against the
+/// installed store; the result is still delivered through the returned
+/// future.
 pub fn run<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
 where
     T: Send + 'static,
     F: FnOnce(&CredentialStore) -> T + Send + 'static,
 {
-    let store = store(cx);
+    run_switching(cx, move |store| (job(store), None))
+}
+
+/// `run` for a job that may switch the store: the one it returns, if any,
+/// becomes the current store as the job ends, before the next job starts.
+/// This keeps a move of the secrets to another store whole: what is queued
+/// while it runs lands in the new store, not in the old one it deletes.
+pub fn run_switching<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
+where
+    T: Send + 'static,
+    F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
+{
+    let installed = store(cx);
     let (done, result) = futures_channel::oneshot::channel();
-    let job: Job = Box::new(move || {
-        let _ = done.send(job(&store));
-    });
     match cx.try_global::<Worker>() {
         Some(worker) => {
-            let _ = worker.queue.send(job);
+            let current = worker.current.clone();
+            let queued: Job = Box::new(move || {
+                let store = lock(&current).clone();
+                let (value, switched) = job(&store);
+                if let Some(switched) = switched {
+                    *lock(&current) = switched;
+                }
+                let _ = done.send(value);
+            });
+            let _ = worker.queue.send(queued);
         }
-        None => job(),
+        None => {
+            let (value, _) = job(&installed);
+            let _ = done.send(value);
+        }
     }
     async move { result.await.ok() }
 }
 
-/// `run` for a job whose result nobody waits for.
-pub fn run_detached(cx: &App, job: impl FnOnce(&CredentialStore) + Send + 'static) {
-    drop(run(cx, job));
+fn lock(current: &Mutex<CredentialStore>) -> std::sync::MutexGuard<'_, CredentialStore> {
+    current
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The error for a job that never ran because the store thread is gone.

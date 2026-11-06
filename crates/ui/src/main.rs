@@ -358,6 +358,11 @@ fn saved_connection_secrets(
 struct StoredConnection {
     secrets: Result<(Option<Secret>, Option<Secret>), CredentialError>,
     keys: std::collections::BTreeMap<String, String>,
+    /// The profile the secrets were read for. What was read fits the
+    /// mechanism, the saved marks and the channels of that profile only, so
+    /// a profile changed while the read was queued needs a new read (the
+    /// secret of a key mechanism must never be sent as a password).
+    read_for: Option<ServerProfile>,
 }
 
 impl StoredConnection {
@@ -367,6 +372,7 @@ impl StoredConnection {
         Self {
             secrets: saved_connection_secrets(profile, store),
             keys: channel_keys::stored_channel_keys(profile, store),
+            read_for: Some(profile.clone()),
         }
     }
 
@@ -375,6 +381,7 @@ impl StoredConnection {
         Self {
             secrets: Ok((None, None)),
             keys: Default::default(),
+            read_for: None,
         }
     }
 
@@ -383,7 +390,13 @@ impl StoredConnection {
         Self {
             secrets: Err(secrets::stopped()),
             keys: Default::default(),
+            read_for: None,
         }
+    }
+
+    /// Whether this was read for `profile` as it is now.
+    fn fits(&self, profile: &ServerProfile) -> bool {
+        self.read_for.as_ref().is_none_or(|read| read == profile)
     }
 }
 
@@ -2883,6 +2896,10 @@ impl ChatWindow {
                 if session.used() {
                     return;
                 }
+                if this.read_is_stale(network, stored.as_ref()) {
+                    this.read_again(network, window, cx);
+                    return;
+                }
                 let started = match stored {
                     Some(stored) => this.connect_saved_with(network, stored, window, cx),
                     None => Err(this.i18n.text("not_connected")),
@@ -2894,6 +2911,29 @@ impl ChatWindow {
             });
         })
         .detach();
+    }
+
+    /// Whether `stored` was read for a profile that has changed since (its
+    /// authentication, saved marks or channels), so it does not fit the
+    /// profile as it is now.
+    fn read_is_stale(&self, network: NetworkId, stored: Option<&StoredConnection>) -> bool {
+        let profile = self
+            .sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id));
+        match (stored, profile) {
+            (Some(stored), Some(profile)) => !stored.fits(profile),
+            _ => false,
+        }
+    }
+
+    /// Reads again what is saved for a server whose profile changed while
+    /// the first read was queued.
+    fn read_again(&mut self, network: NetworkId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.reading_saved = true;
+        }
+        self.connect_saved(network, window, cx);
     }
 
     /// `connect_saved` with the stored secrets read. `Err`: the settings do
@@ -3014,6 +3054,10 @@ impl ChatWindow {
             session.starting = false;
             // Connected or tried by hand in the meantime.
             if session.used() {
+                continue;
+            }
+            if self.read_is_stale(network, stored.as_ref()) {
+                self.read_again(network, window, cx);
                 continue;
             }
             let started = match stored {

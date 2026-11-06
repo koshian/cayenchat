@@ -2090,9 +2090,11 @@ event: the caller does `cx.spawn(async { let r = run(..).await; this.update(..) 
 and goes on there. One thread means one queue and no lock contention: a slow
 read (a Keychain prompt, a D-Bus answer) holds up only the jobs behind it,
 never the UI, and two threads cannot take turns at the backend's lock to stop
-it (#638). A job uses the store that was installed when it was queued, and
-jobs run in the order queued, so a switch of backend queues the removal of the
-originals before anything uses the new store. A flow that needs a result
+it (#638). A job uses the store that is current at its place in the queue, and
+jobs run in the order queued; the move to another backend is one job that
+switches the store as it ends (`run_switching`), so what is queued during it
+lands in the new store. A result read for a profile that has changed is read
+again (D086). A flow that needs a result
 before it can go on (connect, reconnect, the credential dialog's channel
 keys, the upload service's token, Connect and the draft's Save in settings)
 is split at the read: the part before it is synchronous, the rest runs in the

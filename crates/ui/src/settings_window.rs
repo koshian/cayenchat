@@ -1201,6 +1201,12 @@ pub(crate) struct SettingsWindow {
     forget_pending: Vec<SecretKey>,
     /// Connect was pressed and the store thread is still reading.
     connecting: bool,
+    /// The passwords marked on a new server are being written by the store
+    /// thread, and the Save or Connect that follows is not done. Closing the
+    /// window waits, or the registration would be lost with it.
+    writing_marked: bool,
+    /// The secrets are being moved to another store by the store thread.
+    pub(crate) switching_backend: bool,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
     /// as it was, until the text is valid.
@@ -1431,8 +1437,12 @@ impl SettingsWindow {
         // has focus.
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            view.update(cx, |this, cx| this.save_before_leaving(cx))
-                .unwrap_or(true)
+            view.update(cx, |this, cx| {
+                // The Save of a new server is waiting for the store thread:
+                // closing now would drop it after its password was written.
+                !this.writing_marked && this.save_before_leaving(cx)
+            })
+            .unwrap_or(true)
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
@@ -1464,6 +1474,8 @@ impl SettingsWindow {
             autosave_error: None,
             forget_pending: Vec::new(),
             connecting: false,
+            writing_marked: false,
+            switching_backend: false,
             field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
@@ -1808,7 +1820,14 @@ impl SettingsWindow {
         // saved for the server is read, both on the store thread; the
         // connection starts when they are in.
         let marked = self.marked_passwords(cx);
-        self.write_marked_passwords(marked, cx, |this, written, cx| {
+        let clicked = self.settings.values.selected_server.clone();
+        self.write_marked_passwords(marked, cx, move |this, written, cx| {
+            // Another server shown meanwhile: the click is dropped.
+            if this.settings.values.selected_server != clicked {
+                this.connecting = false;
+                cx.notify();
+                return;
+            }
             let read = written.and_then(|()| {
                 let mut settings = this.settings.snapshot(cx)?;
                 this.drop_other_drafts(&mut settings);
@@ -1827,18 +1846,24 @@ impl SettingsWindow {
                     return;
                 }
             };
-            let reading = crate::read_stored_connections(cx, vec![profile.clone()]);
-            let handle = this.window;
-            cx.spawn(async move |this, cx| {
-                let stored = reading.await.pop();
-                let _ = cx.update_window(handle, |_, window, cx| {
-                    this.update(cx, |this, cx| {
-                        this.connect_with_stored(&profile.id, stored, window, cx)
-                    })
-                });
-            })
-            .detach();
+            this.read_for_connect(profile, cx);
         });
+    }
+
+    /// Reads on the store thread what is saved for `profile`, then goes on
+    /// with Connect.
+    fn read_for_connect(&mut self, profile: ServerProfile, cx: &mut Context<Self>) {
+        let reading = crate::read_stored_connections(cx, vec![profile.clone()]);
+        let handle = self.window;
+        cx.spawn(async move |this, cx| {
+            let stored = reading.await.pop();
+            let _ = cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.connect_with_stored(&profile.id, stored, window, cx)
+                })
+            });
+        })
+        .detach();
     }
 
     /// The rest of `connect_from_settings` once what is saved for the server
@@ -1854,6 +1879,22 @@ impl SettingsWindow {
         self.connecting = false;
         if self.settings.values.selected_server != profile {
             return;
+        }
+        // The profile was edited while the read was queued (another
+        // authentication mechanism, say): what was read does not fit it, so
+        // it is read again instead of being applied.
+        if let Some(stored) = &stored {
+            let current = self.settings.snapshot(cx).ok().and_then(|mut settings| {
+                self.drop_other_drafts(&mut settings);
+                settings.selected_profile().cloned()
+            });
+            if let Some(current) = current
+                && !stored.fits(&current)
+            {
+                self.connecting = true;
+                self.read_for_connect(current, cx);
+                return;
+            }
         }
         let result = (|| {
             let stored =
@@ -2007,11 +2048,23 @@ impl SettingsWindow {
     /// becomes a registered server once this succeeds; if it fails, it stays
     /// a draft.
     pub(crate) fn save_servers(&mut self, cx: &mut Context<Self>) {
+        // A second click waits for the first.
+        if self.writing_marked {
+            return;
+        }
         self.autosave = None;
         // The passwords marked on a draft are written first, on the store
         // thread; the settings follow when they are in.
         let marked = self.marked_passwords(cx);
-        self.write_marked_passwords(marked, cx, |this, written, cx| {
+        let clicked = self.settings.values.selected_server.clone();
+        self.write_marked_passwords(marked, cx, move |this, written, cx| {
+            // Another server shown meanwhile: it is not saved in place of
+            // the one the click was for (its password is noted as saved, so
+            // the next Save does not write it again).
+            if written.is_ok() && this.settings.values.selected_server != clicked {
+                cx.notify();
+                return;
+            }
             match written.and_then(|()| this.save_settings(SaveMode::Explicit, cx)) {
                 Ok(()) => {
                     this.autosave_error = None;
@@ -2483,6 +2536,7 @@ impl SettingsWindow {
             return;
         }
         let shown = self.settings.values.selected_server.clone();
+        self.writing_marked = true;
         let keys: Vec<_> = marked.iter().map(|(which, _)| which.key(&shown)).collect();
         let writing = secrets::run(cx, move |store| {
             let mut written = Vec::new();
@@ -2499,6 +2553,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let written = writing.await;
             let _ = this.update(cx, |this, cx| {
+                this.writing_marked = false;
                 let outcome = this.marked_passwords_written(&shown, written, cx);
                 then(this, outcome, cx);
             });

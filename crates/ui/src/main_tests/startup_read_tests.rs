@@ -177,6 +177,32 @@ fn an_unreadable_store_asks_and_cancelling_ends_the_start(cx: &mut TestAppContex
 struct GatedBackend {
     inner: cayenchat_storage::credentials::MemoryBackend,
     gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl GatedBackend {
+    /// Installs a gated store with the store thread of a real run (not the
+    /// immediate one of tests); `release` lets one read go.
+    fn install(
+        cx: &mut gpui::App,
+    ) -> (
+        std::sync::mpsc::Sender<()>,
+        std::sync::Arc<Self>,
+        cayenchat_storage::CredentialStore,
+    ) {
+        let (release, gate) = std::sync::mpsc::channel();
+        let backend = std::sync::Arc::new(Self {
+            inner: cayenchat_storage::credentials::MemoryBackend::new(
+                cayenchat_storage::CredentialBackendKind::System,
+            ),
+            gate: std::sync::Mutex::new(gate),
+            reads: Default::default(),
+        });
+        let store = cayenchat_storage::CredentialStore::with_backend(backend.clone());
+        cx.set_global(crate::secrets::Credentials(store.clone()));
+        cx.set_global(crate::secrets::Worker::start(store.clone()));
+        (release, backend, store)
+    }
 }
 
 impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
@@ -198,6 +224,7 @@ impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
             .unwrap()
             .recv_timeout(std::time::Duration::from_secs(20))
             .expect("the test lets the read go");
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get(key)
     }
 
@@ -217,26 +244,19 @@ impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
     }
 }
 
+fn set_theme(cx: &mut gpui::App) {
+    cx.set_global(crate::theme::Theme::new(
+        cayenchat_storage::ThemeMode::Light,
+        gpui::WindowAppearance::Light,
+        &cayenchat_storage::Appearance::default(),
+    ));
+}
+
 #[gpui::test]
 fn a_slow_store_does_not_stop_the_window(cx: &mut TestAppContext) {
-    let (release, gate) = std::sync::mpsc::channel();
-    cx.update(|cx| {
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-        let inner = cayenchat_storage::credentials::MemoryBackend::new(
-            cayenchat_storage::CredentialBackendKind::System,
-        );
-        let backend = std::sync::Arc::new(GatedBackend {
-            inner,
-            gate: std::sync::Mutex::new(gate),
-        });
-        let store = cayenchat_storage::CredentialStore::with_backend(backend);
-        cx.set_global(crate::secrets::Credentials(store));
-        // The store thread of a real run, not the immediate one of tests.
-        cx.set_global(crate::secrets::Worker::start());
+    let release = cx.update(|cx| {
+        set_theme(cx);
+        GatedBackend::install(cx).0
     });
     let (chat, cx) = cx
         .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
@@ -267,4 +287,88 @@ fn a_slow_store_does_not_stop_the_window(cx: &mut TestAppContext) {
         cx.run_until_parked();
     }
     chat.update(cx, |chat, _| stop(chat));
+}
+
+/// What was read waits in the queue while the profile is edited (another
+/// authentication mechanism, say): it does not fit the profile any more, so
+/// it is read again instead of being applied to it.
+#[gpui::test]
+fn a_read_for_a_changed_profile_is_read_again(cx: &mut TestAppContext) {
+    let (release, backend) = cx.update(|cx| {
+        set_theme(cx);
+        let (release, backend, _) = GatedBackend::install(cx);
+        (release, backend)
+    });
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    cx.executor().allow_parking();
+    let reads = || backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+
+    chat.update_in(cx, |chat, window, cx| chat.reconnect(NET, window, cx));
+    chat.update(cx, |chat, _| {
+        let id = chat.sessions[&NET].profile_id.clone();
+        chat.saved.profile_mut(&id).unwrap().nickname = "other".into();
+    });
+    for _ in 0..3 {
+        release.send(()).unwrap();
+    }
+    let wait = |until: &dyn Fn() -> bool| {
+        let started = std::time::Instant::now();
+        while !until() {
+            assert!(started.elapsed().as_secs() < 20, "the reads finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cx.run_until_parked();
+        }
+    };
+    wait(&|| reads() == 3);
+    cx.run_until_parked();
+    // The first result was dropped, and the next read waits for its gate.
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.sessions[&NET].reading_saved, "read again");
+        assert!(chat.sessions[&NET].irc.is_none());
+    });
+    for _ in 0..3 {
+        release.send(()).unwrap();
+    }
+    wait(&|| !chat.read_with(cx, |chat, _| chat.sessions[&NET].reading_saved));
+    assert_eq!(reads(), 6);
+    chat.update(cx, |chat, _| stop(chat));
+}
+
+/// A change of the store is whole: what is queued while the secrets move
+/// lands in the new store, not in the old one whose copies are deleted.
+#[gpui::test]
+fn a_write_queued_during_a_move_lands_in_the_new_store(cx: &mut TestAppContext) {
+    use cayenchat_storage::CredentialStore;
+    use cayenchat_storage::credentials::MemoryBackend;
+    let key = settings(false).servers[0].server_password_key();
+    let to = CredentialStore::with_backend(std::sync::Arc::new(MemoryBackend::new(
+        cayenchat_storage::CredentialBackendKind::LocalFile,
+    )));
+    let (release, _from) = cx.update(|cx| {
+        let (release, _, from) = GatedBackend::install(cx);
+        from.set(&key, &Secret::new("old")).unwrap();
+        let (to, moved) = (to.clone(), key.clone());
+        // The move waits for its read; the write is queued behind it.
+        drop(crate::secrets::run_switching(cx, move |from| {
+            let copied = cayenchat_storage::credentials::copy_secrets(
+                from,
+                &to,
+                std::slice::from_ref(&moved),
+            );
+            copied.unwrap().remove_originals(from);
+            ((), Some(to))
+        }));
+        let key = key.clone();
+        drop(crate::secrets::run(cx, move |store| {
+            store.set(&key, &Secret::new("new"))
+        }));
+        (release, from)
+    });
+    release.send(()).unwrap();
+    let started = std::time::Instant::now();
+    while to.get(&key).unwrap().is_none_or(|v| v.expose() != "new") {
+        assert!(started.elapsed().as_secs() < 20, "the write went through");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

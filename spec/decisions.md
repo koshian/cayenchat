@@ -3724,4 +3724,21 @@ the start of the session.
   failed deletion of a removed server's secrets no longer fails the save that
   removed it: the file is written, the error is shown and the deletion is tried
   again at the next save. Quitting waits at most two seconds for queued jobs.
-- **Not done.** Settings file reads and writes stay on the UI thread.
+- **What a result is applied to.** A result is tied to what it was read or
+  written for, because the UI keeps changing while a job waits. A read of a
+  server's secrets carries the profile it was read for; if the profile has
+  changed when the result arrives (another mechanism, saved marks, channels)
+  the result is dropped and read again, so a key is never sent as a password.
+  A new server's Save and Connect keep the server they were clicked for (a
+  second click is ignored, another server shown drops the continuation), and
+  the settings window does not close while the Save waits for the store.
+- **Switching the store.** Each job uses the store that is current at its
+  place in the queue (`Worker::current`), not the one installed when it was
+  queued. The move to another backend is a single job (`run_switching`:
+  copy, record the choice in the freshly read settings file, delete the
+  originals) that switches the store as it ends, so a password saved or
+  removed meanwhile is queued before it and copied, or after it and goes to
+  the new store. The settings file is read inside the job, so a setting saved
+  by another window in the meantime is not written back as it was.
+- **Not done.** Settings file reads and writes stay on the UI thread (the
+  move to another backend is the one place that does it on the store thread).

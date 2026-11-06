@@ -20,6 +20,48 @@ pub fn all_secret_keys(settings: &Settings) -> Vec<SecretKey> {
     keys
 }
 
+/// Why moving the secrets to another store failed.
+enum MoveError {
+    Store(cayenchat_storage::CredentialError),
+    Settings(String),
+}
+
+impl From<cayenchat_storage::CredentialError> for MoveError {
+    fn from(error: cayenchat_storage::CredentialError) -> Self {
+        Self::Store(error)
+    }
+}
+
+/// Runs on the store thread: copies the secrets from `from` to `to`, records
+/// `kind` in the settings file, then deletes the originals (or, if the
+/// choice cannot be recorded, the copies). The file is read here, not taken
+/// from when the switch was asked for, so a setting saved meanwhile (the
+/// chat window saves its own) is not written back as it was. Returns
+/// whether the old store was unreadable, and how many secrets moved.
+fn move_secrets(
+    from: &cayenchat_storage::CredentialStore,
+    to: &cayenchat_storage::CredentialStore,
+    kind: CredentialBackendKind,
+    form: &Settings,
+    mut keys: Vec<SecretKey>,
+) -> Result<(bool, usize), MoveError> {
+    let mut saved = settings_file::load()
+        .map_err(MoveError::Settings)?
+        .unwrap_or_else(|| form.clone());
+    keys.extend(all_secret_keys(&saved));
+    keys.sort();
+    keys.dedup();
+    let copied = credentials::copy_secrets(from, to, &keys)?;
+    saved.credential_backend = kind;
+    if let Err(error) = settings_file::save(&saved) {
+        copied.remove_copies(to);
+        return Err(MoveError::Settings(error));
+    }
+    let moved = (copied.source_unavailable, copied.count());
+    copied.remove_originals(from);
+    Ok(moved)
+}
+
 impl SettingsWindow {
     /// Checks the system store off the UI thread; D-Bus can take a while to
     /// answer when no Secret Service is running.
@@ -89,67 +131,60 @@ impl SettingsWindow {
         kind: CredentialBackendKind,
         cx: &mut Context<Self>,
     ) {
-        let from = secrets::store(cx);
+        // A second switch waits for the first.
+        if self.switching_backend {
+            return;
+        }
         let to = secrets::open(kind, cx);
-        let saved = match settings_file::load() {
-            Ok(saved) => saved.unwrap_or_else(|| self.settings.values.clone()),
-            Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
-                return;
-            }
-        };
-        let mut keys = all_secret_keys(&saved);
-        keys.extend(all_secret_keys(&self.settings.values));
-        keys.sort();
-        keys.dedup();
-        // Copy first, record the choice, and only then delete the originals, so
-        // a failure before the choice is saved leaves every secret in the
-        // backend still in use. The store thread does the copying and the
-        // deleting; the choice is recorded between them.
-        let copying = {
-            let (from, to) = (from.clone(), to.clone());
-            secrets::run(cx, move |_| credentials::copy_secrets(&from, &to, &keys))
+        let form = self.settings.values.clone();
+        let keys_of = all_secret_keys(&form);
+        // The whole move is one job of the store thread, so a password saved
+        // or removed while it runs is queued before it (and copied) or after
+        // it (and goes to the new store), never in between. Copy first,
+        // record the choice, and only then delete the originals, so a
+        // failure before the choice is saved leaves every secret in the
+        // backend still in use.
+        self.switching_backend = true;
+        let moving = {
+            let to = to.clone();
+            secrets::run_switching(cx, move |from| {
+                let moved = move_secrets(from, &to, kind, &form, keys_of);
+                let switched = moved.is_ok().then_some(to);
+                (moved, switched)
+            })
         };
         cx.spawn(async move |this, cx| {
-            let copied = copying.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let moved = moving
+                .await
+                .unwrap_or_else(|| Err(secrets::stopped().into()));
             let _ = this.update(cx, |this, cx| {
-                this.credential_backend_copied(kind, saved, from, to, copied, cx)
+                this.switching_backend = false;
+                this.credential_backend_moved(kind, to, moved, cx)
             });
         })
         .detach();
     }
 
-    /// The secrets were copied to `to`: records the choice, then lets the
-    /// store thread remove the originals (or, if the choice cannot be
-    /// recorded, the copies).
-    fn credential_backend_copied(
+    /// The store thread moved the secrets (or failed to): shows the outcome
+    /// and, once moved, makes the new store the one the UI asks about.
+    fn credential_backend_moved(
         &mut self,
         kind: CredentialBackendKind,
-        mut saved: cayenchat_storage::Settings,
-        from: cayenchat_storage::CredentialStore,
         to: cayenchat_storage::CredentialStore,
-        copied: Result<credentials::Copied, cayenchat_storage::CredentialError>,
+        moved: Result<(bool, usize), MoveError>,
         cx: &mut Context<Self>,
     ) {
-        let copied = match copied {
-            Ok(copied) => copied,
+        let (source_unavailable, count) = match moved {
+            Ok(moved) => moved,
             Err(error) => {
-                self.feedback = Some(secrets::error_text(&self.i18n, &error));
+                self.feedback = Some(match error {
+                    MoveError::Store(error) => secrets::error_text(&self.i18n, &error),
+                    MoveError::Settings(error) => error,
+                });
                 cx.notify();
                 return;
             }
         };
-        saved.credential_backend = kind;
-        if let Err(error) = settings_file::save(&saved) {
-            secrets::run_detached(cx, move |_| copied.remove_copies(&to));
-            self.feedback = Some(error);
-            cx.notify();
-            return;
-        }
-        let (source_unavailable, count) = (copied.source_unavailable, copied.count());
-        // Queued before anything uses the new store, and run in order.
-        secrets::run_detached(cx, move |_| copied.remove_originals(&from));
         self.settings.values.credential_backend = kind;
         cx.set_global(secrets::Credentials(to));
         self.feedback = Some(if source_unavailable {
