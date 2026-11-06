@@ -34,9 +34,8 @@ impl From<cayenchat_storage::CredentialError> for MoveError {
 
 /// Runs on the store thread: copies the secrets from `from` to `to`, records
 /// `kind` in the settings file, then deletes the originals (or, if the
-/// choice cannot be recorded, the copies). The file is read here, not taken
-/// from when the switch was asked for, so a setting saved meanwhile (the
-/// chat window saves its own) is not written back as it was. Returns
+/// choice cannot be recorded, the copies). The file is read after the copy,
+/// right before it is written (see below). Returns
 /// whether the old store was unreadable, and how many secrets moved.
 fn move_secrets(
     from: &cayenchat_storage::CredentialStore,
@@ -45,13 +44,23 @@ fn move_secrets(
     form: &Settings,
     mut keys: Vec<SecretKey>,
 ) -> Result<(bool, usize), MoveError> {
-    let mut saved = settings_file::load()
-        .map_err(MoveError::Settings)?
-        .unwrap_or_else(|| form.clone());
-    keys.extend(all_secret_keys(&saved));
+    // Moving to the store already in use changes nothing; copying onto
+    // itself and deleting the originals would erase the secrets.
+    if from.kind() == kind {
+        return Ok((false, 0));
+    }
+    let saved = settings_file::load().map_err(MoveError::Settings)?;
+    keys.extend(all_secret_keys(saved.as_ref().unwrap_or(form)));
     keys.sort();
     keys.dedup();
     let copied = credentials::copy_secrets(from, to, &keys)?;
+    // The copy can take long (a permission dialog per secret), so the file
+    // is read again only now and written at once: a setting another window
+    // saved during the copy is kept. Only the gap between this read and the
+    // write remains, as for every other read-modify-write of the file.
+    let mut saved = settings_file::load()
+        .map_err(MoveError::Settings)?
+        .unwrap_or_else(|| form.clone());
     saved.credential_backend = kind;
     if let Err(error) = settings_file::save(&saved) {
         copied.remove_copies(to);
@@ -148,8 +157,9 @@ impl SettingsWindow {
         let moving = {
             let to = to.clone();
             secrets::run_switching(cx, move |from| {
+                let same = from.kind() == kind;
                 let moved = move_secrets(from, &to, kind, &form, keys_of);
-                let switched = moved.is_ok().then_some(to);
+                let switched = (moved.is_ok() && !same).then_some(to);
                 (moved, switched)
             })
         };
@@ -186,7 +196,11 @@ impl SettingsWindow {
             }
         };
         self.settings.values.credential_backend = kind;
-        cx.set_global(secrets::Credentials(to));
+        // The store thread made `to` current when the job ended; without a
+        // worker (tests) the global is the only owner.
+        if !cx.has_global::<secrets::Worker>() {
+            cx.set_global(secrets::Credentials(to));
+        }
         self.feedback = Some(if source_unavailable {
             self.i18n.text("credential_switched_source_unavailable")
         } else {

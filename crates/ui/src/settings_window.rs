@@ -1205,6 +1205,10 @@ pub(crate) struct SettingsWindow {
     /// thread, and the Save or Connect that follows is not done. Closing the
     /// window waits, or the registration would be lost with it.
     writing_marked: bool,
+    /// Writes and deletions of a registered server's password that the store
+    /// thread has not finished; each one notes the result in the settings
+    /// file when it is in. Leaving waits for them like for `writing_marked`.
+    credential_jobs: usize,
     /// The secrets are being moved to another store by the store thread.
     pub(crate) switching_backend: bool,
     /// Why the shown server's typed text was not taken over (a bad port, no
@@ -1437,12 +1441,8 @@ impl SettingsWindow {
         // has focus.
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            view.update(cx, |this, cx| {
-                // The Save of a new server is waiting for the store thread:
-                // closing now would drop it after its password was written.
-                !this.writing_marked && this.save_before_leaving(cx)
-            })
-            .unwrap_or(true)
+            view.update(cx, |this, cx| this.save_before_leaving(cx))
+                .unwrap_or(true)
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
@@ -1475,6 +1475,7 @@ impl SettingsWindow {
             forget_pending: Vec::new(),
             connecting: false,
             writing_marked: false,
+            credential_jobs: 0,
             switching_backend: false,
             field_error: None,
             avatar_feedback: None,
@@ -2009,7 +2010,16 @@ impl SettingsWindow {
     /// Saves before the window closes or the app quits. Returns whether
     /// that may go on: when saving fails, the form and the error stay so the
     /// edits can be retried; nothing is discarded without a successful save.
+    ///
+    /// Every way out passes here (the title bar, Escape, Back, a quit): a
+    /// Save or a password change that waits for the store thread ends in
+    /// this window, so leaving before it is in would lose its result (a
+    /// server registration, the note that a password is saved). The attempt
+    /// is refused and can be made again a moment later.
     pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.writing_marked || self.credential_jobs > 0 {
+            return false;
+        }
         self.autosave = None;
         let _ = self.commit_shown_server(cx);
         self.autosave_committed(cx)
@@ -2601,9 +2611,11 @@ impl SettingsWindow {
         let key = which.key(profile);
         let writing = secrets::run(cx, move |store| store.set(&key, &secret));
         let profile = profile.to_owned();
+        self.credential_jobs += 1;
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
+                this.credential_jobs -= 1;
                 this.credential_done(which, &profile, result, true, cx)
             });
         })
@@ -2693,9 +2705,11 @@ impl SettingsWindow {
         };
         let key = which.key(&id);
         let deleting = secrets::run(cx, move |store| store.delete(&key));
+        self.credential_jobs += 1;
         cx.spawn(async move |this, cx| {
             let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
+                this.credential_jobs -= 1;
                 this.credential_done(which, &id, result, false, cx)
             });
         })

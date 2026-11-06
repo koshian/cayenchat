@@ -371,4 +371,12 @@ fn a_write_queued_during_a_move_lands_in_the_new_store(cx: &mut TestAppContext) 
         assert!(started.elapsed().as_secs() < 20, "the write went through");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    // The store the UI asks about is the worker's, not a second copy that a
+    // closed window could have left behind.
+    cx.update(|cx| {
+        assert_eq!(
+            crate::secrets::store(cx).kind(),
+            cayenchat_storage::CredentialBackendKind::LocalFile
+        );
+    });
 }

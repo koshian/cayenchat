@@ -157,6 +157,13 @@ pub fn install_memory(cx: &mut App) -> CredentialStore {
 /// The installed store. A missing global is a bug, never a reason to open
 /// the system store.
 pub fn store(cx: &App) -> CredentialStore {
+    // With the worker, the store it uses is the only one: a switch is made
+    // there, by the job that moves the secrets, so no window has to carry
+    // the outcome over (a window closed meanwhile would leave a second,
+    // stale answer behind).
+    if let Some(worker) = cx.try_global::<Worker>() {
+        return lock(&worker.current).clone();
+    }
     match cx.try_global::<Credentials>() {
         Some(credentials) => credentials.0.clone(),
         None => panic!("no credential store is installed"),

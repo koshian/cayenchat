@@ -3731,14 +3731,23 @@ the start of the session.
   the result is dropped and read again, so a key is never sent as a password.
   A new server's Save and Connect keep the server they were clicked for (a
   second click is ignored, another server shown drops the continuation), and
-  the settings window does not close while the Save waits for the store.
+  the settings window does not leave (`save_before_leaving`, the one exit of
+  the title bar, Escape, Back and quit) while a Save or a password write or
+  deletion waits for the store, so the result is never applied to a closed
+  window. A quit asked meanwhile is refused and can be asked again.
 - **Switching the store.** Each job uses the store that is current at its
   place in the queue (`Worker::current`), not the one installed when it was
-  queued. The move to another backend is a single job (`run_switching`:
-  copy, record the choice in the freshly read settings file, delete the
-  originals) that switches the store as it ends, so a password saved or
-  removed meanwhile is queued before it and copied, or after it and goes to
-  the new store. The settings file is read inside the job, so a setting saved
-  by another window in the meantime is not written back as it was.
+  queued. `Worker::current` is the only owner of which store is in use
+  (`secrets::store` reads it); no window keeps a copy, so a window closed
+  during the move leaves nothing stale, and a move to the store already in
+  use does nothing. The move is a single job (`run_switching`: copy, record
+  the choice, delete the originals) that switches the store as it ends, so a
+  password saved or removed meanwhile is queued before it and copied, or
+  after it and goes to the new store.
+- **Accepted limitation.** The settings file is read after the copy and
+  written at once, so a setting saved by another window during the copy is
+  kept. Only the gap between that read and write remains, like every other
+  read-modify-write of the file; the file is not serialized with the store
+  queue.
 - **Not done.** Settings file reads and writes stay on the UI thread (the
   move to another backend is the one place that does it on the store thread).
