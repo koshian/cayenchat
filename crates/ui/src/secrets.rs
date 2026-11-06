@@ -7,7 +7,9 @@
 //! the global is missing: on macOS the Keychain asks for the login password
 //! the moment a test binary reads the user's "CayenChat" item.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use cayenchat_storage::credentials::{MemoryBackend, SystemBackend};
 use cayenchat_storage::{CredentialBackendKind, CredentialError, CredentialStore};
@@ -21,6 +23,93 @@ impl Global for Credentials {}
 
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
     cx.set_global(Credentials(CredentialStore::open(kind)));
+    cx.set_global(Worker::start());
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// The one thread that reads and writes the credential store (D086). The
+/// operating system's store may stop for a permission dialog or a D-Bus
+/// answer, and two threads taking turns at its lock would stop the UI
+/// thread too (#638), so the UI thread never calls the store: it queues a
+/// job here and gets the result as an event (`run`).
+#[derive(Clone)]
+pub struct Worker {
+    queue: mpsc::Sender<Job>,
+}
+
+impl Global for Worker {}
+
+impl Worker {
+    pub fn start() -> Self {
+        let (queue, jobs) = mpsc::channel::<Job>();
+        let spawned = std::thread::Builder::new()
+            .name("credential-store".into())
+            .spawn(move || {
+                while let Ok(job) = jobs.recv() {
+                    job();
+                }
+            });
+        if let Err(error) = spawned {
+            // Jobs then wait in the queue for good and report nothing; the
+            // callers' receivers are dropped with it.
+            eprintln!("CayenChat: credential store thread: {error}");
+        }
+        Self { queue }
+    }
+}
+
+/// Runs `job` against the installed store on the store thread and resolves
+/// with its result, `None` if the thread is gone. Jobs run one at a time in
+/// the order they were queued. A store switched meanwhile does not change
+/// which store a queued job uses: it is the one installed when `run` was
+/// called. Without a worker (tests with an in-memory store) the job runs
+/// at once; the result is still delivered through the returned future.
+pub fn run<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
+where
+    T: Send + 'static,
+    F: FnOnce(&CredentialStore) -> T + Send + 'static,
+{
+    let store = store(cx);
+    let (done, result) = futures_channel::oneshot::channel();
+    let job: Job = Box::new(move || {
+        let _ = done.send(job(&store));
+    });
+    match cx.try_global::<Worker>() {
+        Some(worker) => {
+            let _ = worker.queue.send(job);
+        }
+        None => job(),
+    }
+    async move { result.await.ok() }
+}
+
+/// `run` for a job whose result nobody waits for.
+pub fn run_detached(cx: &App, job: impl FnOnce(&CredentialStore) + Send + 'static) {
+    drop(run(cx, job));
+}
+
+/// The error for a job that never ran because the store thread is gone.
+pub fn stopped() -> CredentialError {
+    CredentialError::Access("the credential store thread stopped".into())
+}
+
+/// Waits, up to `limit`, for the jobs queued so far, so that a write made
+/// just before quitting is not lost with the process.
+pub fn flush(cx: &App, limit: Duration) {
+    let Some(worker) = cx.try_global::<Worker>() else {
+        return;
+    };
+    let (done, finished) = mpsc::channel();
+    if worker
+        .queue
+        .send(Box::new(move || {
+            let _ = done.send(());
+        }))
+        .is_ok()
+    {
+        let _ = finished.recv_timeout(limit);
+    }
 }
 
 /// Installs an empty in-memory store and returns it. Tests call this before
@@ -52,18 +141,19 @@ pub fn open(kind: CredentialBackendKind, cx: &App) -> CredentialStore {
     }
 }
 
-/// A check of whether the operating system's store works, to run on any
-/// thread. While the installed store is in memory it always succeeds without
-/// asking the operating system.
-pub fn system_probe(cx: &App) -> impl FnOnce() -> Result<(), CredentialError> + Send + 'static {
+/// A check of whether the operating system's store works, run on the store
+/// thread like every other use of a store. While the installed store is in
+/// memory it always succeeds without asking the operating system.
+pub fn probe_system(cx: &App) -> impl Future<Output = Result<(), CredentialError>> + use<> {
     let in_memory = store(cx).is_memory();
-    move || {
+    let probing = run(cx, move |_| {
         if in_memory {
             Ok(())
         } else {
             SystemBackend::probe()
         }
-    }
+    });
+    async move { probing.await.unwrap_or_else(|| Err(stopped())) }
 }
 
 fn memory_store(kind: CredentialBackendKind) -> CredentialStore {
@@ -224,7 +314,11 @@ mod tests {
                 assert_eq!(switched.kind(), kind);
                 assert_eq!(switched.get(&key).unwrap(), None);
             }
-            assert_eq!(system_probe(cx)(), Ok(()));
+            // No worker is installed, so the job has already run.
+            assert_eq!(
+                futures_util::FutureExt::now_or_never(probe_system(cx)),
+                Some(Ok(()))
+            );
         });
     }
 }

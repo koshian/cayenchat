@@ -3705,3 +3705,23 @@ the start of the session.
 - **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
+
+## D086 — The credential store is used only on its own thread (#640)
+
+- **Decision.** All access to `CredentialStore` (reads, writes, deletions,
+  the system-store probe, copying to another backend) goes through
+  `ui::secrets::run`, which runs a job on one dedicated thread and returns the
+  result as a future. The UI thread no longer calls the store. Moving only some
+  entrances (as #638 tried) made the UI wait for the store's lock held by a
+  background write; one thread for all of them cannot.
+- **Why one queue.** Jobs are serialized in the order queued, so the order of
+  a write and the read after it, or of a backend switch and the removal of its
+  originals, needs no further coordination.
+- **Effects.** Connect, reconnect, startup, the credential dialog's submit,
+  an image upload and the settings' Connect and password buttons proceed when
+  the result is in, not at the click. While a read is pending a second Connect
+  for the same server, or a second submit of the same dialog, is ignored. A
+  failed deletion of a removed server's secrets no longer fails the save that
+  removed it: the file is written, the error is shown and the deletion is tried
+  again at the next save. Quitting waits at most two seconds for queued jobs.
+- **Not done.** Settings file reads and writes stay on the UI thread.

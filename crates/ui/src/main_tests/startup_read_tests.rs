@@ -81,6 +81,7 @@ fn without_a_startup_server_the_store_is_not_read(cx: &mut TestAppContext) {
     // The first read is the Connect of the user.
     chat.update_in(cx, |chat, window, cx| chat.reconnect(NET, window, cx));
     cx.run_until_parked();
+    cx.run_until_parked();
     assert_eq!(watch.touches(), 2, "the server and the SASL password");
     assert!(watch.key_touches() > 0);
     chat.update(cx, |chat, _| stop(chat));
@@ -116,6 +117,7 @@ fn a_startup_server_is_read_after_the_window_is_drawn(cx: &mut TestAppContext) {
     chat.update_in(cx, |chat, window, cx| {
         chat.connect_startup_servers(window, cx)
     });
+    cx.run_until_parked();
     assert_eq!(watch.touches(), 2, "the server and the SASL password");
     assert!(watch.key_touches() > 0);
     chat.update(cx, |chat, _| {
@@ -131,11 +133,13 @@ fn a_server_connected_by_hand_before_the_start_is_left_alone(cx: &mut TestAppCon
         chat.connect_at_startup(window, cx);
         chat.reconnect(NET, window, cx);
     });
+    cx.run_until_parked();
     let by_hand = watch.touches();
     assert_eq!(by_hand, 2);
     chat.update_in(cx, |chat, window, cx| {
         chat.connect_startup_servers(window, cx)
     });
+    cx.run_until_parked();
     assert_eq!(watch.touches(), by_hand, "not read a second time");
     chat.update(cx, |chat, _| stop(chat));
 }
@@ -148,6 +152,7 @@ fn an_unreadable_store_asks_and_cancelling_ends_the_start(cx: &mut TestAppContex
         chat.connect_at_startup(window, cx);
         chat.connect_startup_servers(window, cx);
     });
+    cx.run_until_parked();
     chat.read_with(cx, |chat, _| {
         assert_eq!(chat.credential_prompts.len(), 1, "asked, not an error");
         assert!(chat.settings_window.is_none());
@@ -165,4 +170,101 @@ fn an_unreadable_store_asks_and_cancelling_ends_the_start(cx: &mut TestAppContex
         ));
         assert!(chat.sessions[&NET].irc.is_none());
     });
+}
+
+/// A store that answers a read only when the test lets it, like a system
+/// store waiting for the user to allow it (#640).
+struct GatedBackend {
+    inner: cayenchat_storage::credentials::MemoryBackend,
+    gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
+    fn kind(&self) -> cayenchat_storage::CredentialBackendKind {
+        self.inner.kind()
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+    ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+        // A read on the UI thread would wait here and fail the test.
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the test lets the read go");
+        self.inner.get(key)
+    }
+
+    fn set(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+        value: &Secret,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.inner.set(key, value)
+    }
+
+    fn delete(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.inner.delete(key)
+    }
+}
+
+#[gpui::test]
+fn a_slow_store_does_not_stop_the_window(cx: &mut TestAppContext) {
+    let (release, gate) = std::sync::mpsc::channel();
+    cx.update(|cx| {
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+        let inner = cayenchat_storage::credentials::MemoryBackend::new(
+            cayenchat_storage::CredentialBackendKind::System,
+        );
+        let backend = std::sync::Arc::new(GatedBackend {
+            inner,
+            gate: std::sync::Mutex::new(gate),
+        });
+        let store = cayenchat_storage::CredentialStore::with_backend(backend);
+        cx.set_global(crate::secrets::Credentials(store));
+        // The store thread of a real run, not the immediate one of tests.
+        cx.set_global(crate::secrets::Worker::start());
+    });
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    cx.executor().allow_parking();
+
+    // Connect reads two passwords and a channel key, and the store waits
+    // for the user. The
+    // call returns, and the window goes on: menus, tabs and windows work.
+    chat.update_in(cx, |chat, window, cx| chat.reconnect(NET, window, cx));
+    chat.update_in(cx, |chat, window, cx| {
+        assert!(chat.sessions[&NET].reading_saved);
+        assert!(chat.credential_prompts.is_empty(), "nothing decided yet");
+        chat.open_settings_for(None, window, cx);
+    });
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.settings_window.is_some(), "a window opens meanwhile");
+        assert!(chat.sessions[&NET].irc.is_none(), "not connected yet");
+    });
+
+    // The user allows it: the connection goes on by itself.
+    for _ in 0..3 {
+        release.send(()).unwrap();
+    }
+    let started = std::time::Instant::now();
+    while chat.read_with(cx, |chat, _| chat.sessions[&NET].reading_saved) {
+        assert!(started.elapsed().as_secs() < 20, "the read finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    chat.update(cx, |chat, _| stop(chat));
 }

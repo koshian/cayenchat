@@ -483,8 +483,9 @@ mod tests {
             form.upload_token
                 .update(cx, |field, cx| field.set_text("token", cx));
             form.connect_upload_account(cx);
-            assert!(form.upload_connected);
         });
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         let store = cx.update(|_, cx| secrets::store(cx));
         assert!(
@@ -499,17 +500,15 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
-        form.update(cx, |form, cx| {
-            form.disconnect_upload_account(cx);
-            assert!(form.upload_connected);
-        });
+        form.update(cx, |form, cx| form.disconnect_upload_account(cx));
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         cx.update(|_, cx| cx.set_global(secrets::Credentials(store)));
 
-        form.update(cx, |form, cx| {
-            form.disconnect_upload_account(cx);
-            assert!(!form.upload_connected);
-        });
+        form.update(cx, |form, cx| form.disconnect_upload_account(cx));
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| !form.upload_connected));
         assert!(!noted());
         drop(file);
     }
@@ -831,6 +830,7 @@ mod tests {
         form.update_in(cx, |form, window, cx| {
             form.connect_from_settings(window, cx)
         });
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
             assert!(
                 form.feedback
@@ -958,8 +958,9 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.feedback.is_some());
             assert!(!form.saved.profile(&id).is_some());
             assert_eq!(
@@ -971,8 +972,9 @@ mod tests {
             );
         });
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.saved.profile(&id).is_some());
             assert!(form.settings.credential_state(Credential::Sasl).0);
             assert!(
@@ -1350,6 +1352,7 @@ mod tests {
         assert!(!store.contains(&new_key).unwrap());
         // Its own Save registers it and stores the checked password.
         form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         assert_eq!(store.get(&new_key).unwrap().unwrap().expose(), "typed");
         form.update(cx, |form, _| assert!(form.settings.saved_server_password));
         drop(file);
@@ -1427,7 +1430,10 @@ mod tests {
 
         super::fail_saves(true);
         form.update(cx, |form, cx| {
-            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx)
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
             assert!(form.feedback.is_some());
             assert_eq!(
                 form.settings.values.credential_backend,
@@ -1448,6 +1454,7 @@ mod tests {
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
         });
+        cx.run_until_parked();
         cx.update(|_, cx| {
             let new = secrets::store(cx);
             assert_eq!(new.kind(), CredentialBackendKind::LocalFile);
