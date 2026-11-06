@@ -1,36 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The settings of one channel (#680, #781): joining it automatically, its
-//! encodings and its numeric character reference mode, in one dialog that
-//! the chat window (channel menu) and the settings window (auto-join list)
-//! both show. The dialog only edits a copy: it reports Save or Cancel, and
-//! the host writes the values with [`save_channel_choices`] (built from
-//! [`apply_charsets`] and [`apply_auto_join`]). Saving never joins or parts the channel.
+//! The settings of one channel (#680, #781, #950): joining it automatically,
+//! its encodings and numeric character reference mode, and the look of its
+//! log, in a window of its own that the chat window (channel menu) and the
+//! settings window (auto-join list) both open. The window saves by itself
+//! after every edit, so the chat window shows each change while it is
+//! adjusted; there is no Save button. The values are written with
+//! [`save_channel_choices`] (built from [`apply_charsets`] and
+//! [`apply_auto_join`]) through [`ChatWindow::apply_channel_settings`]. Saving
+//! never joins or parts the channel.
 
-use cayenchat_model::{NetworkId, display, names::CaseMapping};
+use std::time::Duration;
+
+use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
-    AutoJoinEntry, ChannelLook, CharRefMode, MAX_FONT_SIZE, MAX_WALLPAPER_BLUR,
-    MAX_WALLPAPER_PATH_BYTES, MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, WallpaperFit,
-    color_value, format_auto_join,
+    AutoJoinEntry, ChannelLook, CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR,
+    MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_PATH_BYTES, MIN_FONT_SIZE, ServerProfile,
+    Settings, TextEncoding, WallpaperFit, color_value, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, FocusNextField, FocusPreviousField, input::TextInput, localization::Localizer,
-    settings_file, settings_theme, settings_window::settings_field,
+    ChatWindow, FocusNextField, FocusPreviousField,
+    channel_look::{background_opacity_of, blur_of},
+    decorations,
+    input::TextInput,
+    localization::Localizer,
+    os_text::WindowOsText,
+    scrollbar, settings_file, settings_theme,
+    settings_window::settings_field,
+    slider::{self, SliderColors, TrackBounds},
 };
 
-/// Widest the panel gets; a smaller window keeps [`MARGIN`] around it.
-const PANEL_WIDTH: Pixels = px(480.);
-/// Space kept free around the panel.
-const MARGIN: Pixels = px(16.);
 /// Tallest the open encoding list gets before it scrolls.
 const MENU_HEIGHT: Pixels = px(176.);
-
-/// How the dialog ended.
-pub(crate) enum ChannelSettingsEvent {
-    Save,
-    Cancel,
-}
+/// The pause after the last edit before it is saved, so a drag or typing is
+/// written once.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EncodingSide {
@@ -166,22 +171,25 @@ pub(crate) fn save_channel_choices(
     Ok(profile.clone())
 }
 
-/// The fields of the channel log look, empty where the global appearance
-/// applies.
+/// The fields of the channel log look. A text field left empty follows the
+/// global appearance; the blur, the background opacity and the fit always
+/// hold a value (their defaults at first), which is what is shown and used.
 struct LookFields {
     font_size: Entity<TextInput>,
     background: Entity<TextInput>,
     alternate: Entity<TextInput>,
     text: Entity<TextInput>,
     wallpaper: Entity<TextInput>,
-    opacity: Entity<TextInput>,
-    blur: Entity<TextInput>,
-    tint: Entity<TextInput>,
-    /// `None` follows the default fit.
-    fit: Option<WallpaperFit>,
+    /// Blur sigma, 0 to [`MAX_WALLPAPER_BLUR`].
+    blur: u8,
+    /// Opacity in percent of the background color over the wallpaper.
+    opacity: u8,
+    fit: WallpaperFit,
+    blur_track: TrackBounds,
+    opacity_track: TrackBounds,
 }
 
-/// The wallpaper fits, with their label keys; "inherit" comes before them.
+/// The wallpaper fits, with their label keys.
 const FIT_CHOICES: [(WallpaperFit, &str); 4] = [
     (WallpaperFit::Stretch, "channel_look_fit_stretch"),
     (WallpaperFit::Cover, "channel_look_fit_cover"),
@@ -205,54 +213,42 @@ impl LookFields {
                 },
                 cx,
             ),
+            blur: blur_of(&look),
+            opacity: background_opacity_of(&look),
+            fit: look.wallpaper_fit.unwrap_or_default(),
             background: field(color(look.background), cx),
             alternate: field(color(look.alternate), cx),
             text: field(color(look.text), cx),
             wallpaper: field(look.wallpaper.unwrap_or_default(), cx),
-            opacity: field(
-                look.wallpaper_opacity
-                    .map(|percent| percent.to_string())
-                    .unwrap_or_default(),
-                cx,
-            ),
-            blur: field(
-                look.wallpaper_blur
-                    .map(|blur| blur.to_string())
-                    .unwrap_or_default(),
-                cx,
-            ),
-            tint: field(
-                look.wallpaper_tint
-                    .map(|percent| percent.to_string())
-                    .unwrap_or_default(),
-                cx,
-            ),
-            fit: look.wallpaper_fit,
+            blur_track: TrackBounds::default(),
+            opacity_track: TrackBounds::default(),
         }
     }
 
-    /// The fields in the order they are shown.
-    fn all(&self) -> [&Entity<TextInput>; 8] {
+    /// The text fields in the order they are shown.
+    fn fields(&self) -> [&Entity<TextInput>; 5] {
         [
             &self.font_size,
             &self.background,
             &self.alternate,
             &self.text,
             &self.wallpaper,
-            &self.opacity,
-            &self.blur,
-            &self.tint,
         ]
     }
 
+    /// Back to the defaults: the text fields empty, the sliders and the fit
+    /// at their default values.
     fn clear(&mut self, cx: &mut App) {
-        for field in self.all() {
+        for field in self.fields() {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
-        self.fit = None;
+        self.blur = DEFAULT_WALLPAPER_BLUR;
+        self.opacity = DEFAULT_BACKGROUND_OPACITY;
+        self.fit = WallpaperFit::default();
     }
 
-    /// The look the fields hold, or why it cannot be used.
+    /// The look the fields hold, or why it cannot be used. A value equal to
+    /// its default is stored as unset, so it follows the default later too.
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -282,32 +278,6 @@ impl LookFields {
                     )
                 })?
         };
-        let opacity = text(&self.opacity);
-        let wallpaper_opacity = if opacity.is_empty() {
-            None
-        } else {
-            Some(
-                opacity
-                    .parse::<u8>()
-                    .ok()
-                    .filter(|percent| *percent <= 100)
-                    .ok_or_else(|| i18n.text("channel_look_opacity_invalid"))?,
-            )
-        };
-        let number = |field: &Entity<TextInput>, max: u8, key: &str| {
-            let value = text(field);
-            if value.is_empty() {
-                return Ok(None);
-            }
-            value
-                .parse::<u8>()
-                .ok()
-                .filter(|number| *number <= max)
-                .map(Some)
-                .ok_or_else(|| i18n.format(key, &[("max", &max.to_string())]))
-        };
-        let wallpaper_blur = number(&self.blur, MAX_WALLPAPER_BLUR, "channel_look_blur_invalid")?;
-        let wallpaper_tint = number(&self.tint, 100, "channel_look_tint_invalid")?;
         let wallpaper = text(&self.wallpaper);
         if wallpaper.len() > MAX_WALLPAPER_PATH_BYTES {
             return Err(i18n.text("channel_look_wallpaper_long"));
@@ -321,10 +291,10 @@ impl LookFields {
             alternate: color(&self.alternate, "channel_look_alternate")?,
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
-            wallpaper_opacity,
-            wallpaper_blur,
-            wallpaper_tint,
-            wallpaper_fit: self.fit,
+            wallpaper_blur: (self.blur != DEFAULT_WALLPAPER_BLUR).then_some(self.blur),
+            background_opacity: (self.opacity != DEFAULT_BACKGROUND_OPACITY)
+                .then_some(self.opacity),
+            wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
             ..ChannelLook::default()
         })
     }
@@ -332,8 +302,8 @@ impl LookFields {
 
 /// The "inherit" radio plus one per `CHAR_REF_CHOICES` entry.
 const CHAR_REF_COUNT: usize = 4;
-/// The "inherit" button plus one per `FIT_CHOICES` entry.
-const FIT_COUNT: usize = 5;
+/// One button per `FIT_CHOICES` entry.
+const FIT_COUNT: usize = 4;
 
 /// The focus handles of the dialog's controls.
 struct Controls {
@@ -342,10 +312,10 @@ struct Controls {
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
     browse: FocusHandle,
+    blur: FocusHandle,
+    opacity: FocusHandle,
     fit: [FocusHandle; FIT_COUNT],
     reset: FocusHandle,
-    cancel: FocusHandle,
-    save: FocusHandle,
 }
 
 impl Controls {
@@ -357,10 +327,10 @@ impl Controls {
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
             browse: handle(),
+            blur: handle(),
+            opacity: handle(),
             fit: std::array::from_fn(|_| handle()),
             reset: handle(),
-            cancel: handle(),
-            save: handle(),
         }
     }
 
@@ -378,31 +348,23 @@ impl Controls {
                 .iter()
                 .map(|handle| (handle.clone(), Some(4))),
         );
-        let [
-            size,
-            background,
-            alternate,
-            text,
-            wallpaper,
-            opacity,
-            blur,
-            tint,
-        ] = look.all();
         let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
-        order.extend([size, background, alternate, text, wallpaper].map(field));
-        order.push((self.browse.clone(), Some(5)));
-        order.extend([opacity, blur, tint].map(field));
-        order.extend(self.fit.iter().map(|handle| (handle.clone(), Some(5))));
+        order.extend(look.fields().map(field));
         order.extend([
-            (self.reset.clone(), None),
-            (self.cancel.clone(), None),
-            (self.save.clone(), None),
+            (self.browse.clone(), Some(5)),
+            (self.blur.clone(), Some(5)),
+            (self.opacity.clone(), Some(5)),
         ]);
+        order.extend(self.fit.iter().map(|handle| (handle.clone(), Some(5))));
+        order.push((self.reset.clone(), None));
         order
     }
 }
 
 pub(crate) struct ChannelSettingsView {
+    /// The chat window the values are saved through and shown in.
+    owner: WindowHandle<ChatWindow>,
+    profile_id: String,
     channel: String,
     mapping: CaseMapping,
     /// The server's name as shown under the title.
@@ -415,6 +377,14 @@ pub(crate) struct ChannelSettingsView {
     pub(crate) error: Option<String>,
     controls: Controls,
     look: LookFields,
+    /// What was last written (or read), so an edit that changes nothing
+    /// writes nothing.
+    saved: Option<(Choices, ChannelLook)>,
+    /// The pause before the latest edit is saved.
+    autosave: Option<Task<()>>,
+    /// Redraws and saves when a text field changes.
+    _subscriptions: Vec<Subscription>,
+    window: AnyWindowHandle,
     /// The first control takes the focus on the first draw.
     focus_pending: bool,
     body_scroll: ScrollHandle,
@@ -422,20 +392,31 @@ pub(crate) struct ChannelSettingsView {
     i18n: Localizer,
 }
 
-impl EventEmitter<ChannelSettingsEvent> for ChannelSettingsView {}
-
 impl ChannelSettingsView {
+    #[allow(clippy::too_many_arguments)] // What the window shows and where it saves.
     pub(crate) fn new(
+        owner: WindowHandle<ChatWindow>,
+        profile_id: String,
         channel: &str,
         mapping: CaseMapping,
         server: String,
         choices: Choices,
         look: Option<&ChannelLook>,
         i18n: Localizer,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let look = LookFields::new(look, &i18n, cx);
+        let subscriptions = look
+            .fields()
+            .into_iter()
+            .map(|field| cx.observe(field, |this, _, cx| this.edited(cx)))
+            .collect();
+        let saved = look.read(&i18n, cx).ok().map(|look| (choices, look));
         Self {
-            look: LookFields::new(look, &i18n, cx),
+            owner,
+            profile_id,
+            look,
             channel: channel.to_owned(),
             mapping,
             server,
@@ -444,6 +425,10 @@ impl ChannelSettingsView {
             highlight: 0,
             error: None,
             controls: Controls::new(cx),
+            saved,
+            autosave: None,
+            _subscriptions: subscriptions,
+            window: window.window_handle(),
             focus_pending: true,
             body_scroll: ScrollHandle::new(),
             menu_scroll: ScrollHandle::new(),
@@ -451,22 +436,59 @@ impl ChannelSettingsView {
         }
     }
 
-    pub(crate) fn channel(&self) -> &str {
-        &self.channel
+    /// The log look the window holds, or why it cannot be saved.
+    pub(crate) fn look(&self, cx: &App) -> Result<ChannelLook, String> {
+        self.look.read(&self.i18n, cx)
     }
 
-    pub(crate) fn mapping(&self) -> CaseMapping {
-        self.mapping
-    }
-
-    pub(crate) fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
-        self.error = error;
+    /// Something was edited: saves it after a short pause, and shows at once
+    /// the reason when it cannot be.
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        let window = self.window;
+        self.autosave = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                this.update(cx, |this, cx| this.save_now(window, cx))
+            });
+        }));
         cx.notify();
     }
 
-    /// The log look the dialog holds, or why it cannot be saved.
-    pub(crate) fn look(&self, cx: &App) -> Result<ChannelLook, String> {
-        self.look.read(&self.i18n, cx)
+    /// Writes what the window holds through the chat window, which shows it
+    /// at once. A value that cannot be used is reported and not written; the
+    /// last good state stays saved.
+    pub(crate) fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autosave = None;
+        let look = match self.look(cx) {
+            Ok(look) => look,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let current = (self.choices, look);
+        if self.saved.as_ref() == Some(&current) {
+            self.error = None;
+            cx.notify();
+            return;
+        }
+        let (choices, look) = current.clone();
+        let (profile_id, channel, mapping) =
+            (self.profile_id.clone(), self.channel.clone(), self.mapping);
+        let result = self.owner.update(cx, |chat, window, cx| {
+            chat.apply_channel_settings(&profile_id, &channel, mapping, choices, look, window, cx)
+        });
+        match result {
+            Ok(Ok(())) => {
+                self.saved = Some(current);
+                self.error = None;
+            }
+            Ok(Err(error)) => self.error = Some(error),
+            // The chat window is gone: nothing is left to save to.
+            Err(_) => window.remove_window(),
+        }
+        cx.notify();
     }
 
     /// Opens the file chooser for the wallpaper.
@@ -490,43 +512,47 @@ impl ChannelSettingsView {
                 this.look
                     .wallpaper
                     .update(cx, |field, cx| field.set_text(&path, cx));
-                this.error = None;
-                cx.notify();
             });
         })
         .detach();
     }
 
     /// Reset to default: the encodings, the reference mode and the log look
-    /// follow the server and the global appearance again, once saved. The
-    /// auto-join choice is not one of them.
+    /// follow the server and the global appearance again, and the sliders and
+    /// the fit return to their defaults. The auto-join choice is not one of
+    /// them.
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
         self.choices.decode = None;
         self.choices.encode = None;
         self.choices.char_refs = None;
         self.look.clear(cx);
         self.open_list = None;
-        self.error = None;
-        cx.notify();
+        self.edited(cx);
     }
 
-    /// Types `text` into the look field at `index` (the order they are shown).
+    /// Types `text` into the look text field at `index` (the order they are
+    /// shown).
     #[cfg(test)]
     pub(crate) fn set_look_field(&mut self, index: usize, text: &str, cx: &mut Context<Self>) {
-        self.look.all()[index].update(cx, |field, cx| field.set_text(text, cx));
+        self.look.fields()[index].update(cx, |field, cx| field.set_text(text, cx));
     }
 
     #[cfg(test)]
-    pub(crate) fn save(&mut self, cx: &mut Context<Self>) {
-        cx.emit(ChannelSettingsEvent::Save);
+    pub(crate) fn set_blur(&mut self, blur: u8, cx: &mut Context<Self>) {
+        self.look.blur = blur;
+        self.edited(cx);
     }
 
-    /// Escape closes an open list first, then the dialog (as Cancel).
-    pub(crate) fn escape(&mut self, cx: &mut Context<Self>) {
+    /// Escape closes an open list first, then the window.
+    pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open_list.take().is_some() {
             cx.notify();
         } else {
-            cx.emit(ChannelSettingsEvent::Cancel);
+            // A pause not yet over is saved before the window goes.
+            if self.autosave.is_some() {
+                self.save_now(window, cx);
+            }
+            window.remove_window();
         }
     }
 
@@ -557,25 +583,32 @@ impl ChannelSettingsView {
             EncodingSide::Encode => self.choices.encode = option,
         }
         self.open_list = None;
-        self.error = None;
-        cx.notify();
+        self.edited(cx);
     }
 
     fn set_char_refs(&mut self, mode: Option<CharRefMode>, cx: &mut Context<Self>) {
         self.choices.char_refs = mode;
-        self.error = None;
-        cx.notify();
+        self.edited(cx);
     }
 
-    fn set_fit(&mut self, fit: Option<WallpaperFit>, cx: &mut Context<Self>) {
+    pub(crate) fn set_fit(&mut self, fit: WallpaperFit, cx: &mut Context<Self>) {
         self.look.fit = fit;
-        self.error = None;
-        cx.notify();
+        self.edited(cx);
+    }
+
+    fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
+        self.look.blur = blur.min(u32::from(MAX_WALLPAPER_BLUR)) as u8;
+        self.edited(cx);
+    }
+
+    pub(crate) fn set_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
+        self.look.opacity = opacity.min(100) as u8;
+        self.edited(cx);
     }
 
     fn toggle_enabled(&mut self, cx: &mut Context<Self>) {
         self.choices.enabled = !self.choices.enabled;
-        cx.notify();
+        self.edited(cx);
     }
 
     /// A click on a selector. Enter and Space reach it as keyboard clicks (on
@@ -626,13 +659,13 @@ impl ChannelSettingsView {
         cx.notify();
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.modified() || keystroke.is_ime_in_progress() {
             return;
         }
         match keystroke.key.as_str() {
-            "escape" => self.escape(cx),
+            "escape" => self.escape(window, cx),
             "up" => self.move_highlight(false, cx),
             "down" => self.move_highlight(true, cx),
             _ => return,
@@ -741,6 +774,7 @@ impl Render for ChannelSettingsView {
             "channel_settings_heading",
             &[("channel", &display::neutralize_bidi(&self.channel))],
         );
+        let title = heading.clone();
         let server = self.i18n.format(
             "channel_settings_server",
             &[("server", &display::neutralize_bidi(&self.server))],
@@ -795,10 +829,7 @@ impl Render for ChannelSettingsView {
             .child(self.i18n.text("channel_look_browse"))
             .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
         let mut fits = div().flex().flex_wrap().gap_1();
-        let default = (None, "channel_look_fit_default");
-        let choices =
-            std::iter::once(default).chain(FIT_CHOICES.map(|(fit, key)| (Some(fit), key)));
-        for (index, (fit, key)) in choices.enumerate() {
+        for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
             fits = fits.child(
                 settings_theme::button(("channel-look-fit", index), self.look.fit == fit, cx)
                     .track_focus(&self.controls.fit[index])
@@ -808,6 +839,52 @@ impl Render for ChannelSettingsView {
             );
         }
         let fit = Self::field(self.i18n.text("channel_look_fit"), &palette).child(fits);
+        let colors = SliderColors {
+            track: palette.border,
+            fill: ring,
+            knob: palette.surface,
+            ring,
+        };
+        let blur = Self::field(
+            self.i18n.format(
+                "channel_look_blur",
+                &[("value", &self.look.blur.to_string())],
+            ),
+            &palette,
+        )
+        .child(slider::slider(
+            "channel-look-blur",
+            u32::from(self.look.blur),
+            u32::from(MAX_WALLPAPER_BLUR),
+            &self.look.blur_track,
+            &self.controls.blur,
+            colors,
+            cx,
+            |this, value, _, cx| this.set_blur_value(value, cx),
+        ));
+        let opacity = Self::field(
+            self.i18n.format(
+                "channel_look_opacity",
+                &[("value", &self.look.opacity.to_string())],
+            ),
+            &palette,
+        )
+        .child(slider::slider(
+            "channel-look-opacity",
+            u32::from(self.look.opacity),
+            100,
+            &self.look.opacity_track,
+            &self.controls.opacity,
+            colors,
+            cx,
+            |this, value, _, cx| this.set_opacity(value, cx),
+        ))
+        .child(
+            div()
+                .text_sm()
+                .text_color(palette.text_secondary)
+                .child(self.i18n.text("channel_look_opacity_hint")),
+        );
         let look = div()
             .id("channel-look")
             .debug_selector(|| "channel-look".into())
@@ -843,9 +920,8 @@ impl Render for ChannelSettingsView {
                     )
                     .child(browse),
             )
-            .child(row("channel_look_opacity", &self.look.opacity))
-            .child(row("channel_look_blur", &self.look.blur))
-            .child(row("channel_look_tint", &self.look.tint))
+            .child(blur)
+            .child(opacity)
             .child(fit);
 
         let body = div()
@@ -915,26 +991,9 @@ impl Render for ChannelSettingsView {
             )
             .child(
                 div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        settings_theme::button("channel-settings-cancel", false, cx)
-                            .track_focus(&self.controls.cancel)
-                            .focus(move |style| style.border_color(ring))
-                            .child(self.i18n.text("channel_settings_cancel"))
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ChannelSettingsEvent::Cancel)),
-                            ),
-                    )
-                    .child(
-                        settings_theme::button("channel-settings-save", true, cx)
-                            .track_focus(&self.controls.save)
-                            .focus(move |style| style.border_color(ring))
-                            .child(self.i18n.text("channel_settings_save"))
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ChannelSettingsEvent::Save)),
-                            ),
-                    ),
+                    .text_sm()
+                    .text_color(palette.text_secondary)
+                    .child(self.i18n.text("channel_settings_autosave")),
             );
 
         let header = div()
@@ -960,199 +1019,224 @@ impl Render for ChannelSettingsView {
                     .child(server),
             );
 
-        let panel = settings_theme::dialog_panel(cx)
-            .id("channel-settings-dialog")
-            .debug_selector(|| "channel-settings-dialog".into())
-            .occlude()
-            .w(PANEL_WIDTH)
-            .max_w_full()
-            .max_h_full()
-            .child(header)
-            .child(body)
-            .children(error)
-            .child(footer);
-        // The backdrop takes every click and key, so nothing behind the
-        // dialog changes; a click outside the panel does not close it.
-        div()
-            .id("channel-settings-backdrop")
-            .debug_selector(|| "channel-settings-backdrop".into())
-            .key_context("ChannelSettingsDialog")
-            .on_action(
-                cx.listener(|this, _: &FocusNextField, window, cx| {
+        let content =
+            div()
+                .id("channel-settings-window")
+                .debug_selector(|| "channel-settings-window".into())
+                .key_context("ChannelSettingsDialog")
+                .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
                     this.step_focus(true, window, cx)
-                }),
-            )
-            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
-                this.step_focus(false, window, cx)
-            }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.key_down(event, cx)))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(MARGIN)
-            .bg(gpui::black().opacity(0.4))
-            .child(panel)
-    }
-}
-
-/// The dialog shown over the chat window, opened from the channel menu.
-pub(crate) struct ChannelSettingsPrompt {
-    network: NetworkId,
-    profile_id: String,
-    view: Entity<ChannelSettingsView>,
-    previous: Option<FocusHandle>,
-    _subscription: Subscription,
-}
-
-impl ChannelSettingsPrompt {
-    pub(crate) fn network(&self) -> NetworkId {
-        self.network
-    }
-
-    pub(crate) fn view(&self) -> &Entity<ChannelSettingsView> {
-        &self.view
+                }))
+                .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                    this.step_focus(false, window, cx)
+                }))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.key_down(event, window, cx)
+                }))
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(palette.window)
+                .text_color(palette.text)
+                .text_size(px(13.))
+                .when_some(settings_theme::current(cx), |d, native| {
+                    d.font_family(native.defaults.font.family.clone())
+                        .text_size(px(native.defaults.font.size))
+                })
+                .child(header)
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(body)
+                        .child(scrollbar::scrollbar(
+                            "scrollbar-channel-settings",
+                            &self.body_scroll,
+                            palette.text_muted,
+                        )),
+                )
+                .children(error)
+                .child(footer);
+        decorations::window_frame(window, cx, title, content)
     }
 }
 
 impl ChatWindow {
-    /// Shows the settings of `channel` of `network` over the chat window. The
-    /// values are those of the settings file, which a settings window or
-    /// `/charset` may have updated since this window last saved.
-    pub(crate) fn show_channel_settings(
+    /// Opens the settings window of `channel` of the server `profile_id`, or
+    /// raises it when it is open already. The values are those of the
+    /// settings file, which a settings window or `/charset` may have updated
+    /// since this window last saved. The window saves by itself, so this
+    /// window shows each change while it is adjusted.
+    pub(crate) fn open_channel_settings_window(
         &mut self,
-        network: NetworkId,
+        profile_id: &str,
         channel: &str,
+        mapping: CaseMapping,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile_id) = self
-            .sessions
-            .get(&network)
-            .map(|session| session.profile_id.clone())
-        else {
-            return;
-        };
-        if self.channel_settings.is_some() {
+        // A transfer writes the whole file; an edit saved meanwhile would be
+        // overwritten or would overwrite its result.
+        if self.transfer_dialog_busy() {
             return;
         }
-        let mapping = self.state.casemapping(network);
+        let same = |left: &str, right: &str| mapping.same(left, right);
+        self.channel_settings_windows
+            .retain(|open| open.handle.update(cx, |_, _, _| ()).is_ok());
+        if let Some(open) = self
+            .channel_settings_windows
+            .iter()
+            .find(|open| open.profile_id == profile_id && same(&open.channel, channel))
+        {
+            let _ = open
+                .handle
+                .update(cx, |_, window, _| window.activate_window());
+            return;
+        }
         let latest = match settings_file::load() {
-            Ok(Some(settings)) if settings.profile(&profile_id).is_some() => Some(settings),
+            Ok(Some(settings)) if settings.profile(profile_id).is_some() => Some(settings),
             _ => None,
         };
         let values = latest.as_ref().unwrap_or(&self.saved);
-        let Some(profile) = values.profile(&profile_id) else {
+        let Some(profile) = values.profile(profile_id) else {
             return;
         };
         let choices = Choices::of(profile, channel, mapping);
         let look = values
             .appearance
-            .channel_look(&profile_id, channel, |a, b| mapping.same(a, b))
+            .channel_look(profile_id, channel, same)
             .cloned();
-        let server = self.prompt_server_label(network);
-        let i18n = self.i18n.clone();
-        let view = cx.new(|cx| {
-            ChannelSettingsView::new(channel, mapping, server, choices, look.as_ref(), i18n, cx)
-        });
-        let subscription =
-            cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
-                ChannelSettingsEvent::Save => this.save_channel_settings_prompt(window, cx),
-                ChannelSettingsEvent::Cancel => this.close_channel_settings_prompt(window, cx),
-            });
+        let server = display::neutralize_bidi(if profile.display_name.is_empty() {
+            &profile.host
+        } else {
+            &profile.display_name
+        })
+        .into_owned();
+        let title = self.i18n.format(
+            "channel_settings_heading",
+            &[("channel", &display::neutralize_bidi(channel))],
+        );
         settings_theme::refresh(cx);
-        self.server_menu = None;
-        self.member_menu = None;
-        self.channel_menu = None;
-        self.log_menu = None;
-        self.channel_settings = Some(ChannelSettingsPrompt {
-            network,
-            profile_id,
-            view,
-            previous: window.focused(cx),
-            _subscription: subscription,
-        });
+        let owner = window.window_handle().downcast::<ChatWindow>().unwrap();
+        let (profile_owned, channel_owned) = (profile_id.to_owned(), channel.to_owned());
+        let i18n = self.i18n.clone();
+        let min_size = size(px(420.), px(360.));
+        let wanted = crate::about::frame_size(size(px(520.), px(680.)));
+        let (bounds, display_id) = self.secondary_window_bounds(window, wanted, min_size, cx);
+        #[cfg(target_os = "windows")]
+        let owner_scale = window.scale_factor();
+        let opened = cx.open_window(
+            WindowOptions {
+                app_id: Some(crate::APP_ID.into()),
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                display_id,
+                window_min_size: Some(min_size),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("CayenChat".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            move |window, cx| {
+                // The channel name is server text: it reaches the OS title
+                // only through this gate.
+                window.os_set_title(&title);
+                cx.new(|cx| {
+                    ChannelSettingsView::new(
+                        owner,
+                        profile_owned,
+                        &channel_owned,
+                        mapping,
+                        server,
+                        choices,
+                        look.as_ref(),
+                        i18n,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        );
+        match opened {
+            Ok(handle) => {
+                #[cfg(target_os = "windows")]
+                if !cfg!(test) {
+                    let _ = handle.update(cx, |_, new_window, _| {
+                        if display_id.is_some() {
+                            crate::placement::place_native(new_window, bounds, owner_scale);
+                        }
+                    });
+                }
+                #[cfg(target_os = "windows")]
+                if self.always_on_top {
+                    let _ = handle.update(cx, |_, new_window, _| {
+                        if let Err(error) = crate::set_window_always_on_top(new_window, true) {
+                            log::warn!("Could not keep the channel window on top: {error}");
+                        }
+                    });
+                }
+                self.channel_settings_windows.push(OpenChannelSettings {
+                    profile_id: profile_id.to_owned(),
+                    channel: channel.to_owned(),
+                    handle,
+                });
+            }
+            Err(error) => {
+                let message = self
+                    .i18n
+                    .format("settings_open_failed", &[("error", &error.to_string())]);
+                self.report(Some(message), cx);
+            }
+        }
         cx.notify();
     }
 
-    /// Closes the dialog without saving, putting the focus back.
-    pub(crate) fn close_channel_settings_prompt(
+    /// Writes the channel's settings into the settings file, starting from
+    /// the file, and applies them as the settings window's save does; nothing
+    /// is joined or parted. The reason is returned when it cannot be done.
+    #[allow(clippy::too_many_arguments)] // The window's values and where they go.
+    pub(crate) fn apply_channel_settings(
         &mut self,
+        profile_id: &str,
+        channel: &str,
+        mapping: CaseMapping,
+        choices: Choices,
+        look: ChannelLook,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if let Some(prompt) = self.channel_settings.take()
-            && let Some(handle) = prompt.previous
-        {
-            window.focus(&handle);
+    ) -> Result<(), String> {
+        if self.transfer_dialog_busy() {
+            return Err(self.i18n.text("channel_settings_busy"));
         }
-        cx.notify();
-    }
-
-    /// Save: writes the channel's settings into the settings file, starting
-    /// from the file, and applies them as the settings window's save does;
-    /// nothing is joined or parted. A failure keeps the dialog open with its
-    /// reason.
-    fn save_channel_settings_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(prompt) = self.channel_settings.as_ref() else {
-            return;
+        let mut settings = match settings_file::load()? {
+            Some(settings) if settings.profile(profile_id).is_some() => settings,
+            _ => self.saved.clone(),
         };
-        let (network, profile_id, view) = (
-            prompt.network,
-            prompt.profile_id.clone(),
-            prompt.view.clone(),
-        );
-        let (channel, mapping, choices, look) = {
-            let view = view.read(cx);
-            (
-                view.channel().to_owned(),
-                view.mapping(),
-                view.choices,
-                view.look(cx),
-            )
-        };
-        let fail = |error: String, cx: &mut Context<Self>| {
-            view.update(cx, |view, cx| view.set_error(Some(error), cx));
-        };
-        let look = match look {
-            Ok(look) => look,
-            Err(error) => return fail(error, cx),
-        };
-        // The server may have been removed while the dialog was open.
-        if self.sessions.get(&network).map(|s| s.profile_id.as_str()) != Some(profile_id.as_str()) {
-            self.close_channel_settings_prompt(window, cx);
-            return;
-        }
-        let mut settings = match settings_file::load() {
-            Ok(Some(settings)) if settings.profile(&profile_id).is_some() => settings,
-            Ok(_) => self.saved.clone(),
-            Err(error) => return fail(error, cx),
-        };
-        let utf8_only = self.channel_settings_context(&profile_id).1;
-        if settings.profile(&profile_id).is_none() {
-            self.close_channel_settings_prompt(window, cx);
-            return;
-        }
-        if let Err(error) = save_channel_choices(
+        let utf8_only = self.channel_settings_context(profile_id).1;
+        save_channel_choices(
             &mut settings,
-            &profile_id,
-            &channel,
+            profile_id,
+            channel,
             mapping,
             choices,
             look,
             utf8_only,
             &self.i18n,
-        ) {
-            return fail(error, cx);
-        }
-        if let Err(error) = settings_file::save(&settings) {
-            return fail(error, cx);
-        }
+        )?;
+        settings_file::save(&settings)?;
         let previous = self.saved.clone();
         self.apply_settings_change(&previous, settings, true, window, cx);
         // An open settings window takes the file's values over itself.
-        self.close_channel_settings_prompt(window, cx);
+        Ok(())
     }
+}
+
+/// A channel settings window that is open, so a second request raises it.
+pub(crate) struct OpenChannelSettings {
+    profile_id: String,
+    channel: String,
+    pub(crate) handle: WindowHandle<ChannelSettingsView>,
 }

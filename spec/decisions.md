@@ -3402,7 +3402,7 @@ there is no network, bouncer or connection behind it.
 
 ## D076 — The channel menu's settings dialog is drawn in the chat window (#781)
 
-**Status:** Accepted
+**Status:** Accepted; the dialog became a window of its own in D086 (#950)
 
 2026-10-30. Refines D073's "Channel settings dialog".
 
@@ -3659,7 +3659,7 @@ the start of the session.
 
 - **Decision.** The channel settings dialog (D076) has a "channel log look"
   section: a font size, a background, an alternate row and a text color, a
-  wallpaper file and its strength in percent. An empty field follows the
+  wallpaper file and its filter settings (D086). An empty field follows the
   global appearance. The values are `Appearance::channel_looks`, a list
   keyed by server profile id and channel name (matched with the network's
   case mapping, as the encodings are), not part of the server profile:
@@ -3673,14 +3673,13 @@ the start of the session.
   shows through them.
 - **Wallpaper.** `media::wallpaper` reads a local file (≤ 16 MiB, through
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
-  blurs it (sigma 8) and moves every pixel 60 % toward the log's
-  background color, so a high-contrast photo leaves the text readable in
-  the light and the dark theme. This happens once per file and tint, on a
-  background thread; the window keeps one result (the selected channel's),
-  keyed by file and tint, and drops a result that arrives for another key.
-  The filter is fixed here (D086 makes it settable): the wallpaper's strength
-  (default 40 %) fades the picture over the background color. It is drawn
-  stretched to cover the log (no tiling or position options). A file that
+  and blurs it, so fine detail is lost. This happens once per file, on a
+  background thread; the window keeps one result (the selected channel's)
+  and drops a result that arrives for another key. The picture is the
+  backmost layer and the log's background color lies over it with an
+  opacity, so a high-contrast photo leaves the text readable in the light
+  and the dark theme (D086 replaced the first version's baked-in tint and
+  strength by this). There are no tiling or position options. A file that
   cannot be read shows no wallpaper.
 - **Not done.** Other panes, a transparent background or window, and
   separate light/dark colors.
@@ -3708,24 +3707,51 @@ the start of the session.
 
 ## D086 — Wallpaper filter settings per channel (#950)
 
-- **Decision.** D084's fixed filter (sigma 8, 60 % tint) hid photos, so the
-  channel log look gains three settings, each unset by default and read as
-  the default below when the file lacks it (`wallpaper_blur`,
-  `wallpaper_tint`, `wallpaper_fit` of `ChannelLook`, no version change):
+- **Decision.** D084's fixed filter (sigma 8, 60 % tint) hid photos. The
+  wallpaper is now the backmost layer, drawn as loaded, and the channel
+  log's background color lies over it with an opacity; contrast is adjusted
+  with that opacity, not by changing the picture. Layers, back to front:
+  wallpaper, background color (with opacity), alternate rows, text. The
+  channel log look gains three settings (`wallpaper_blur`,
+  `background_opacity`, `wallpaper_fit` of `ChannelLook`, no version
+  change; D084's `wallpaper_opacity` is gone and an old value is ignored):
   - **Blur**: sigma in px of the kept (≤ 640 px) picture, 0 to 20; 0 is no
-    blur. Default 3.
-  - **Tint**: percent moved toward the log background, 0 to 100; 0 leaves the
-    colors alone. Default 30.
-  - **Fit**: `stretch` (default, as before), `cover` (proportions kept, the
-    overflow cut off), `contain` (proportions kept, the margin is the log
-    background) or `center` (the kept picture at its size, centered; it is
-    already reduced to 640 px, so it is not the file's original size).
-    A name this version does not know reads as unset.
-- **Filtering.** Still once per file when loaded, on the background thread.
-  The window's one held picture is keyed by file, background color, blur and
-  tint; changing any of them loads again and drops a result for an older key.
-  The fit is not part of the key: it only changes how the held picture is
-  drawn, so changing it does not reload. Values in the file above the range
-  are capped on load.
-- **Defaults** are a starting point meant to be tried on real photos; the
-  strength setting (D084) still fades the picture over the background.
+    blur. The only filter applied to the image. Default 3.
+  - **Background opacity**: percent of the log background color laid over
+    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 50. It
+    is the alpha of the channel's background color, the same idea as the
+    pane background opacity of #930, which is not in this tree yet: when it
+    lands, this value is to become the per-channel override of its alpha
+    path rather than a second one. Making the window see through to the
+    desktop belongs to #930.
+  - **Fit**: `stretch` (default, as before), `cover`, `contain` or `center`,
+    drawn with the image's object fit; the box clips what overflows, and
+    `contain` leaves the background color at the margin. `center` is the
+    kept picture at its size, already reduced to 640 px, so not the file's
+    original size. A name this version does not know reads as unset.
+- **No inheritance.** There is no global counterpart of these three, so
+  each always holds a value: the default is shown and used until it is
+  changed, and a value equal to its default is stored as unset. The text
+  fields (size and the three colors) still follow the global appearance
+  when empty.
+- **Filtering.** Once per file and blur when loaded, on the background
+  thread. The window's one held picture is keyed by file and blur; changing
+  either loads again and drops a result for an older key. Color, opacity and
+  fit are not part of the key, so moving their controls never reprocesses the
+  image and shows at once. Values in the file above the range are capped on
+  load.
+- **Controls.** Blur and opacity are sliders (`slider.rs`: click or drag on
+  the track, arrow, Home, End and Page keys when focused). The fit is four
+  buttons. Defaults are a starting point meant to be tried on real photos.
+- **A window of its own.** The channel settings are no longer a modal dialog
+  (D076): "Channel Settings…" and the auto-join list's "Settings…" open one
+  window per channel (`ChatWindow::channel_settings_windows`; a second
+  request raises it), placed beside the chat window like the settings
+  window. It saves by itself 250 ms after an edit, through
+  `ChatWindow::apply_channel_settings` (file first, then
+  `apply_settings_change`; it never sends JOIN or PART), so the chat window
+  shows each change while it is adjusted. A value that cannot be saved is
+  reported in the window and the last saved state stays; Reset returns the
+  encodings, character references, look and sliders to the defaults but
+  keeps the auto-join choice. Escape closes an open list, then the window.
+  The settings window no longer hosts the dialog.

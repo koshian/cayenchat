@@ -69,6 +69,7 @@ mod shortcut_settings;
 mod shortcuts;
 #[cfg(unix_desktop)]
 mod signals;
+mod slider;
 mod splitter;
 mod theme;
 mod toolbar;
@@ -937,8 +938,8 @@ struct ChatWindow {
     setup_wizard: setup_wizard::SetupWizard,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
-    /// The channel menu's settings dialog (#781).
-    channel_settings: Option<channel_settings_dialog::ChannelSettingsPrompt>,
+    /// The channel settings windows that are open (#781, #950).
+    channel_settings_windows: Vec<channel_settings_dialog::OpenChannelSettings>,
     /// The question a double click on a registered server row opens (#625).
     disconnect_prompt: Option<disconnect_dialog::DisconnectPrompt>,
     /// Ask before a double click disconnects a server / leaves a channel
@@ -1560,7 +1561,7 @@ impl ChatWindow {
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
             setup_wizard: setup_wizard::SetupWizard::new(cx),
             part_prompt: None,
-            channel_settings: None,
+            channel_settings_windows: Vec::new(),
             disconnect_prompt: None,
             confirm_server_dblclick_disconnect: saved.confirm_server_dblclick_disconnect,
             confirm_channel_dblclick_part: saved.confirm_channel_dblclick_part,
@@ -2424,13 +2425,6 @@ impl ChatWindow {
                 self.part_prompt = None;
             }
             if self
-                .channel_settings
-                .as_ref()
-                .is_some_and(|prompt| prompt.network() == id)
-            {
-                self.channel_settings = None;
-            }
-            if self
                 .disconnect_prompt
                 .as_ref()
                 .is_some_and(|prompt| prompt.network() == id)
@@ -2556,13 +2550,6 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.network() == network)
         {
             self.part_prompt = None;
-        }
-        if self
-            .channel_settings
-            .as_ref()
-            .is_some_and(|prompt| prompt.network() == network)
-        {
-            self.channel_settings = None;
         }
         if self
             .disconnect_prompt
@@ -3741,19 +3728,22 @@ impl ChatWindow {
         );
     }
 
-    /// Shows the settings of the channel the context menu was opened on, in
-    /// the server that channel belongs to, in a dialog over the chat window.
-    /// The dialog saves them; nothing is joined or parted by that.
+    /// Opens the settings window of the channel the context menu was opened
+    /// on, in the server that channel belongs to. The window saves by itself;
+    /// nothing is joined or parted by that.
     fn open_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(menu) = self.channel_menu.take() else {
             return;
         };
-        // A settings window opened while a transfer writes would save its
-        // older form over the result; so would this dialog's save.
-        if self.transfer_dialog_busy() {
+        let Some(profile_id) = self
+            .sessions
+            .get(&menu.network)
+            .map(|session| session.profile_id.clone())
+        else {
             return;
-        }
-        self.show_channel_settings(menu.network, &menu.channel, window, cx);
+        };
+        let mapping = self.state.casemapping(menu.network);
+        self.open_channel_settings_window(&profile_id, &menu.channel, mapping, window, cx);
         cx.notify();
     }
 
@@ -4509,6 +4499,30 @@ impl ChatWindow {
         self.open_settings_tab(SettingsTab::Connection, profile, window, cx);
     }
 
+    /// Where a window of its own (settings, channel settings) opens: beside
+    /// the chat window on its display. Windows and macOS only: GPUI cannot
+    /// place a window on Linux, where the usual place stays.
+    fn secondary_window_bounds(
+        &self,
+        window: &Window,
+        wanted: Size<Pixels>,
+        min_size: Size<Pixels>,
+        cx: &App,
+    ) -> (Bounds<Pixels>, Option<DisplayId>) {
+        match window.display(cx) {
+            Some(display) if cfg!(any(target_os = "windows", target_os = "macos")) => (
+                window_layout::secondary_bounds(
+                    window.bounds(),
+                    display.bounds(),
+                    wanted,
+                    min_size,
+                ),
+                Some(display.id()),
+            ),
+            _ => (Bounds::centered(None, wanted, cx), None),
+        }
+    }
+
     /// Opens (or raises) the settings window. `tab` is selected when the
     /// window is new or when it is not the Connection tab; `profile`, when
     /// given, is shown on the Connection tab.
@@ -4566,23 +4580,9 @@ impl ChatWindow {
         let owner = window.window_handle().downcast::<ChatWindow>().unwrap();
         let min_size = size(px(760.), px(540.));
         let wanted = size(px(900.), px(750.));
-        // Beside the chat window on its own display. Windows and macOS only:
-        // GPUI cannot place a window on Linux, where the usual place stays.
-        let owner_display = window.display(cx);
         #[cfg(target_os = "windows")]
         let owner_scale = window.scale_factor();
-        let (bounds, display_id) = match owner_display {
-            Some(display) if cfg!(any(target_os = "windows", target_os = "macos")) => (
-                window_layout::secondary_bounds(
-                    window.bounds(),
-                    display.bounds(),
-                    wanted,
-                    min_size,
-                ),
-                Some(display.id()),
-            ),
-            _ => (Bounds::centered(None, wanted, cx), None),
-        };
+        let (bounds, display_id) = self.secondary_window_bounds(window, wanted, min_size, cx);
         match cx.open_window(
             WindowOptions {
                 app_id: Some(APP_ID.into()),
@@ -4989,7 +4989,6 @@ impl ChatWindow {
     fn dialog_open(&self) -> bool {
         self.quit_prompt_open
             || self.part_prompt.is_some()
-            || self.channel_settings.is_some()
             || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
             || self.member_prompt.is_some()
@@ -8801,9 +8800,6 @@ impl ChatWindow {
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(credential_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
-            .when_some(self.channel_settings.as_ref(), |d, prompt| {
-                d.child(prompt.view().clone())
-            })
             .when_some(disconnect_prompt, |d, dialog| d.child(dialog))
             .when_some(paste_prompt, |d, dialog| d.child(dialog))
             .when_some(setup_wizard, |d, dialog| d.child(dialog))

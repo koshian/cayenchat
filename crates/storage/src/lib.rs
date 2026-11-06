@@ -742,18 +742,15 @@ pub struct ChannelLook {
     /// Path of an image file drawn behind the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<String>,
-    /// How much of the wallpaper shows over the background, in percent
-    /// (0 to 100); unset is [`DEFAULT_WALLPAPER_OPACITY`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallpaper_opacity: Option<u8>,
     /// Blur strength (sigma in px, 0 to [`MAX_WALLPAPER_BLUR`], 0 is none);
     /// unset is [`DEFAULT_WALLPAPER_BLUR`]. Added without a version change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_blur: Option<u8>,
-    /// How far the wallpaper is moved toward the background color, in
-    /// percent (0 to 100, 0 is none); unset is [`DEFAULT_WALLPAPER_TINT`].
+    /// Opacity of the background color laid over the wallpaper, in percent
+    /// (0 to 100; 100 hides the picture); unset is
+    /// [`DEFAULT_BACKGROUND_OPACITY`]. Only a wallpaper makes it visible.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallpaper_tint: Option<u8>,
+    pub background_opacity: Option<u8>,
     /// How the wallpaper fits the log; unset is [`WallpaperFit::default`].
     /// A name this version does not know reads as unset.
     #[serde(
@@ -794,13 +791,12 @@ fn is_zero(value: &u16) -> bool {
 pub const MAX_CHANNEL_LOOKS: usize = 256;
 /// The longest wallpaper path kept, in bytes.
 pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
-pub const DEFAULT_WALLPAPER_OPACITY: u8 = 40;
 /// The largest blur strength, in px of sigma.
 pub const MAX_WALLPAPER_BLUR: u8 = 20;
 /// Weaker than #928's fixed 8, which hid photos.
 pub const DEFAULT_WALLPAPER_BLUR: u8 = 3;
-/// Weaker than #928's fixed 60 %.
-pub const DEFAULT_WALLPAPER_TINT: u8 = 30;
+/// The background color over a wallpaper is half opaque unless set.
+pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
 
 impl ChannelLook {
     /// Whether any field differs from the global appearance.
@@ -810,9 +806,8 @@ impl ChannelLook {
             || self.alternate.is_some()
             || self.text.is_some()
             || self.wallpaper.is_some()
-            || self.wallpaper_opacity.is_some()
             || self.wallpaper_blur.is_some()
-            || self.wallpaper_tint.is_some()
+            || self.background_opacity.is_some()
             || self.wallpaper_fit.is_some()
     }
 
@@ -833,9 +828,8 @@ impl ChannelLook {
         {
             self.wallpaper = None;
         }
-        self.wallpaper_opacity = self.wallpaper_opacity.map(|p| p.min(100));
         self.wallpaper_blur = self.wallpaper_blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
-        self.wallpaper_tint = self.wallpaper_tint.map(|p| p.min(100));
+        self.background_opacity = self.background_opacity.map(|p| p.min(100));
     }
 }
 
@@ -3359,7 +3353,7 @@ mod tests {
             font_size: 18,
             background: Some("#102030".into()),
             wallpaper: Some("/pics/a.png".into()),
-            wallpaper_opacity: Some(55),
+            background_opacity: Some(55),
             ..ChannelLook::default()
         };
         settings
@@ -3381,7 +3375,11 @@ mod tests {
             serde_json::from_str(r##"{"server":"s","channel":"#a","wallpaper":"/p.png"}"##)
                 .unwrap();
         assert_eq!(
-            (old.wallpaper_blur, old.wallpaper_tint, old.wallpaper_fit),
+            (
+                old.wallpaper_blur,
+                old.background_opacity,
+                old.wallpaper_fit
+            ),
             (None, None, None)
         );
         let odd: ChannelLook = serde_json::from_str(
@@ -3403,9 +3401,8 @@ mod tests {
             font_size: 3,
             background: Some("red".into()),
             text: Some("#abcdef".into()),
-            wallpaper_opacity: Some(250),
             wallpaper_blur: Some(250),
-            wallpaper_tint: Some(250),
+            background_opacity: Some(250),
             wallpaper_fit: Some(WallpaperFit::Cover),
             ..ChannelLook::default()
         };
@@ -3419,9 +3416,8 @@ mod tests {
         assert_eq!(kept.font_size, MIN_FONT_SIZE);
         assert_eq!(kept.background, None);
         assert_eq!(kept.text.as_deref(), Some("#abcdef"));
-        assert_eq!(kept.wallpaper_opacity, Some(100));
         assert_eq!(kept.wallpaper_blur, Some(MAX_WALLPAPER_BLUR));
-        assert_eq!(kept.wallpaper_tint, Some(100));
+        assert_eq!(kept.background_opacity, Some(100));
         assert_eq!(kept.wallpaper_fit, Some(WallpaperFit::Cover));
         appearance.set_channel_look(look("#a"), same).unwrap();
         assert_eq!(appearance.channel_looks.len(), 1);
