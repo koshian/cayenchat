@@ -118,6 +118,68 @@ fn an_edit_is_saved_after_a_short_pause(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_chat_window_shows_an_edit_before_the_pause_is_over(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    for opacity in [20_u8, 90] {
+        view.update(wcx, |view, cx| view.set_opacity(u32::from(opacity), cx));
+        // Shown at once; the file still waits.
+        let shown = chat.read_with(cx, |chat, _| {
+            chat.appearance
+                .channel_look(&chat.saved.servers[0].id, "#a", same)
+                .and_then(|look| look.background_opacity)
+        });
+        assert_eq!(shown, Some(opacity));
+    }
+    assert!(
+        crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .appearance
+            .channel_looks
+            .is_empty()
+    );
+    drop(file);
+}
+
+#[gpui::test]
+fn closing_the_window_saves_an_edit_still_waiting(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    view.update(wcx, |view, cx| view.set_opacity(51, cx));
+    assert!(wcx.simulate_close());
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(
+        on_file.appearance.channel_looks[0].background_opacity,
+        Some(51)
+    );
+    let _ = chat;
+    drop(file);
+}
+
+#[gpui::test]
+fn a_look_edit_does_not_rewind_a_charset_changed_after_the_window_opened(cx: &mut TestAppContext) {
+    use super::charset_command_tests::{open_chat, run};
+    let app = cx.clone();
+    let (chat, cx, file) = open_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    // `/charset` runs in the chat window while the window is open.
+    run(&chat, cx, "/charset Big5").unwrap();
+    assert_eq!(stored_decode("#a"), Some(TextEncoding::Big5));
+    view.update_in(wcx, |view, window, cx| {
+        view.set_opacity(80, cx);
+        view.save_now(window, cx);
+    });
+    assert_eq!(stored_decode("#a"), Some(TextEncoding::Big5));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(
+        on_file.appearance.channel_looks[0].background_opacity,
+        Some(80)
+    );
+    drop(file);
+}
+
+#[gpui::test]
 fn a_second_request_raises_the_open_window(cx: &mut TestAppContext) {
     let (chat, app, cx, file) = new_chat(cx, "#a");
     let (_view, _wcx) = open_channel_window(&chat, &app, "#a", cx);

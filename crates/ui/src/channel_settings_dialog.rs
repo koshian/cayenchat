@@ -171,6 +171,59 @@ pub(crate) fn save_channel_choices(
     Ok(profile.clone())
 }
 
+/// `latest` with the fields `new` changed from `base`.
+fn merge_choices(latest: Choices, base: Choices, new: Choices) -> Choices {
+    Choices {
+        enabled: if new.enabled != base.enabled {
+            new.enabled
+        } else {
+            latest.enabled
+        },
+        decode: if new.decode != base.decode {
+            new.decode
+        } else {
+            latest.decode
+        },
+        encode: if new.encode != base.encode {
+            new.encode
+        } else {
+            latest.encode
+        },
+        char_refs: if new.char_refs != base.char_refs {
+            new.char_refs
+        } else {
+            latest.char_refs
+        },
+    }
+}
+
+/// `latest` with the fields `new` changed from `base`.
+pub(crate) fn merge_look(
+    latest: Option<&ChannelLook>,
+    base: &ChannelLook,
+    new: &ChannelLook,
+) -> ChannelLook {
+    let mut merged = latest.cloned().unwrap_or_default();
+    macro_rules! take {
+        ($($field:ident),*) => {
+            $(if new.$field != base.$field {
+                merged.$field = new.$field.clone();
+            })*
+        };
+    }
+    take!(
+        font_size,
+        background,
+        alternate,
+        text,
+        wallpaper,
+        wallpaper_blur,
+        background_opacity,
+        wallpaper_fit
+    );
+    merged
+}
+
 /// The fields of the channel log look. A text field left empty follows the
 /// global appearance; the blur, the background opacity and the fit always
 /// hold a value (their defaults at first), which is what is shown and used.
@@ -380,6 +433,10 @@ pub(crate) struct ChannelSettingsView {
     /// What was last written (or read), so an edit that changes nothing
     /// writes nothing.
     saved: Option<(Choices, ChannelLook)>,
+    /// What the window last wrote or opened with, even if it could not be
+    /// read as a look: the saved edit is the difference from it, so a value
+    /// changed elsewhere meanwhile is not written back over.
+    base: (Choices, ChannelLook),
     /// The pause before the latest edit is saved.
     autosave: Option<Task<()>>,
     /// Redraws and saves when a text field changes.
@@ -406,6 +463,7 @@ impl ChannelSettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let opened_look = look.cloned().unwrap_or_default();
         let look = LookFields::new(look, &i18n, cx);
         let subscriptions = look
             .fields()
@@ -413,6 +471,17 @@ impl ChannelSettingsView {
             .map(|field| cx.observe(field, |this, _, cx| this.edited(cx)))
             .collect();
         let saved = look.read(&i18n, cx).ok().map(|look| (choices, look));
+        let base = saved.clone().unwrap_or((choices, opened_look));
+        // Leaving saves an edit still waiting out its pause.
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                if this.autosave.is_some() {
+                    this.save_now(window, cx);
+                }
+            });
+            true
+        });
         Self {
             owner,
             profile_id,
@@ -426,6 +495,7 @@ impl ChannelSettingsView {
             error: None,
             controls: Controls::new(cx),
             saved,
+            base,
             autosave: None,
             _subscriptions: subscriptions,
             window: window.window_handle(),
@@ -444,6 +514,7 @@ impl ChannelSettingsView {
     /// Something was edited: saves it after a short pause, and shows at once
     /// the reason when it cannot be.
     fn edited(&mut self, cx: &mut Context<Self>) {
+        self.preview(cx);
         let window = self.window;
         self.autosave = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DELAY).await;
@@ -452,6 +523,23 @@ impl ChannelSettingsView {
             });
         }));
         cx.notify();
+    }
+
+    /// Shows the look the window holds in the chat window at once, without
+    /// waiting for the pause; the pause only spares the file.
+    fn preview(&mut self, cx: &mut Context<Self>) {
+        let Ok(look) = self.look(cx) else {
+            return;
+        };
+        let (profile_id, channel, mapping, base) = (
+            self.profile_id.clone(),
+            self.channel.clone(),
+            self.mapping,
+            self.base.1.clone(),
+        );
+        let _ = self.owner.update(cx, |chat, _, cx| {
+            chat.preview_channel_look(&profile_id, &channel, mapping, &base, &look, cx);
+        });
     }
 
     /// Writes what the window holds through the chat window, which shows it
@@ -474,17 +562,34 @@ impl ChannelSettingsView {
             return;
         }
         let (choices, look) = current.clone();
+        let base = self.base.clone();
         let (profile_id, channel, mapping) =
             (self.profile_id.clone(), self.channel.clone(), self.mapping);
         let result = self.owner.update(cx, |chat, window, cx| {
-            chat.apply_channel_settings(&profile_id, &channel, mapping, choices, look, window, cx)
+            chat.apply_channel_settings(
+                &profile_id,
+                &channel,
+                mapping,
+                &base,
+                choices,
+                look,
+                window,
+                cx,
+            )
         });
         match result {
             Ok(Ok(())) => {
+                self.base = current.clone();
                 self.saved = Some(current);
                 self.error = None;
             }
-            Ok(Err(error)) => self.error = Some(error),
+            Ok(Err(error)) => {
+                self.error = Some(error);
+                // What was shown ahead of the file goes back to the file.
+                let _ = self
+                    .owner
+                    .update(cx, |chat, _, cx| chat.discard_look_preview(cx));
+            }
             // The chat window is gone: nothing is left to save to.
             Err(_) => window.remove_window(),
         }
@@ -1194,6 +1299,37 @@ impl ChatWindow {
         cx.notify();
     }
 
+    /// Shows `look` (changed from `base`) in the log of the channel before
+    /// it is saved; nothing is written.
+    pub(crate) fn preview_channel_look(
+        &mut self,
+        profile_id: &str,
+        channel: &str,
+        mapping: CaseMapping,
+        base: &ChannelLook,
+        look: &ChannelLook,
+        cx: &mut Context<Self>,
+    ) {
+        let same = |a: &str, b: &str| mapping.same(a, b);
+        let mut merged = merge_look(
+            self.appearance.channel_look(profile_id, channel, same),
+            base,
+            look,
+        );
+        merged.server = profile_id.to_owned();
+        merged.channel = channel.to_owned();
+        let mut appearance = self.appearance.clone();
+        if appearance.set_channel_look(merged, same).is_ok() {
+            self.apply_appearance(appearance, self.theme_mode, cx);
+        }
+    }
+
+    /// Takes a preview back: the appearance is the saved one again.
+    pub(crate) fn discard_look_preview(&mut self, cx: &mut Context<Self>) {
+        let appearance = self.saved.appearance.clone();
+        self.apply_appearance(appearance, self.theme_mode, cx);
+    }
+
     /// Writes the channel's settings into the settings file, starting from
     /// the file, and applies them as the settings window's save does; nothing
     /// is joined or parted. The reason is returned when it cannot be done.
@@ -1203,6 +1339,7 @@ impl ChatWindow {
         profile_id: &str,
         channel: &str,
         mapping: CaseMapping,
+        base: &(Choices, ChannelLook),
         choices: Choices,
         look: ChannelLook,
         window: &mut Window,
@@ -1216,6 +1353,15 @@ impl ChatWindow {
             _ => self.saved.clone(),
         };
         let utf8_only = self.channel_settings_context(profile_id).1;
+        // Only what the window changed is written; the rest is the file's.
+        let latest = settings
+            .profile(profile_id)
+            .map_or(base.0, |profile| Choices::of(profile, channel, mapping));
+        let choices = merge_choices(latest, base.0, choices);
+        let latest_look = settings
+            .appearance
+            .channel_look(profile_id, channel, |a, b| mapping.same(a, b));
+        let look = merge_look(latest_look, &base.1, &look);
         save_channel_choices(
             &mut settings,
             profile_id,

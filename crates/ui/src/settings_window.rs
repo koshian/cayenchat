@@ -6033,11 +6033,14 @@ mod escape_tests {
                 let profile = chat.saved.selected_profile().unwrap();
                 let mut choices =
                     crate::channel_settings_dialog::Choices::of(profile, channel, mapping);
+                let base = (choices, cayenchat_storage::ChannelLook::default());
                 change(&mut choices);
                 let id = profile.id.clone();
                 let look = cayenchat_storage::ChannelLook::default();
-                chat.apply_channel_settings(&id, channel, mapping, choices, look, window, cx)
-                    .unwrap();
+                chat.apply_channel_settings(
+                    &id, channel, mapping, &base, choices, look, window, cx,
+                )
+                .unwrap();
             })
             .unwrap();
     }

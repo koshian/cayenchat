@@ -7759,7 +7759,9 @@ impl ChatWindow {
         };
         let border = theme.border;
         let look = self.channel_log_look(theme);
-        let wallpaper = self.wallpaper.element(look.wallpaper.as_ref(), window, cx);
+        let wallpaper =
+            self.wallpaper
+                .element(look.wallpaper.as_ref(), look.background, window, cx);
         let appearance = &self.appearance;
         let draft_row_height = self.draft_row_height();
         let input_size = pane_text_size(appearance.input_font_size, None);

@@ -3669,7 +3669,7 @@ the start of the session.
 - **Applies to** the channel log only, to its text size, background and
   alternate rows, and the default text color (time, nicknames, links and
   the other colored parts keep theirs). The colors are one set for both
-  themes. A wallpaper makes the alternate rows half transparent, so it
+  themes. A wallpaper gives the alternate rows the background's opacity, so it
   shows through them.
 - **Wallpaper.** `media::wallpaper` reads a local file (≤ 16 MiB, through
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
@@ -3719,13 +3719,22 @@ the start of the session.
     blur. The only filter applied to the image. Default 3.
   - **Background opacity**: percent of the log background color laid over
     the wallpaper, 0 (picture only) to 100 (picture hidden). Default 50. It
-    is the alpha of the channel's background color, the same idea as the
-    pane background opacity of #930, which is not in this tree yet: when it
-    lands, this value is to become the per-channel override of its alpha
-    path rather than a second one. Making the window see through to the
-    desktop belongs to #930.
+    is the alpha of the channel's background color. The path is general, not
+    wallpaper's own (`channel_look::backdrop`: the picture, if any, and over
+    it the pane background with its alpha; `ResolvedLook::background`).
+    The maintainer decided (2026-11-06) that this issue builds it and #930
+    is redone on it, so #930 reuses `backdrop` for the other panes and
+    keeps this value as the channel's override. Alternate rows take the
+    same alpha as the background instead of a fixed one; they still lie
+    over the background layer, not in place of it (accepted
+    approximation: where the picture is bright the stripe is a little
+    weaker than a replacing stripe would be). Making the window see through
+    to the desktop belongs to #930.
   - **Fit**: `stretch` (default, as before), `cover`, `contain` or `center`,
-    drawn with the image's object fit; the box clips what overflows, and
+    laid out by `channel_look::fit_bounds` on the log's real box (GPUI's
+    image element forces the picture's own proportions on its box, so the
+    fits would not differ; a canvas paints the image instead; `center` is
+    centered here, while GPUI's `ObjectFit::None` keeps the origin). The box clips what overflows, and
     `contain` leaves the background color at the margin. `center` is the
     kept picture at its size, already reduced to 640 px, so not the file's
     original size. A name this version does not know reads as unset.
@@ -3747,10 +3756,15 @@ the start of the session.
   (D076): "Channel Settings…" and the auto-join list's "Settings…" open one
   window per channel (`ChatWindow::channel_settings_windows`; a second
   request raises it), placed beside the chat window like the settings
-  window. It saves by itself 250 ms after an edit, through
+  window. The chat window shows each edit at once (`preview_channel_look`,
+  in memory only); the file is written 250 ms after the last edit, and when
+  the window closes by any means, through
   `ChatWindow::apply_channel_settings` (file first, then
-  `apply_settings_change`; it never sends JOIN or PART), so the chat window
-  shows each change while it is adjusted. A value that cannot be saved is
+  `apply_settings_change`; it never sends JOIN or PART). Only the fields
+  the window changed since it opened or last saved are written, over the
+  file's current values, so a `/charset` made meanwhile is not rewound; the
+  window itself keeps showing what it opened with for the fields it did not
+  edit. A value that cannot be saved is
   reported in the window and the last saved state stays; Reset returns the
   encodings, character references, look and sliders to the defaults but
   keeps the auto-join choice. Escape closes an open list, then the window.

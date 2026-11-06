@@ -22,19 +22,20 @@ pub(crate) struct ResolvedLook {
     /// A font size in px of the channel's own, to be clamped by the caller.
     pub(crate) font_size: u16,
     pub(crate) wallpaper: Option<WallpaperRequest>,
+    /// The pane background with the channel's opacity as its alpha, drawn
+    /// over the wallpaper by [`backdrop`]. Opaque without a wallpaper.
+    pub(crate) background: Rgba,
 }
 
-/// The wallpaper to show (#950): the file, its blur, how it fits the log and
-/// the log background color laid over it. Only the file and the blur need a
-/// new load; the fit and the color are applied when it is drawn.
+/// The wallpaper to show (#950): the file, its blur and how it fits the log.
+/// Only the file and the blur need a new load; the fit is applied when it is
+/// drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WallpaperRequest {
     pub(crate) path: String,
     /// Blur sigma in px of the kept (≤ 640 px) picture; 0 is none.
     pub(crate) blur: u8,
     pub(crate) fit: WallpaperFit,
-    /// The log background with the channel's opacity as its alpha.
-    pub(crate) cover: Rgba,
 }
 
 /// The blur a look holds, capped to the range.
@@ -51,8 +52,9 @@ pub(crate) fn background_opacity_of(look: &ChannelLook) -> u8 {
         .min(100)
 }
 
-/// `look` laid over `theme`. With a wallpaper the alternate rows are drawn
-/// half transparent, so the picture shows through them.
+/// `look` laid over `theme`. With a wallpaper the background and the
+/// alternate rows get the channel's opacity as their alpha, so the picture
+/// shows through both alike.
 pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedLook {
     let Some(look) = look else {
         return ResolvedLook {
@@ -60,6 +62,7 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
             text: None,
             font_size: 0,
             wallpaper: None,
+            background: theme.panes.channel_log,
         };
     };
     let color = |value: &Option<String>| value.as_deref().and_then(color_value).map(rgb);
@@ -73,15 +76,15 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
         path: path.clone(),
         blur: blur_of(look),
         fit: look.wallpaper_fit.unwrap_or_default(),
-        cover: Rgba {
-            a: f32::from(background_opacity_of(look)) / 100.,
-            ..theme.panes.channel_log
-        },
     });
+    let mut background = theme.panes.channel_log;
     if wallpaper.is_some() {
-        theme.panes.channel_alternate.a = 0.5;
+        let alpha = f32::from(background_opacity_of(look)) / 100.;
+        background.a = alpha;
+        theme.panes.channel_alternate.a = alpha;
     }
     ResolvedLook {
+        background,
         text: color(&look.text),
         font_size: look.font_size,
         theme,
@@ -89,13 +92,45 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
     }
 }
 
-fn object_fit(fit: WallpaperFit) -> ObjectFit {
-    match fit {
+/// Where a picture of `image` pixels lies in `bounds` for `fit`. Cover and
+/// center paint past `bounds`; the caller clips. The box is laid out by the
+/// caller, not by an image element, which would force the picture's shape on
+/// it.
+fn fit_bounds(
+    fit: WallpaperFit,
+    bounds: Bounds<Pixels>,
+    image: Size<DevicePixels>,
+) -> Bounds<Pixels> {
+    let object_fit = match fit {
         WallpaperFit::Stretch => ObjectFit::Fill,
         WallpaperFit::Cover => ObjectFit::Cover,
         WallpaperFit::Contain => ObjectFit::Contain,
-        WallpaperFit::Center => ObjectFit::None,
-    }
+        WallpaperFit::Center => {
+            let size = image.map(|side| Pixels::from(u32::from(side)));
+            return Bounds {
+                origin: point(
+                    bounds.origin.x + (bounds.size.width - size.width) / 2.,
+                    bounds.origin.y + (bounds.size.height - size.height) / 2.,
+                ),
+                size,
+            };
+        }
+    };
+    object_fit.get_bounds(bounds, image)
+}
+
+/// The layer behind a pane's content: the picture, if any, and over it the
+/// pane `background` (with its alpha). It is the first child of a relative
+/// pane.
+pub(crate) fn backdrop(picture: Option<Div>, background: Rgba) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .overflow_hidden()
+        .children(picture)
+        .child(div().absolute().top_0().left_0().size_full().bg(background))
 }
 
 enum State {
@@ -128,6 +163,7 @@ impl Wallpaper {
     pub(crate) fn element(
         &mut self,
         wanted: Option<&WallpaperRequest>,
+        background: Rgba,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
@@ -176,30 +212,23 @@ impl Wallpaper {
             .detach();
         }
         match self.slot.as_ref() {
-            // The picture is the backmost layer, the log background (with
-            // its opacity) lies over it, and the rows over both. Cover and
-            // center paint past the box, so the box clips them.
-            Some((_, State::Ready(image))) => Some(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(
-                        img(image.clone())
-                            .size_full()
-                            .object_fit(object_fit(wanted.fit)),
+            // The picture is the backmost layer, the pane background (with
+            // its opacity) lies over it, and the rows over both.
+            Some((_, State::Ready(image))) => {
+                let (image, fit) = (image.clone(), wanted.fit);
+                let picture = div().absolute().top_0().left_0().size_full().child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, _| {
+                            let size = image.size(0);
+                            let placed = fit_bounds(fit, bounds, size);
+                            let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+                        },
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .bg(wanted.cover),
-                    ),
-            ),
+                    .size_full(),
+                );
+                Some(backdrop(Some(picture), background))
+            }
             _ => None,
         }
     }
@@ -259,13 +288,15 @@ mod tests {
             };
             let resolved = resolve(Some(&look), base);
             assert_eq!(resolved.theme.panes.channel_log, rgb(0x102030));
-            // The picture shows through the alternate rows.
-            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.5);
+            // The picture shows through the alternate rows as through the
+            // background, by the same opacity.
+            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.7);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);
             let wallpaper = resolved.wallpaper.unwrap();
             // The channel's own background lies over the picture, 70 % opaque.
-            let cover = wallpaper.cover;
+            let _ = wallpaper;
+            let cover = resolved.background;
             assert_eq!((cover.r, cover.g, cover.b), {
                 let c = rgb(0x102030);
                 (c.r, c.g, c.b)
@@ -285,14 +316,19 @@ mod tests {
                 wallpaper: Some("/pic.png".into()),
                 ..ChannelLook::default()
             };
-            let wallpaper = resolve(Some(&look), base).wallpaper.unwrap();
+            let resolved = resolve(Some(&look), base);
+            let wallpaper = resolved.wallpaper.unwrap();
             let log = base.panes.channel_log;
             assert_eq!(
-                (wallpaper.cover.r, wallpaper.cover.g, wallpaper.cover.b),
+                (
+                    resolved.background.r,
+                    resolved.background.g,
+                    resolved.background.b
+                ),
                 (log.r, log.g, log.b)
             );
             assert_eq!(
-                wallpaper.cover.a,
+                resolved.background.a,
                 f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
             );
             assert_eq!(wallpaper.blur, DEFAULT_WALLPAPER_BLUR);
@@ -310,16 +346,39 @@ mod tests {
             ..ChannelLook::default()
         };
         let base = theme(false);
-        let first = resolve(Some(&look(0, 0, WallpaperFit::Contain)), base)
-            .wallpaper
-            .unwrap();
-        assert_eq!((first.blur, first.cover.a), (0, 0.));
+        let first_look = resolve(Some(&look(0, 0, WallpaperFit::Contain)), base);
+        let first = first_look.wallpaper.unwrap();
+        assert_eq!((first.blur, first_look.background.a), (0, 0.));
         assert_eq!(first.fit, WallpaperFit::Contain);
         // A color, an opacity and a fit differ without touching the blur.
-        let second = resolve(Some(&look(0, 100, WallpaperFit::Cover)), base)
-            .wallpaper
-            .unwrap();
+        let second_look = resolve(Some(&look(0, 100, WallpaperFit::Cover)), base);
+        let second = second_look.wallpaper.unwrap();
         assert_eq!(second.blur, first.blur);
-        assert_ne!((second.cover, second.fit), (first.cover, first.fit));
+        assert_ne!(second_look.background, first_look.background);
+        assert_ne!(second.fit, first.fit);
+    }
+
+    #[test]
+    fn each_fit_places_the_picture_in_the_log_box() {
+        use super::fit_bounds;
+        use gpui::{Bounds, DevicePixels, point, px, size};
+        let log = Bounds::new(point(px(10.), px(20.)), size(px(756.), px(351.)));
+        let picture = size(DevicePixels(600), DevicePixels(360));
+        assert_eq!(fit_bounds(WallpaperFit::Stretch, log, picture), log);
+        // Cover: the width fills the box, the height runs over it equally.
+        let cover = fit_bounds(WallpaperFit::Cover, log, picture);
+        assert_eq!(cover.size.width, px(756.));
+        assert!(cover.size.height > log.size.height);
+        assert_eq!(cover.origin.x, log.origin.x);
+        assert!(cover.origin.y < log.origin.y);
+        // Contain: the height fills the box, the sides are left over.
+        let contain = fit_bounds(WallpaperFit::Contain, log, picture);
+        assert_eq!(contain.size.height, px(351.));
+        assert!(contain.size.width < log.size.width);
+        assert!(contain.origin.x > log.origin.x);
+        // Center: the picture's own size, in the middle.
+        let center = fit_bounds(WallpaperFit::Center, log, picture);
+        assert_eq!(center.size, size(px(600.), px(360.)));
+        assert_eq!(center.origin, point(px(88.), px(15.5)));
     }
 }
