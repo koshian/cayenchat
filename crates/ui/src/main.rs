@@ -5539,9 +5539,6 @@ impl ChatWindow {
                 // A join from a history batch never confirms a typed `/join`.
                 if !replayed {
                     self.join_confirmed_switch(network, &channel);
-                    // The join line follows this event; recent history goes
-                    // before it.
-                    self.state.reserve_join_history(network, &channel);
                 }
                 self.state.append_server_message(
                     network,
@@ -5863,15 +5860,16 @@ impl ChatWindow {
                 channel,
                 resumed: false,
             } => self.state.history_requested(network, &channel),
-            // Lines missed while disconnected go where the log was cut off.
+            // Lines missed while disconnected follow the log in processing
+            // order.
             Event::HistoryRequested {
                 channel,
                 resumed: true,
             } => self.state.history_resumed(network, &channel),
             // Requested history is context, not news: no notification,
             // highlight or unread mark.
-            // Lines show as they arrive; the end of the reply puts them in
-            // server-time order within the room reserved for them.
+            // Lines are held until the reply ends, then appended in
+            // server-time order.
             Event::HistoryLine {
                 channel,
                 request,

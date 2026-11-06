@@ -1664,9 +1664,9 @@ irc-core history::HistoryRequests (worker; bounded queue, one request at a time)
         |   reply batch consumed -> Event::HistoryLine { channel, message } per line,
         |   then Event::ChannelHistory { channel, incomplete } at its end
         v
-app::AppState::history_requested (reserve 256 sequences)
-app::AppState::push_history_line (insert at the reservation, dedupe)
-app::AppState::finish_history_for (order the block by server time)
+app::AppState::history_requested (record: a reply is expected)
+app::AppState::push_history_line (hold the line)
+app::AppState::finish_history_for (server-time order, dedupe, append at the end)
         v
 channel log (same rows); not in the combined log; no notification
 ```
@@ -1721,31 +1721,30 @@ live path. Ergo 2.19 reports events such as our
 own JOIN as `HistServ` PRIVMSGs inside the reply when event-playback is not
 negotiated; they are shown as ordinary history lines.
 
-Merge: `Event::HistoryRequested` makes `AppState` reserve 256 sequences
-after the conversation's current lines. Each `Event::HistoryLine` inserts
-its line there at once as `Provenance::Requested`, in arrival order, before
-every line that arrived after the request, so unrelated live lines are
-never reordered and logs stay in ascending sequence order (`LogList`
-replaces only the inserted rows).
+Merge (D086): the log flows in protocol processing order. `Event::HistoryRequested`
+only records that a reply is expected for the conversation; each
+`Event::HistoryLine` is held there. No sequences are reserved.
 
-Principle (chathistory display): the flow is arrival order, history is
-shown as it arrives and tidied within the range that was set aside for
-it. Live lines (and the user's own messages) are never sorted: arrival is
-their truth, an untrusted `server-time` tag must not shape the log, and
-the sequence semantics that unread tracking and echo confirmation rely on
-do not change. When the reply ends (`Event::ChannelHistory`,
-`Event::OlderChannelHistory`, also after a failure), `AppState` puts the
-lines inside the block, and only those, in `server-time` order with a
-stable sort and hands the block's sequences out again in that order; no
-line outside the block moves, and the log as a whole is never re-sorted.
-Lines of equal time keep their arrival order; a line without a time counts
-as having the time of the line before it (so it keeps its place relative
-to it), and one at the start of the reply, with no time to inherit, stays
-before every timed line. The gap note of an incomplete reply goes first.
-Notified-line queue entries follow their lines. This applies to every
-requested reply (LATEST, BEFORE, reconnect recovery, direct messages found
-by TARGETS). Autonomous playback (`znc.in/playback`, `replay.rs`) has no
-reserved block and is not reordered. The raw wire order stays in the
+Principle (chathistory display): the log is in processing order. Live
+lines (and the user's own messages) are never sorted: arrival is their
+truth, an untrusted `server-time` tag must not shape the log, and the
+sequence semantics that unread tracking and echo confirmation rely on do
+not change. When the reply ends (`Event::ChannelHistory`, also after a
+failure), `AppState` puts the held lines, and only those, in `server-time`
+order with a stable sort and appends them to the end of the log with
+ordinary sequences, each through the conversation's duplicate filter just
+before it is appended; the log as a whole is never re-sorted. The result is
+that a reconnect reads: disconnect, rejoin, recovered lines; and a first
+join reads: `has joined`, then history. Lines of equal time keep their
+arrival order; a line without a time counts as having the time of the line
+before it (so it keeps its place relative to it), and one at the start of
+the reply, with no time to inherit, stays before every timed line. The gap
+note of an incomplete reply is appended first, as an ordinary activity line,
+when the reply ends. The reply is bounded by irc-core (`MAX_HISTORY_LINES`,
+100) and the conversation's retained-line limit; `app` adds no limit of
+its own. This applies to every requested reply (LATEST, reconnect recovery,
+direct messages found by TARGETS). Autonomous playback (`znc.in/playback`,
+`replay.rs`) is not held or reordered. The raw wire order stays in the
 connection diagnostics, so a server that sends out of order can still be
 told apart. Lines the duplicate filter recognizes
 (a live line the reply repeats, bouncer playback) are skipped. Nothing is
@@ -1755,19 +1754,12 @@ searched for mentions and keywords by the same code as a live line
 a line the notification rules call attention-worthy
 (`TimelineLine::attention`) is queued for the jump to notified lines under
 the sequence it was given, in order within its conversation. Requested history is
-left out of the combined log. A reply without a pending reservation
-is ignored: the reservation is dropped when the network disconnects, is
-reset or removed, and the UI already drops events of an old connection
-generation. Limitations: a live line that arrived after the request and is
-repeated in the reply without msgid or matching server-time appears twice;
-and the reply is placed after lines received before the request, except
-that the slot is reserved when our own JOIN is logged
-(`AppState::reserve_join_history`, on a non-replayed `Event::Joined` of a
-channel without a resume point), so the reply goes right before our JOIN
-line: history, `has joined`, then new lines, as after a reconnect. The JOIN
-line keeps its own time and is neither moved nor duplicated; without a
-request (option off, failure, no history) the reservation is simply unused,
-and PART, KICK, reset or removal drops it.
+left out of the combined log. A reply without a pending request
+is ignored and changes nothing: the request is dropped (with its held
+lines) when the network disconnects, is reset or removed, and the UI
+already drops events of an old connection generation. Limitation: a live
+line that arrived after the request and is repeated in the reply without
+msgid or matching server-time appears twice.
 
 ### Older pages
 
@@ -1862,8 +1854,7 @@ top (disconnected) the row inserted below it still appears below it.
 
 ```text
 app::AppState::set_status(Disconnected), session had history
-        |   joined channel -> ResumePoint { newest native_id/timestamp,
-        |                                   256 sequences reserved at the cut }
+        |   joined channel -> ResumePoint { newest native_id/timestamp }
         v
 ui::ChatWindow::reconnect_config -> ConnectionConfig::resume_history
         |   (the saved active_config is not changed)
@@ -1873,15 +1864,14 @@ irc-core history::HistoryRequests::with_resume
         |   Event::HistoryRequested { resumed: true }
         |   reply -> Event::HistoryLine per line, Event::ChannelHistory { incomplete }
         v
-app::AppState::history_resumed (pending = the cut's slot)
+app::AppState::history_resumed (record: a reply is expected)
 app::AppState::push_history_line / finish_history_for (dedupe; optional gap note first)
 ```
 
 When a session that had history available (`Event::HistoryAvailable`)
 ends, every channel joined at that moment gets a resume point: the newest
 line among its last 256 by source time (with its msgid), or else the last
-line with a msgid, and 256 sequences reserved right after the lines
-received so far. The reference is the source's identifier or time, never
+line with a msgid. The reference is the source's identifier or time, never
 the displayed `HH:MM` or an arrival sequence. A channel without such a
 line gets none and simply asks for its latest lines on rejoin, as before.
 A point that was not answered is kept across further disconnects (the
@@ -1910,24 +1900,24 @@ join asks for `LATEST *` as before and the application gives the point
 up. A failed resumed request (FAIL, timeout) falls back to one plain
 `LATEST *`.
 
-Merge: `Event::HistoryRequested { resumed: true }` makes the application
-use the point's reserved slot instead of reserving at the request, so the
-missed lines go right after the last line received before the cut and
-before our JOIN line and everything since. The existing insertion does
-the rest: duplicates of lines already shown (live lines that arrived
+Merge: `Event::HistoryRequested { resumed: true }` records the expected
+reply like any other. The recovered lines are appended when the reply ends,
+in processing order: the disconnect line, the rejoin, then the recovered
+lines (D086). The wire reference is the point's msgid or timestamp, as
+before. Duplicates of lines already shown (live lines that arrived
 after the rejoin, bouncer playback, older pages, the skew overlap) are
 skipped, nothing notifies, highlights or marks unread, and the answer is
-matched to the current connection's reservation, so a reply to an earlier
+matched to the current connection's request, so a reply to an earlier
 attempt is dropped (the UI also ignores old connection generations). A
 reply with as many lines as asked for and no `draft/chathistory-end`
 (`incomplete`) may have missed older lines of the gap; one activity line
-(`Some messages sent while disconnected are not shown.`) goes first in
-the slot. Nothing is chased with further requests, and older pages cannot
-fill a gap in the middle of the log.
+(`Some messages sent while disconnected are not shown.`) is appended
+first when the reply ends. Nothing is chased with further requests, and
+older pages cannot fill a gap in the middle of the log.
 
 Limitations: a second disconnect before a recovery was answered keeps
-the first cut, so lines of the second gap are placed there, before lines
-received live in between; a channel whose request was skipped because 64
+the first cut, so lines of both gaps are recovered at once, after the
+later rejoin; a channel whose request was skipped because 64
 were already queued keeps its point for a later reconnect; channels
 joined with `/join` are not rejoined by reconnects (only configured ones
 are), so they are not recovered until joined again; private
