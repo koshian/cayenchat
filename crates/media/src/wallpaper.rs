@@ -17,8 +17,8 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SIDE: u32 = 640;
 
 /// Reads `path` and returns the wallpaper reduced to at most 640 px a side
-/// and blurred with `blur` (sigma in pixels of that size; 0 is no blur).
-/// Blocking; run it on a background thread.
+/// and blurred with `blur` (tenths of a sigma in pixels of that size; 0 is
+/// no blur). Blocking; run it on a background thread.
 pub fn load(path: &Path, blur: u8, cancel: &CancelFlag) -> Result<Thumbnail, LoadError> {
     let file = File::open(path).map_err(|_| LoadError::Network)?;
     let mut bytes = Vec::new();
@@ -41,7 +41,7 @@ pub fn load(path: &Path, blur: u8, cancel: &CancelFlag) -> Result<Thumbnail, Loa
     Ok(thumbnail)
 }
 
-/// Blurs `thumbnail` and makes it opaque.
+/// Blurs `thumbnail` (`blur` in tenths of a sigma) and makes it opaque.
 fn apply(thumbnail: &mut Thumbnail, blur: u8) {
     let pixels = std::mem::take(&mut thumbnail.bgra);
     let mut pixels = if blur == 0 {
@@ -50,7 +50,7 @@ fn apply(thumbnail: &mut Thumbnail, blur: u8) {
         let image = image::RgbaImage::from_raw(thumbnail.width, thumbnail.height, pixels)
             .expect("thumbnail buffer matches its size");
         // The channels are blurred alike, whatever their order.
-        image::imageops::blur(&image, f32::from(blur)).into_raw()
+        image::imageops::blur(&image, f32::from(blur) / 10.0).into_raw()
     };
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn blur_smooths_the_picture_and_stays_opaque() {
-        let result = blurred(3);
+        let result = blurred(30);
         assert_ne!(result, checkerboard(32).bgra);
         assert!(result.chunks(4).all(|p| p[3] == 255));
         // Black and white squares average out toward gray.
@@ -109,7 +109,9 @@ mod tests {
 
     #[test]
     fn a_stronger_blur_changes_the_result_further() {
-        assert!(spread(&blurred(6)) < spread(&blurred(1)));
+        assert!(spread(&blurred(30)) < spread(&blurred(10)));
+        // A tenth steps are felt: a small blur still differs from none.
+        assert_ne!(blurred(5), blurred(0));
     }
 
     #[test]

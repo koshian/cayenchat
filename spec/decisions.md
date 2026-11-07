@@ -3715,10 +3715,13 @@ the start of the session.
   channel log look gains three settings (`wallpaper_blur`,
   `background_opacity`, `wallpaper_fit` of `ChannelLook`, no version
   change; D084's `wallpaper_opacity` is gone and an old value is ignored):
-  - **Blur**: sigma in px of the kept (≤ 640 px) picture, 0 to 20; 0 is no
-    blur. The only filter applied to the image. Default 3.
+  - **Blur**: sigma in px of the kept (≤ 640 px) picture, 0.0 to 3.0 in
+    steps of 0.1 (stored as tenths, `wallpaper_blur_tenths`, 0 to 30; 0 is no
+    blur). The only filter applied to the image. Default 0.0. The maintainer
+    found the first range (0 to 20, default 3) too strong (2026-11-07); a
+    whole-pixel `wallpaper_blur` of that build is not read.
   - **Background opacity**: percent of the log background color laid over
-    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 50. It
+    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 80. It
     is the alpha of the channel's background color. The path is general, not
     wallpaper's own (`channel_look::backdrop`: the picture, if any, and over
     it the pane background with its alpha; `ResolvedLook::background`).
@@ -3731,7 +3734,8 @@ the start of the session.
     the pane placed it) and its color, with the same alpha, over that. A row
     that is flashing by a jump keeps the plain color meanwhile. Making the
     window see through to the desktop belongs to #930.
-  - **Fit**: `stretch` (default, as before), `cover`, `contain` or `center`,
+  - **Fit**: `cover` (default: proportions kept, the log covered), `stretch`,
+    `contain` or `center`,
     laid out by `channel_look::fit_bounds` on the log's real box (GPUI's
     image element forces the picture's own proportions on its box, so the
     fits would not differ; a canvas paints the image instead; `center` is
@@ -3752,7 +3756,27 @@ the start of the session.
   load.
 - **Controls.** Blur and opacity are sliders (`slider.rs`: click or drag on
   the track, arrow, Home, End and Page keys when focused). The fit is four
-  buttons. Defaults are a starting point meant to be tried on real photos.
+  buttons. The defaults (blur 0.0, opacity 80 %, fit `cover`) are the
+  maintainer's choice after trying real photos (2026-11-07).
+- **Choosing the image and its range** (`channel_settings_dialog/
+  wallpaper_crop.rs`). The "Browse…" button and a file dropped on the
+  window both read the file in the background as an attachment
+  (`image_upload::read_in_background`, so a macOS file promise from Photos
+  is read before the platform deletes it, as for the avatar) and decode it
+  with the avatar editor's decoder (`media::avatar_edit::open`: preview
+  limits, EXIF orientation, at most 2048 px). A rectangle of any shape,
+  moved by its inside and resized by its corners (`Region`), selects the
+  range; "Use This Range" cuts it out, shrinks it to at most 1280 px and
+  keeps it as a PNG named by its content in `wallpapers` of the data
+  directory (`storage::wallpaper_directory`; in a test build, of its test
+  directory). The field then holds that path, so the original may be a
+  temporary file or be moved later. Replacing the wallpaper deletes the
+  previous file only when it is one of these (directly in that directory,
+  `wallpaper-*.png`); a typed path is never touched, and a file left when
+  the field is cleared stays. HEIC/AVIF cannot be decoded here and are
+  refused with the avatar editor's message (export as JPEG). A path typed
+  into the field is still used as it is, without the editor. Escape closes
+  the editor before the window.
 - **A window of its own.** The channel settings are no longer a modal dialog
   (D076): "Channel Settings…" and the auto-join list's "Settings…" open one
   window per channel (`ChatWindow::channel_settings_windows`; a second

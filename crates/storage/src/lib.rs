@@ -742,9 +742,14 @@ pub struct ChannelLook {
     /// Path of an image file drawn behind the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<String>,
-    /// Blur strength (sigma in px, 0 to [`MAX_WALLPAPER_BLUR`], 0 is none);
-    /// unset is [`DEFAULT_WALLPAPER_BLUR`]. Added without a version change.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Blur strength in tenths of a sigma in px (0 to
+    /// [`MAX_WALLPAPER_BLUR`] = 3.0, 0 is none); unset is
+    /// [`DEFAULT_WALLPAPER_BLUR`]. Stored as `wallpaper_blur_tenths`, so an
+    /// earlier build's whole-pixel `wallpaper_blur` is not misread.
+    #[serde(
+        rename = "wallpaper_blur_tenths",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub wallpaper_blur: Option<u8>,
     /// Opacity of the background color laid over the wallpaper, in percent
     /// (0 to 100; 100 hides the picture); unset is
@@ -765,9 +770,9 @@ pub struct ChannelLook {
 #[serde(rename_all = "snake_case")]
 pub enum WallpaperFit {
     /// Stretched to the log's shape, ignoring the picture's proportions.
-    #[default]
     Stretch,
     /// Proportions kept, the log covered, the overflow cut off.
+    #[default]
     Cover,
     /// Proportions kept, the whole picture shown, the rest background.
     Contain,
@@ -791,12 +796,12 @@ fn is_zero(value: &u16) -> bool {
 pub const MAX_CHANNEL_LOOKS: usize = 256;
 /// The longest wallpaper path kept, in bytes.
 pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
-/// The largest blur strength, in px of sigma.
-pub const MAX_WALLPAPER_BLUR: u8 = 20;
-/// Weaker than #928's fixed 8, which hid photos.
-pub const DEFAULT_WALLPAPER_BLUR: u8 = 3;
-/// The background color over a wallpaper is half opaque unless set.
-pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
+/// The largest blur strength, in tenths of a px of sigma (3.0).
+pub const MAX_WALLPAPER_BLUR: u8 = 30;
+/// No blur unless set (the maintainer found even #950's first 3 too strong).
+pub const DEFAULT_WALLPAPER_BLUR: u8 = 0;
+/// The background color over a wallpaper is 80 % opaque unless set.
+pub const DEFAULT_BACKGROUND_OPACITY: u8 = 80;
 
 impl ChannelLook {
     /// Whether any field differs from the global appearance.
@@ -2037,6 +2042,21 @@ pub fn settings_path() -> Result<PathBuf, String> {
         let directory =
             dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
         Ok(directory.join("CayenChat").join("settings.json"))
+    }
+}
+
+/// Where the wallpaper images the app cut out itself are kept (#950):
+/// `<data directory>/CayenChat/wallpapers`, or `wallpapers` in a test
+/// build's directory. Not created here.
+pub fn wallpaper_directory() -> Result<PathBuf, String> {
+    #[cfg(feature = "test-build")]
+    {
+        Ok(test_build_directory()?.join("wallpapers"))
+    }
+    #[cfg(not(feature = "test-build"))]
+    {
+        let directory = dirs::data_dir().ok_or("Could not find the user data directory.")?;
+        Ok(directory.join("CayenChat").join("wallpapers"))
     }
 }
 
@@ -3383,7 +3403,7 @@ mod tests {
             (None, None, None)
         );
         let odd: ChannelLook = serde_json::from_str(
-            r##"{"server":"s","channel":"#a","wallpaper_fit":"tile","wallpaper_blur":0}"##,
+            r##"{"server":"s","channel":"#a","wallpaper_fit":"tile","wallpaper_blur_tenths":0}"##,
         )
         .unwrap();
         assert_eq!((odd.wallpaper_fit, odd.wallpaper_blur), (None, Some(0)));

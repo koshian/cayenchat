@@ -169,14 +169,14 @@ fn a_look_edit_does_not_rewind_a_charset_changed_after_the_window_opened(cx: &mu
     run(&chat, cx, "/charset Big5").unwrap();
     assert_eq!(stored_decode("#a"), Some(TextEncoding::Big5));
     view.update_in(wcx, |view, window, cx| {
-        view.set_opacity(80, cx);
+        view.set_opacity(35, cx);
         view.save_now(window, cx);
     });
     assert_eq!(stored_decode("#a"), Some(TextEncoding::Big5));
     let on_file = crate::settings_file::load().unwrap().unwrap();
     assert_eq!(
         on_file.appearance.channel_looks[0].background_opacity,
-        Some(80)
+        Some(35)
     );
     drop(file);
 }
@@ -217,7 +217,8 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
     });
     view.update_in(wcx, |view, window, cx| {
         view.set_look_field(3, "#abcdef", cx);
-        view.set_blur(0, cx);
+        // Tenths of a sigma: 1.2.
+        view.set_blur(12, cx);
         view.set_opacity(35, cx);
         view.set_fit(WallpaperFit::Contain, cx);
         view.save_now(window, cx);
@@ -229,8 +230,7 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
         assert_eq!(look.font_size, 20);
         assert_eq!(look.background.as_deref(), Some("#102030"));
         assert_eq!(look.text.as_deref(), Some("#ABCDEF"));
-        // Zero is kept: no blur, not the default.
-        assert_eq!(look.wallpaper_blur, Some(0));
+        assert_eq!(look.wallpaper_blur, Some(12));
         assert_eq!(look.background_opacity, Some(35));
         assert_eq!(look.wallpaper_fit, Some(WallpaperFit::Contain));
         // The live state follows the save.
@@ -522,5 +522,110 @@ fn quitting_the_application_saves_an_edit_still_waiting(cx: &mut TestAppContext)
         on_file.appearance.channel_looks[0].background_opacity,
         Some(51)
     );
+    drop(file);
+}
+
+#[gpui::test]
+fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut TestAppContext) {
+    use cayenchat_media::avatar_edit::Region;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp")
+        .join(format!("wallpaper-drop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("photo.png");
+    image::RgbImage::from_pixel(400, 200, image::Rgb([200, 30, 30]))
+        .save(&source)
+        .unwrap();
+    let kept = dir.join("kept");
+
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    view.update(wcx, |view, cx| {
+        view.drop_wallpaper_for_test(source.clone(), kept.clone(), cx)
+    });
+    wcx.run_until_parked();
+    // The whole image is selected to begin with; nothing is set yet.
+    let region = view
+        .read_with(wcx, |view, _| view.crop_region_for_test())
+        .unwrap();
+    assert_eq!((region.width, region.height), (400.0, 200.0));
+    // The range editor is drawn in the window.
+    wcx.update(|window, _| window.refresh());
+    wcx.run_until_parked();
+    assert!(wcx.debug_bounds("channel-look-crop-picture").is_some());
+    assert_eq!(
+        view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx)),
+        ""
+    );
+
+    view.update(wcx, |view, cx| {
+        view.set_crop_region_for_test(Region {
+            x: 100.0,
+            y: 50.0,
+            width: 200.0,
+            height: 100.0,
+        });
+        view.use_crop_for_test(cx);
+    });
+    wcx.run_until_parked();
+    let path = view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx));
+    let path = std::path::PathBuf::from(path);
+    assert_eq!(path.parent(), Some(kept.as_path()));
+    let cut = image::open(&path).unwrap();
+    assert_eq!((cut.width(), cut.height()), (200, 100));
+    // The editor closed, and the wallpaper is saved with the look.
+    assert!(
+        view.read_with(wcx, |view, _| view.crop_region_for_test())
+            .is_none()
+    );
+    wcx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    wcx.run_until_parked();
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(
+        on_file.appearance.channel_looks[0].wallpaper.as_deref(),
+        path.to_str()
+    );
+
+    // A second cut replaces the first file of ours.
+    view.update(wcx, |view, cx| {
+        view.drop_wallpaper_for_test(source.clone(), kept.clone(), cx)
+    });
+    wcx.run_until_parked();
+    view.update(wcx, |view, cx| {
+        view.set_crop_region_for_test(Region {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        });
+        view.use_crop_for_test(cx);
+    });
+    wcx.run_until_parked();
+    let second = view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx));
+    assert_ne!(std::path::PathBuf::from(&second), path);
+    assert!(!path.exists() && std::path::Path::new(&second).is_file());
+
+    // A file that is not an image is reported and nothing changes.
+    let text = dir.join("note.png");
+    std::fs::write(&text, b"not an image").unwrap();
+    view.update(wcx, |view, cx| {
+        view.drop_wallpaper_for_test(text.clone(), kept.clone(), cx)
+    });
+    wcx.run_until_parked();
+    assert!(
+        view.read_with(wcx, |view, _| view.crop_region_for_test())
+            .is_none()
+    );
+    assert!(
+        view.read_with(wcx, |view, _| view.crop_status_for_test())
+            .is_some_and(|(_, failed)| failed)
+    );
+    assert_eq!(
+        view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx)),
+        second
+    );
+    let _ = std::fs::remove_dir_all(&dir);
     drop(file);
 }

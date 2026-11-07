@@ -9,7 +9,11 @@
 //! [`apply_auto_join`]) through [`ChatWindow::apply_channel_settings`]. Saving
 //! never joins or parts the channel.
 
+mod wallpaper_crop;
+
 use std::time::Duration;
+
+use wallpaper_crop::CropState;
 
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
@@ -365,6 +369,10 @@ struct Controls {
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
     browse: FocusHandle,
+    /// The range editor's buttons, reachable while it is open.
+    crop_use: FocusHandle,
+    crop_whole: FocusHandle,
+    crop_cancel: FocusHandle,
     blur: FocusHandle,
     opacity: FocusHandle,
     fit: [FocusHandle; FIT_COUNT],
@@ -380,6 +388,9 @@ impl Controls {
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
             browse: handle(),
+            crop_use: handle(),
+            crop_whole: handle(),
+            crop_cancel: handle(),
             blur: handle(),
             opacity: handle(),
             fit: std::array::from_fn(|_| handle()),
@@ -390,7 +401,12 @@ impl Controls {
     /// The controls in Tab order, each with the body child to scroll into
     /// view when it takes the focus. The body's children are the hint, then
     /// one per control group, the last being the log look.
-    fn tab_order(&self, look: &LookFields, cx: &App) -> Vec<(FocusHandle, Option<usize>)> {
+    fn tab_order(
+        &self,
+        look: &LookFields,
+        crop_open: bool,
+        cx: &App,
+    ) -> Vec<(FocusHandle, Option<usize>)> {
         let mut order = vec![
             (self.auto_join.clone(), Some(1)),
             (self.decode.clone(), Some(2)),
@@ -403,8 +419,14 @@ impl Controls {
         );
         let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
         order.extend(look.fields().map(field));
+        order.push((self.browse.clone(), Some(5)));
+        if crop_open {
+            order.extend(
+                [&self.crop_use, &self.crop_whole, &self.crop_cancel]
+                    .map(|handle| (handle.clone(), Some(5))),
+            );
+        }
         order.extend([
-            (self.browse.clone(), Some(5)),
             (self.blur.clone(), Some(5)),
             (self.opacity.clone(), Some(5)),
         ]);
@@ -433,6 +455,8 @@ pub(crate) struct ChannelSettingsView {
     pub(crate) error: Option<String>,
     controls: Controls,
     look: LookFields,
+    /// The wallpaper image being chosen and its range.
+    crop: CropState,
     /// What was last written (or read), so an edit that changes nothing
     /// writes nothing.
     saved: Option<(Choices, ChannelLook)>,
@@ -522,6 +546,7 @@ impl ChannelSettingsView {
             highlight: 0,
             error: None,
             controls: Controls::new(cx),
+            crop: CropState::new(),
             saved,
             base,
             autosave: None,
@@ -649,32 +674,6 @@ impl ChannelSettingsView {
         }
     }
 
-    /// Opens the file chooser for the wallpaper.
-    fn browse_wallpaper(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let chosen = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(self.i18n.text("channel_look_wallpaper").into()),
-            filter: None,
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(mut paths))) = chosen.await else {
-                return;
-            };
-            let Some(path) = paths.pop() else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                let path = path.to_string_lossy().into_owned();
-                this.look
-                    .wallpaper
-                    .update(cx, |field, cx| field.set_text(&path, cx));
-            });
-        })
-        .detach();
-    }
-
     /// Reset to default: the encodings, the reference mode and the log look
     /// follow the server and the global appearance again, and the sliders and
     /// the fit return to their defaults. The auto-join choice is not one of
@@ -701,9 +700,10 @@ impl ChannelSettingsView {
         self.edited(cx);
     }
 
-    /// Escape closes an open list first, then the window.
+    /// Escape closes an open list first, then the wallpaper range editor,
+    /// then the window.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_list.take().is_some() {
+        if self.open_list.take().is_some() || self.crop.close() {
             cx.notify();
         } else {
             // A pause not yet over is saved before the window goes.
@@ -801,7 +801,7 @@ impl ChannelSettingsView {
 
     /// Tab / Shift+Tab: only the dialog's own controls are reachable.
     fn step_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let order = self.controls.tab_order(&self.look, cx);
+        let order = self.controls.tab_order(&self.look, self.crop.is_open(), cx);
         let len = order.len();
         let step = if forward { 1 } else { len - 1 };
         let at = order
@@ -1006,7 +1006,10 @@ impl Render for ChannelSettingsView {
         let blur = Self::field(
             self.i18n.format(
                 "channel_look_blur",
-                &[("value", &self.look.blur.to_string())],
+                &[(
+                    "value",
+                    &format!("{}.{}", self.look.blur / 10, self.look.blur % 10),
+                )],
             ),
             &palette,
         )
@@ -1077,6 +1080,13 @@ impl Render for ChannelSettingsView {
                             .child(row("channel_look_wallpaper", &self.look.wallpaper)),
                     )
                     .child(browse),
+            )
+            .children(self.render_crop(&palette, ring, cx))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(palette.text_secondary)
+                    .child(self.i18n.text("channel_look_drop_hint")),
             )
             .child(blur)
             .child(opacity)
@@ -1190,6 +1200,10 @@ impl Render for ChannelSettingsView {
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     this.key_down(event, window, cx)
+                }))
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(palette.selected))
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    this.on_wallpaper_drop(paths, cx)
                 }))
                 .size_full()
                 .flex()

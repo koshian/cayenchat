@@ -387,7 +387,9 @@ mod tests {
                 f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
             );
             assert_eq!(wallpaper.blur, DEFAULT_WALLPAPER_BLUR);
-            assert_eq!(wallpaper.fit, WallpaperFit::Stretch);
+            assert_eq!(wallpaper.fit, WallpaperFit::default());
+            assert_eq!(wallpaper.fit, WallpaperFit::Cover);
+            assert_eq!(wallpaper.blur, 0);
         }
     }
 

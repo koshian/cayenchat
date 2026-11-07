@@ -182,7 +182,7 @@ impl AvatarEditor {
     }
 }
 
-fn render_image(thumbnail: Thumbnail) -> Arc<RenderImage> {
+pub(crate) fn render_image(thumbnail: Thumbnail) -> Arc<RenderImage> {
     let buffer = image::RgbaImage::from_raw(thumbnail.width, thumbnail.height, thumbnail.bgra)
         .expect("thumbnail buffer matches its size");
     Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
@@ -200,7 +200,12 @@ pub(crate) fn open_error_key(error: &LoadError) -> &'static str {
 /// `image`, covering `full` working pixels, placed so that working pixels
 /// from `origin` onward fill a view at `scale` logical pixels per working
 /// pixel.
-fn placed(image: Arc<RenderImage>, full: (f64, f64), origin: (f64, f64), scale: f64) -> Img {
+pub(crate) fn placed(
+    image: Arc<RenderImage>,
+    full: (f64, f64),
+    origin: (f64, f64),
+    scale: f64,
+) -> Img {
     img(image)
         .absolute()
         .left(px((-origin.0 * scale) as f32))
@@ -210,7 +215,7 @@ fn placed(image: Arc<RenderImage>, full: (f64, f64), origin: (f64, f64), scale: 
 }
 
 /// A translucent rectangle darkening the image outside the selection.
-fn shade(left: f32, top: f32, width: f32, height: f32) -> Div {
+pub(crate) fn shade(left: f32, top: f32, width: f32, height: f32) -> Div {
     div()
         .absolute()
         .left(px(left))
