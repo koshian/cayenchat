@@ -39,6 +39,9 @@ const OUTPUT_SIDE: u32 = 1280;
 /// Corner handles, drawn and hit, in logical pixels.
 const HANDLE_SIDE: f32 = 10.0;
 const HANDLE_REACH: f64 = 9.0;
+/// A rectangle under this share of the image on both sides is shown
+/// enlarged once released.
+const CLOSE_UP_BELOW: f64 = 0.5;
 /// Every file the application cut out starts with this. Nothing deletes
 /// them: equal cuts share one file, and a channel's saved settings may still
 /// name it.
@@ -66,6 +69,9 @@ pub(super) struct WallpaperCrop {
     /// Displayed size of the whole image, in logical pixels.
     view: Size<f32>,
     region: Region,
+    /// The enlarged part shown instead of the whole image, and its sharp
+    /// preview once made.
+    close_up: Option<(Region, Option<Arc<RenderImage>>)>,
     drag: Option<Drag>,
     /// Where the view was last painted, to map the mouse into the image.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -79,24 +85,73 @@ impl WallpaperCrop {
             view: size(width as f32, height as f32),
             region: source.full_region(),
             source: Arc::new(source),
+            close_up: None,
             drag: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
         }
     }
 
+    /// The part of the image shown: working-pixel origin, logical pixels
+    /// per working pixel, and the view's logical size.
+    fn shown(&self) -> ((f64, f64), f64, Size<f32>) {
+        match &self.close_up {
+            Some((area, _)) => {
+                let scale =
+                    (f64::from(VIEW_WIDTH) / area.width).min(f64::from(VIEW_HEIGHT) / area.height);
+                (
+                    (area.x, area.y),
+                    scale,
+                    size((area.width * scale) as f32, (area.height * scale) as f32),
+                )
+            }
+            None => (
+                (0.0, 0.0),
+                f64::from(self.view.width) / f64::from(self.source.width()),
+                self.view,
+            ),
+        }
+    }
+
     /// Logical pixels per working pixel.
     fn scale(&self) -> f64 {
-        f64::from(self.view.width) / f64::from(self.source.width())
+        self.shown().1
     }
 
     /// A mouse position as working-image pixels.
     fn to_image(&self, position: Point<Pixels>) -> (f64, f64) {
+        let ((x, y), scale, _) = self.shown();
         let origin = self.bounds.get().origin;
-        let scale = self.scale();
         (
-            f64::from(f32::from(position.x - origin.x)) / scale,
-            f64::from(f32::from(position.y - origin.y)) / scale,
+            x + f64::from(f32::from(position.x - origin.x)) / scale,
+            y + f64::from(f32::from(position.y - origin.y)) / scale,
         )
+    }
+
+    /// The part to show for a rectangle: the rectangle centered in twice
+    /// its size when it is under half the image on both sides, else the
+    /// whole image (as the avatar editor does).
+    fn close_up_for(&self, region: Region) -> Option<Region> {
+        let small = region.width < f64::from(self.source.width()) * CLOSE_UP_BELOW
+            && region.height < f64::from(self.source.height()) * CLOSE_UP_BELOW;
+        small.then(|| {
+            self.source.clamp_region(Region {
+                x: region.x - region.width / 2.0,
+                y: region.y - region.height / 2.0,
+                width: region.width * 2.0,
+                height: region.height * 2.0,
+            })
+        })
+    }
+
+    /// Ends a drag; returns the new close-up to prepare, if it changed.
+    fn release(&mut self) -> Option<Region> {
+        self.drag.take()?;
+        let wanted = self.close_up_for(self.region);
+        if wanted == self.close_up.as_ref().map(|(area, _)| *area) {
+            return None;
+        }
+        self.close_up = wanted.map(|area| (area, None));
+        wanted
     }
 
     /// Starts a drag at `point` (working pixels): a corner resizes, the
@@ -382,12 +437,35 @@ impl ChannelSettingsView {
         }
     }
 
+    /// Ends a drag, showing a close-up of a small rectangle; its sharp
+    /// preview is made off the UI thread.
     fn crop_drag_end(&mut self, cx: &mut Context<Self>) {
-        if let Some(editor) = &mut self.crop.editor
-            && editor.drag.take().is_some()
-        {
-            cx.notify();
+        let Some(editor) = &mut self.crop.editor else {
+            return;
+        };
+        if editor.drag.is_none() {
+            return;
         }
+        if let Some(area) = editor.release() {
+            let source = editor.source.clone();
+            let making = cx.background_spawn(async move {
+                render_image(source.region_preview(area, VIEW_WIDTH.max(VIEW_HEIGHT) * 2))
+            });
+            cx.spawn(async move |this, cx| {
+                let image = making.await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(editor) = &mut this.crop.editor
+                        && let Some((current, sharp)) = &mut editor.close_up
+                        && *current == area
+                    {
+                        *sharp = Some(image);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     /// The drop target highlight and handler for the whole window.
@@ -417,19 +495,26 @@ impl ChannelSettingsView {
         let Some(editor) = &self.crop.editor else {
             return status.map(|status| div().flex().flex_col().gap_1().child(status));
         };
-        let scale = editor.scale();
+        let (origin, scale, view) = editor.shown();
         let full = (
             f64::from(editor.source.width()),
             f64::from(editor.source.height()),
         );
+        // The close-up is shown at once from the whole image and sharpened
+        // when its own preview is ready.
+        let image = match &editor.close_up {
+            Some((area, Some(sharp))) => {
+                placed(sharp.clone(), (area.width, area.height), (0.0, 0.0), scale)
+            }
+            _ => placed(editor.image.clone(), full, origin, scale),
+        };
         let region = editor.region;
         let (left, top, width, height) = (
-            (region.x * scale) as f32,
-            (region.y * scale) as f32,
+            ((region.x - origin.0) * scale) as f32,
+            ((region.y - origin.1) * scale) as f32,
             (region.width * scale) as f32,
             (region.height * scale) as f32,
         );
-        let view = editor.view;
         let handle = |x: f32, y: f32, cursor: CursorStyle| {
             div()
                 .absolute()
@@ -451,7 +536,7 @@ impl ChannelSettingsView {
             .flex_shrink_0()
             .w(px(view.width))
             .h(px(view.height))
-            .child(placed(editor.image.clone(), full, (0.0, 0.0), scale))
+            .child(div().absolute().size_full().overflow_hidden().child(image))
             .child(shade(0.0, 0.0, view.width, top))
             .child(shade(
                 0.0,
@@ -550,6 +635,7 @@ impl ChannelSettingsView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(editor) = &mut this.crop.editor {
                             editor.region = editor.source.full_region();
+                            editor.close_up = None;
                             editor.drag = None;
                             cx.notify();
                         }
@@ -725,6 +811,46 @@ mod tests {
         // Outside the rectangle and its handles: nothing.
         editor.press((1500.0, 100.0));
         assert_eq!(editor.drag, None);
+    }
+
+    #[test]
+    fn a_small_rectangle_is_shown_enlarged_with_room_around_it() {
+        let mut editor = editor();
+        // Dragging the top-left corner to leave a quarter of each side.
+        editor.press((10.0, 10.0));
+        editor.drag_to((1200.0, 600.0));
+        let wanted = editor.release().expect("small: a close-up");
+        // Twice its size around its center, kept inside the image.
+        assert_eq!(
+            wanted,
+            Region {
+                x: 800.0,
+                y: 400.0,
+                width: 800.0,
+                height: 400.0
+            }
+        );
+        let (origin, scale, view) = editor.shown();
+        assert_eq!((origin, view), ((800.0, 400.0), size(360.0, 180.0)));
+        assert!((scale - 0.45).abs() < 1e-9);
+        // Mouse positions now map through the enlarged view.
+        assert_eq!(editor.to_image(point(px(100.), px(50.))), (800.0, 400.0));
+        // The same release again changes nothing.
+        editor.drag = Some(Drag::Move {
+            start: (0.0, 0.0),
+            from: editor.region,
+        });
+        assert_eq!(editor.release(), None);
+        // Growing it past half of the image goes back to the whole image.
+        editor.press((1000.0, 500.0));
+        editor.drag = Some(Drag::Resize {
+            anchor: (800.0, 400.0),
+            far: (1600.0, 800.0),
+            follows: (true, true),
+        });
+        editor.drag_to((1600.0, 800.0));
+        assert_eq!(editor.release(), None);
+        assert!(editor.close_up.is_none());
     }
 
     #[test]

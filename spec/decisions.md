@@ -3766,7 +3766,11 @@ the start of the session.
   limits, EXIF orientation, at most 2048 px). A rectangle of any shape,
   moved by its inside and resized by its corners or sides (`Region`; a
   grab reaches 9 px beyond them, also in the margin around the picture, so
-  an edge of the image can be grabbed), selects the range; "Use This Range" cuts it out, shrinks it to at most 1280 px and
+  an edge of the image can be grabbed), selects the range. As in the avatar
+  editor, a rectangle released under half of the image on both sides is shown
+  enlarged (twice its size around its center, sharpened off the UI thread by
+  `AvatarSource::region_preview`) so it can be adjusted precisely; "Whole
+  Image" returns to the full view. "Use This Range" cuts it out, shrinks it to at most 1280 px and
   keeps it as a PNG named by its content in `wallpapers` of the data
   directory (`storage::wallpaper_directory`; in a test build, of its test
   directory). The field then holds that path, so the original may be a

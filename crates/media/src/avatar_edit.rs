@@ -164,6 +164,28 @@ impl AvatarSource {
         }
     }
 
+    /// The part `region` of the image fitted into `max_side` pixels, for
+    /// showing a rectangle enlarged.
+    pub fn region_preview(&self, region: Region, max_side: u32) -> Thumbnail {
+        let region = self.clamp_region(region);
+        let width = (region.width.round().max(1.0) as u32).min(self.width());
+        let height = (region.height.round().max(1.0) as u32).min(self.height());
+        let x = (region.x.round() as u32).min(self.width() - width);
+        let y = (region.y.round() as u32).min(self.height() - height);
+        let (out_width, out_height) = crate::decode::fit(width, height, max_side, max_side);
+        let small = self
+            .image
+            .crop_imm(x, y, width, height)
+            .thumbnail_exact(out_width, out_height);
+        Thumbnail {
+            width: out_width,
+            height: out_height,
+            source_width: width,
+            source_height: height,
+            bgra: crate::decode::into_bgra(small),
+        }
+    }
+
     /// The square a drag from `anchor` to `to` (working pixels) outlines:
     /// its side is the larger of the two distances, it grows from the
     /// anchor in the drag's direction and stops at the image's edges.
