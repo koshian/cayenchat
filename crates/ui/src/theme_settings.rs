@@ -576,7 +576,7 @@ impl SettingsWindow {
                         .ml(settings_theme::LABEL_INDENT)
                         .child(div().flex_1().min_w_0().child(format!(
                             "{} ({})",
-                            entry.name,
+                            cayenchat_model::display::neutralize_bidi(&entry.name),
                             self.theme_kind_label(entry.mode == ThemeKind::Dark)
                         )))
                         .child(

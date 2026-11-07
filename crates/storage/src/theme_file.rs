@@ -287,7 +287,7 @@ pub struct ThemeFile {
     pub mode: ThemeKind,
     /// Color settings by key. A key left out takes the built-in default; a
     /// key this version does not know is ignored.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_colors")]
     pub colors: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_tooltip_opacity: Option<u8>,
@@ -379,7 +379,7 @@ impl ThemeFile {
             version: THEME_VERSION,
             name,
             mode: ThemeKind::from_dark(dark),
-            colors: color_map(&appearance.theme_colors(dark)),
+            colors: valid_colors(color_map(&appearance.theme_colors(dark))),
             url_tooltip_opacity: Some(appearance.url_tooltip_opacity),
             fonts: Some(appearance.theme_fonts()),
             wallpapers,
@@ -563,6 +563,108 @@ fn wallpaper_bytes(
     }
     let extension = check_image(&bytes)?;
     Ok((bytes, extension))
+}
+
+/// Drops the colors that import would refuse: a field left empty or mistyped
+/// in the settings form. A key left out takes the built-in color, which is
+/// what drawing falls back to, so the file reads back.
+fn valid_colors(mut colors: Map<String, Value>) -> Map<String, Value> {
+    colors.retain(|key, value| {
+        let text = value.as_str().unwrap_or("").trim();
+        color_value(text).is_some() || (key == "link_background" && text.is_empty())
+    });
+    colors
+}
+
+/// One color field as read: text, or anything else (refused later for a key
+/// this version knows). Nested values are skipped, never built.
+enum ColorField {
+    Text(String),
+    Other,
+}
+
+impl<'de> Deserialize<'de> for ColorField {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ColorField;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a color")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<ColorField, E> {
+                Ok(ColorField::Text(v.to_owned()))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<ColorField, E> {
+                Ok(ColorField::Other)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<ColorField, E> {
+                Ok(ColorField::Other)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<ColorField, E> {
+                Ok(ColorField::Other)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<ColorField, E> {
+                Ok(ColorField::Other)
+            }
+            fn visit_unit<E>(self) -> Result<ColorField, E> {
+                Ok(ColorField::Other)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<ColorField, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ColorField::Other)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<ColorField, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(ColorField::Other)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// Reads the `colors` object keeping only the keys this version knows, each
+/// as text (or null for a value that is not text). Unknown keys and their
+/// values are skipped without being stored, so a small file cannot grow into
+/// a large structure.
+fn deserialize_colors<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Map<String, Value>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Map<String, Value>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object of colors")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let known = color_map(&ThemeColors::defaults(false));
+            let mut out = Map::new();
+            while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                if known.contains_key(key.as_ref()) {
+                    let value = match map.next_value::<ColorField>()? {
+                        ColorField::Text(text) => Value::String(text),
+                        ColorField::Other => Value::Null,
+                    };
+                    out.insert(key.into_owned(), value);
+                } else {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_map(Visitor)
 }
 
 fn color_map(colors: &ThemeColors) -> Map<String, Value> {
@@ -859,7 +961,14 @@ pub fn library_list(directory: &Path) -> Vec<LibraryEntry> {
         return Vec::new();
     };
     let mut entries: Vec<LibraryEntry> = serde_json::from_slice(&bytes).unwrap_or_default();
-    entries.retain(|e| valid_id(&e.id) && directory.join(file_name(&e.id)).is_file());
+    // The index is read from disk: names are cleaned as on import, and an
+    // entry left without one is dropped.
+    for entry in &mut entries {
+        entry.name = clean_theme_name(&entry.name);
+    }
+    entries.retain(|e| {
+        !e.name.is_empty() && valid_id(&e.id) && directory.join(file_name(&e.id)).is_file()
+    });
     entries.truncate(MAX_LIBRARY_THEMES);
     entries
 }

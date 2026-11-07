@@ -396,3 +396,63 @@ fn hostile_settings_values_are_cleaned_on_load() {
     assert_eq!(appearance.wallpapers.member_list.opacity, Some(100));
     assert_eq!(appearance.origin, ThemeOrigin::default());
 }
+
+#[test]
+fn empty_or_mistyped_color_fields_are_left_out_and_the_file_reads_back() {
+    let mut appearance = Appearance::default();
+    appearance.dark.channel_log_background = String::new();
+    appearance.dark.member_list_background = "#12".into();
+    appearance.dark.link_background = String::new();
+    let theme = ThemeFile::capture(&appearance, true, "Blank", read).unwrap();
+    assert!(!theme.colors.contains_key("channel_log_background"));
+    assert!(!theme.colors.contains_key("member_list_background"));
+    let back = ThemeFile::parse(&theme.to_gzip().unwrap(), &check).unwrap();
+    let defaults = ThemeColors::defaults(true);
+    let mut applied = Appearance::default();
+    back.apply(&mut applied, tempfile::tempdir().unwrap().path(), &check)
+        .unwrap();
+    assert_eq!(
+        applied.dark.channel_log_background,
+        defaults.channel_log_background
+    );
+    assert_eq!(applied.dark.link_background, "");
+}
+
+#[test]
+fn unknown_color_keys_are_skipped_not_stored() {
+    let big = format!("[{}]", "0,".repeat(200_000) + "0");
+    let json = format!(
+        r##"{{"version":1,"name":"X","mode":"dark","colors":{{"future":{big},"other":{{"a":[1]}},"link_color":"#112233"}}}}"##
+    );
+    let theme = ThemeFile::parse(json.as_bytes(), &check).unwrap();
+    assert!(!theme.colors.contains_key("future"));
+    assert!(!theme.colors.contains_key("other"));
+    assert_eq!(theme.colors["link_color"], "#112233");
+    // A known key with a non-text value is still refused.
+    let bad = r#"{"version":1,"name":"X","mode":"dark","colors":{"link_color":[1,2]}}"#;
+    assert!(ThemeFile::parse(bad.as_bytes(), &check).is_err());
+}
+
+#[test]
+fn library_names_are_cleaned_and_empty_ones_dropped() {
+    let library = tempfile::tempdir().unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Shared", read).unwrap();
+    let a = library_add(library.path(), &theme).unwrap();
+    let b = library_add(library.path(), &theme).unwrap();
+    let index = serde_json::to_vec(&[
+        LibraryEntry {
+            name: format!("\u{202E}evil{}", "x".repeat(1000)),
+            ..a
+        },
+        LibraryEntry {
+            name: "\u{202E}\n".into(),
+            ..b
+        },
+    ])
+    .unwrap();
+    fs::write(library.path().join(LIBRARY_INDEX), index).unwrap();
+    let list = library_list(library.path());
+    assert_eq!(list.len(), 1);
+    assert!(!list[0].name.contains('\u{202E}'));
+    assert!(list[0].name.chars().count() <= MAX_THEME_NAME_CHARS);
+}
