@@ -4629,6 +4629,7 @@ impl SettingsWindow {
     /// (#953), with a button back to the default.
     fn line_height_slider(&self, log: usize, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
+        let primary = settings_theme::primary_color(cx);
         let appearance = &self.settings.values.appearance;
         let percent = if log == 0 {
             appearance.channel_log_line_height
@@ -4674,8 +4675,8 @@ impl SettingsWindow {
                             .size(px(LINE_HEIGHT_THUMB))
                             .rounded_full()
                             .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.selected),
+                            .border_color(primary)
+                            .bg(primary),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
