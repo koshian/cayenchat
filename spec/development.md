@@ -1272,7 +1272,7 @@ application; everything is observed from outside:
   identical (rows wrapping to two lines make the heights vary);
 - **text**: the log's own drag selection and Ctrl+C, read back with
   `xclip`, show which lines are on screen and in which order (the first
-  line of the channel after paging; A, the missed B and C, our rejoin,
+  line of the channel after paging; A, our rejoin, the missed B and C,
   then D after the reconnect, each once).
 
 Screenshots of every step and the app and Ergo logs go to `--out` (default
@@ -1280,7 +1280,7 @@ Screenshots of every step and the app and Ergo logs go to `--out` (default
 run ends, pass or fail. Two
 deliberate breakages were checked to fail it: resetting the log list when
 rows are inserted above (the pixel check fails) and placing recovered lines
-where the request was made instead of at the cut (the order check fails).
+before our rejoin instead of after it (the order check fails).
 
 ```sh
 cargo build --locked -p cayenchat-ui

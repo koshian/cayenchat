@@ -29,7 +29,7 @@ pub fn install(kind: CredentialBackendKind, cx: &mut App) {
 
 type Job = Box<dyn FnOnce() + Send>;
 
-/// The one thread that reads and writes the credential store (D086). The
+/// The one thread that reads and writes the credential store (D087). The
 /// operating system's store may stop for a permission dialog or a D-Bus
 /// answer, and two threads taking turns at its lock would stop the UI
 /// thread too (#638), so the UI thread never calls the store: it queues a

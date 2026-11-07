@@ -1204,7 +1204,7 @@ pub(crate) struct SettingsWindow {
     /// Credential writes, deletions and moves of the store thread that this
     /// window waits for (passwords, SASL keys, a switch of the store). While
     /// any is pending the window neither closes nor shows another server:
-    /// what finishes them is bound to this window and the server shown (D086).
+    /// what finishes them is bound to this window and the server shown (D087).
     store_waits: usize,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
