@@ -680,12 +680,11 @@ pub struct Appearance {
     pub channel_tree_font_size: u16,
     pub input_font_size: u16,
     pub time_font_size: u16,
-    /// Line height of the two logs as a percentage of the font size (#953);
-    /// 0 keeps GPUI's default line height. Added after version 15 without a
-    /// version change; files without them read as default. Clamped to
+    /// Line height of the two logs together as a percentage of the font size
+    /// (#953); 0 keeps GPUI's default line height. Added after version 15
+    /// without a version change; files without it read as default. Clamped to
     /// [`MIN_LINE_HEIGHT_PERCENT`]..=[`MAX_LINE_HEIGHT_PERCENT`] on load.
-    pub channel_log_line_height: u16,
-    pub combined_log_line_height: u16,
+    pub log_line_height: u16,
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
@@ -893,8 +892,7 @@ impl Default for Appearance {
             channel_tree_font_size: 0,
             input_font_size: 0,
             time_font_size: 0,
-            channel_log_line_height: 0,
-            combined_log_line_height: 0,
+            log_line_height: 0,
             dark: DarkColors::default(),
             saved_colors: Vec::new(),
             channel_looks: Vec::new(),
@@ -1010,12 +1008,7 @@ impl Appearance {
         ] {
             *size = clamp_font_size(*size);
         }
-        for percent in [
-            &mut self.channel_log_line_height,
-            &mut self.combined_log_line_height,
-        ] {
-            *percent = clamp_line_height_percent(*percent);
-        }
+        self.log_line_height = clamp_line_height_percent(self.log_line_height);
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -3455,27 +3448,23 @@ mod tests {
     }
 
     #[test]
-    fn line_heights_are_default_when_absent_and_clamped_on_load() {
+    fn line_height_is_default_when_absent_and_clamped_on_load() {
         let mut saved = serde_json::to_value(Settings::default()).unwrap();
         let appearance = saved["appearance"].as_object_mut().unwrap();
-        for key in ["channel_log_line_height", "combined_log_line_height"] {
-            assert!(appearance.remove(key).is_some());
-        }
+        assert!(appearance.remove("log_line_height").is_some());
         let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
         assert_eq!(settings.normalize().appearance, Appearance::default());
 
-        let appearance = saved["appearance"].as_object_mut().unwrap();
-        appearance.insert("channel_log_line_height".into(), 50.into());
-        appearance.insert("combined_log_line_height".into(), 500.into());
-        let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
-        let appearance = settings.normalize().appearance;
-        assert_eq!(appearance.channel_log_line_height, MIN_LINE_HEIGHT_PERCENT);
-        assert_eq!(appearance.combined_log_line_height, MAX_LINE_HEIGHT_PERCENT);
-
-        let appearance = saved["appearance"].as_object_mut().unwrap();
-        appearance.insert("channel_log_line_height".into(), 150.into());
-        let settings: Settings = serde_json::from_value(saved).unwrap();
-        assert_eq!(settings.normalize().appearance.channel_log_line_height, 150);
+        for (written, read) in [
+            (50, MIN_LINE_HEIGHT_PERCENT),
+            (500, MAX_LINE_HEIGHT_PERCENT),
+            (150, 150),
+        ] {
+            let appearance = saved["appearance"].as_object_mut().unwrap();
+            appearance.insert("log_line_height".into(), written.into());
+            let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
+            assert_eq!(settings.normalize().appearance.log_line_height, read);
+        }
     }
 
     #[test]

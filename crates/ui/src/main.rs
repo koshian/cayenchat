@@ -7831,10 +7831,9 @@ impl ChatWindow {
                 ),
                 |d, size| d.text_size(size),
             )
-            .when_some(
-                pane_line_height(appearance.channel_log_line_height),
-                |d, ratio| d.line_height(relative(ratio)),
-            )
+            .when_some(pane_line_height(appearance.log_line_height), |d, ratio| {
+                d.line_height(relative(ratio))
+            })
             .when_some(look.text, |d, color| d.text_color(color))
             .children(wallpaper)
             .child(self.input_to_draft(&self.log_focus, cx))
@@ -7856,10 +7855,9 @@ impl ChatWindow {
                 pane_text_size(appearance.combined_log_font_size, None),
                 |d, size| d.text_size(size),
             )
-            .when_some(
-                pane_line_height(appearance.combined_log_line_height),
-                |d, ratio| d.line_height(relative(ratio)),
-            )
+            .when_some(pane_line_height(appearance.log_line_height), |d, ratio| {
+                d.line_height(relative(ratio))
+            })
             .child(panes.combined_log.clone().cached(pane_style()));
 
         let members = div()
