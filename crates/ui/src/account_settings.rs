@@ -20,13 +20,63 @@ pub fn all_secret_keys(settings: &Settings) -> Vec<SecretKey> {
     keys
 }
 
+/// Why moving the secrets to another store failed.
+enum MoveError {
+    Store(cayenchat_storage::CredentialError),
+    Settings(String),
+}
+
+impl From<cayenchat_storage::CredentialError> for MoveError {
+    fn from(error: cayenchat_storage::CredentialError) -> Self {
+        Self::Store(error)
+    }
+}
+
+/// Runs on the store thread: copies the secrets from `from` to `to`, records
+/// `kind` in the settings file, then deletes the originals (or, if the
+/// choice cannot be recorded, the copies). The file is read after the copy,
+/// right before it is written (see below). Returns
+/// whether the old store was unreadable, and how many secrets moved.
+fn move_secrets(
+    from: &cayenchat_storage::CredentialStore,
+    to: &cayenchat_storage::CredentialStore,
+    kind: CredentialBackendKind,
+    form: &Settings,
+    mut keys: Vec<SecretKey>,
+) -> Result<(bool, usize), MoveError> {
+    // Moving to the store already in use changes nothing; copying onto
+    // itself and deleting the originals would erase the secrets.
+    if from.kind() == kind {
+        return Ok((false, 0));
+    }
+    let saved = settings_file::load().map_err(MoveError::Settings)?;
+    keys.extend(all_secret_keys(saved.as_ref().unwrap_or(form)));
+    keys.sort();
+    keys.dedup();
+    let copied = credentials::copy_secrets(from, to, &keys)?;
+    // The copy can take long (a permission dialog per secret), so the file
+    // is read again only now and written at once: a setting another window
+    // saved during the copy is kept. Only the gap between this read and the
+    // write remains, as for every other read-modify-write of the file.
+    let mut saved = settings_file::load()
+        .map_err(MoveError::Settings)?
+        .unwrap_or_else(|| form.clone());
+    saved.credential_backend = kind;
+    if let Err(error) = settings_file::save(&saved) {
+        copied.remove_copies(to);
+        return Err(MoveError::Settings(error));
+    }
+    let moved = (copied.source_unavailable, copied.count());
+    copied.remove_originals(from);
+    Ok(moved)
+}
+
 impl SettingsWindow {
     /// Checks the system store off the UI thread; D-Bus can take a while to
     /// answer when no Secret Service is running.
     pub(crate) fn probe_system_store(&mut self, cx: &mut Context<Self>) {
         self.system_store = None;
-        let probe = secrets::system_probe(cx);
-        let probe = cx.background_spawn(async move { probe() });
+        let probe = secrets::probe_system(cx);
         cx.spawn(async move |this, cx| {
             let result = probe.await.map_err(|error| error.to_string());
             let _ = this.update(cx, |this, cx| {
@@ -47,14 +97,19 @@ impl SettingsWindow {
             return;
         }
         if kind == CredentialBackendKind::System {
-            match secrets::system_probe(cx)() {
-                Ok(()) => self.switch_credential_backend(kind, cx),
-                Err(error) => {
-                    self.system_store = Some(Err(error.to_string()));
-                    self.feedback = Some(secrets::error_text(&self.i18n, &error));
-                    cx.notify();
-                }
-            }
+            let probe = secrets::probe_system(cx);
+            cx.spawn(async move |this, cx| {
+                let result = probe.await;
+                let _ = this.update(cx, |this, cx| match result {
+                    Ok(()) => this.switch_credential_backend(kind, cx),
+                    Err(error) => {
+                        this.system_store = Some(Err(error.to_string()));
+                        this.feedback = Some(secrets::error_text(&this.i18n, &error));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
             return;
         }
         // Plaintext storage is never chosen without an explicit confirmation.
@@ -85,48 +140,72 @@ impl SettingsWindow {
         kind: CredentialBackendKind,
         cx: &mut Context<Self>,
     ) {
-        let from = secrets::store(cx);
-        let to = secrets::open(kind, cx);
-        let mut saved = match settings_file::load() {
-            Ok(saved) => saved.unwrap_or_else(|| self.settings.values.clone()),
-            Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
-                return;
-            }
-        };
-        let mut keys = all_secret_keys(&saved);
-        keys.extend(all_secret_keys(&self.settings.values));
-        keys.sort();
-        keys.dedup();
-        // Copy first, record the choice, and only then delete the originals, so
-        // a failure before the choice is saved leaves every secret in the
-        // backend still in use.
-        let copied = match credentials::copy_secrets(&from, &to, &keys) {
-            Ok(copied) => copied,
-            Err(error) => {
-                self.feedback = Some(secrets::error_text(&self.i18n, &error));
-                cx.notify();
-                return;
-            }
-        };
-        saved.credential_backend = kind;
-        if let Err(error) = settings_file::save(&saved) {
-            copied.remove_copies(&to);
-            self.feedback = Some(error);
-            cx.notify();
+        // A second switch waits for the first.
+        if self.store_busy() {
             return;
         }
-        copied.remove_originals(&from);
+        let to = secrets::open(kind, cx);
+        let form = self.settings.values.clone();
+        let keys_of = all_secret_keys(&form);
+        // The whole move is one job of the store thread, so a password saved
+        // or removed while it runs is queued before it (and copied) or after
+        // it (and goes to the new store), never in between. Copy first,
+        // record the choice, and only then delete the originals, so a
+        // failure before the choice is saved leaves every secret in the
+        // backend still in use.
+        self.store_wait(cx);
+        let moving = {
+            let to = to.clone();
+            secrets::run_switching(cx, move |from| {
+                let same = from.kind() == kind;
+                let moved = move_secrets(from, &to, kind, &form, keys_of);
+                let switched = (moved.is_ok() && !same).then_some(to);
+                (moved, switched)
+            })
+        };
+        cx.spawn(async move |this, cx| {
+            let moved = moving
+                .await
+                .unwrap_or_else(|| Err(secrets::stopped().into()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done(cx);
+                this.credential_backend_moved(kind, to, moved, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// The store thread moved the secrets (or failed to): shows the outcome
+    /// and, once moved, makes the new store the one the UI asks about.
+    fn credential_backend_moved(
+        &mut self,
+        kind: CredentialBackendKind,
+        to: cayenchat_storage::CredentialStore,
+        moved: Result<(bool, usize), MoveError>,
+        cx: &mut Context<Self>,
+    ) {
+        let (source_unavailable, count) = match moved {
+            Ok(moved) => moved,
+            Err(error) => {
+                self.feedback = Some(match error {
+                    MoveError::Store(error) => secrets::error_text(&self.i18n, &error),
+                    MoveError::Settings(error) => error,
+                });
+                cx.notify();
+                return;
+            }
+        };
         self.settings.values.credential_backend = kind;
-        cx.set_global(secrets::Credentials(to));
-        self.feedback = Some(if copied.source_unavailable {
+        // The store thread made `to` current when the job ended; without a
+        // worker (tests) the global is the only owner.
+        if !cx.has_global::<secrets::Worker>() {
+            cx.set_global(secrets::Credentials(to));
+        }
+        self.feedback = Some(if source_unavailable {
             self.i18n.text("credential_switched_source_unavailable")
         } else {
-            self.i18n.format(
-                "credential_switched",
-                &[("count", &copied.count().to_string())],
-            )
+            self.i18n
+                .format("credential_switched", &[("count", &count.to_string())])
         });
         self.show_selected_server(cx);
         self.refresh_upload_account(cx);
@@ -283,38 +362,58 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        match secrets::store(cx).set(&SecretKey::uploader_token(&provider), &Secret::new(token)) {
-            Ok(()) => {
-                self.upload_token
-                    .update(cx, |field, cx| field.set_text("", cx));
-                let noted = self.note_upload_token(&provider, true);
-                self.refresh_upload_account(cx);
-                self.feedback = Some(match noted {
-                    Ok(()) => self.i18n.text("image_account_saved"),
-                    Err(error) => error,
-                });
-            }
-            Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
-        }
-        cx.notify();
+        let key = SecretKey::uploader_token(&provider);
+        let writing = secrets::run(cx, move |store| store.set(&key, &Secret::new(token)));
+        self.store_wait(cx);
+        cx.spawn(async move |this, cx| {
+            let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done(cx);
+                match result {
+                    Ok(()) => {
+                        this.upload_token
+                            .update(cx, |field, cx| field.set_text("", cx));
+                        let noted = this.note_upload_token(&provider, true);
+                        this.refresh_upload_account(cx);
+                        this.feedback = Some(match noted {
+                            Ok(()) => this.i18n.text("image_account_saved"),
+                            Err(error) => error,
+                        });
+                    }
+                    Err(error) => this.feedback = Some(secrets::error_text(&this.i18n, &error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn disconnect_upload_account(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.settings.values.image_upload.provider.clone() else {
             return;
         };
-        match secrets::store(cx).delete(&SecretKey::uploader_token(&provider)) {
-            Ok(()) => {
-                let noted = self.note_upload_token(&provider, false);
-                self.refresh_upload_account(cx);
-                self.feedback = Some(match noted {
-                    Ok(()) => self.i18n.text("image_account_disconnected"),
-                    Err(error) => error,
-                });
-            }
-            Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
-        }
-        cx.notify();
+        let key = SecretKey::uploader_token(&provider);
+        let deleting = secrets::run(cx, move |store| store.delete(&key));
+        self.store_wait(cx);
+        cx.spawn(async move |this, cx| {
+            let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done(cx);
+                match result {
+                    Ok(()) => {
+                        let noted = this.note_upload_token(&provider, false);
+                        this.refresh_upload_account(cx);
+                        this.feedback = Some(match noted {
+                            Ok(()) => this.i18n.text("image_account_disconnected"),
+                            Err(error) => error,
+                        });
+                    }
+                    Err(error) => this.feedback = Some(secrets::error_text(&this.i18n, &error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn render_image_upload_settings(&mut self, cx: &mut Context<Self>) -> Div {

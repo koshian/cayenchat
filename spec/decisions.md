@@ -1231,8 +1231,8 @@ specification's "full support". event-playback, echo-message and
 labeled-response are not needed and not requested.
 
 Replies are consumed whole in the connection worker, reported once when
-the batch ends, and inserted by the application at the point of the
-request (reserved sequences) as requested history, which never notifies,
+the batch ends, and appended by the application in processing order (D086)
+as requested history, which never notifies,
 highlights or marks unread and is not shown in the combined subwindow.
 One request at a time, 50 lines asked, 100 kept, 64 channels queued, 30 s
 timeout. Older pages, gap recovery on reconnect, private-message history
@@ -1414,10 +1414,9 @@ message received before the cut (specification as in D030).
   minus 5 s for clock skew (the specification suggests 1–10 s), relying on
   the duplicate filter for the overlap. Never display time or arrival
   order. No reference, no recovery: the join behaves as before.
-- **Placement.** Sequences are reserved at the disconnect, so missed lines
-  go where the log was cut, before the rejoin and later live lines,
-  through the same insertion and duplicate filter as recent history; logs
-  are never re-sorted.
+- **Placement.** Superseded by D086: missed lines are appended in
+  processing order (after the disconnect and rejoin lines), through the same
+  duplicate filter as recent history; logs are never re-sorted.
 - **Lifetime.** The earliest unanswered cut is kept across failed
   attempts; a part, a reset, or a session that joined without history
   drops it. State is one point per conversation in `app` and the list in
@@ -3041,9 +3040,9 @@ target's latest message; timestamps only.
   servers stays separate.
 - **Quiet.** Discovery and its history use provenance `Requested`: no unread,
   highlight or notification.
-- **Placement.** Same reservation as channel history (D027, D031): the
-  block sits where the request was made. A known conversation that already
-  received a live line meanwhile shows the missed lines after it.
+- **Placement.** Same as channel history (D086): the block is appended in
+  processing order when the response is complete, after any live line that
+  arrived meanwhile.
 - **Not done.** Private conversations have no resume points (repeat
   `LATEST *` only); no account-aware identity; no live soju/Ergo check.
 
@@ -3705,3 +3704,93 @@ the start of the session.
 - **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
+
+## D086 — History is appended in processing order, not placed by reserved sequences (#954)
+
+- **Decision.** Recent history (`LATEST *`) and reconnect recovery no longer
+  reserve sequences. A reply is held while it arrives and, when it ends, put
+  in server-time order among itself and appended to the end of the log with
+  ordinary sequences. The log reads in the order the client processed things:
+  disconnect, rejoin, recovered lines; and on a first join, `has joined`, then
+  history (it used to come before the JOIN line).
+- **Why.** Reserving a slot at the disconnect (`ResumePoint`, 256 sequences)
+  or before our JOIN (`reserve_join_history`) put recovered lines above the
+  "disconnected" line, so after a sleep and reconnect lines posted during the
+  outage appeared before the event that cut them off, and history looked as if
+  it did not work. KISS: the client does not build an order.
+- **Kept as safety, independent of order.** The pending record (now only "a
+  reply is expected"; a reply without one changes nothing), the per-
+  conversation duplicate filter just before each append, `Provenance::Requested`
+  (no unread, highlight or notification), the gap note (appended when an
+  incomplete recovery ends), the wire reference of `ResumePoint` (msgid or
+  timestamp), and server-time ordering inside one reply.
+- **Limits.** `app` no longer caps one reply (the sequence reservation did);
+  irc-core's `MAX_HISTORY_LINES` (100) and the retained-line limit remain.
+- **Unchanged.** Older pages (scrolling back) still take reserved sequences
+  below the log (D030); wire traffic and protocol are unchanged.
+
+## D087 — The credential store is used only on its own thread (#640)
+
+- **Decision.** All access to `CredentialStore` (reads, writes, deletions,
+  the system-store probe, copying to another backend) goes through
+  `ui::secrets::run`, which runs a job on one dedicated thread and returns the
+  result as a future. The UI thread no longer calls the store. Moving only some
+  entrances (as #638 tried) made the UI wait for the store's lock held by a
+  background write; one thread for all of them cannot.
+- **Why one queue.** Jobs are serialized in the order queued, so the order of
+  a write and the read after it, or of a backend switch and the removal of its
+  originals, needs no further coordination.
+- **Effects.** Connect, reconnect, startup, the credential dialog's submit,
+  an image upload and the settings' Connect and password buttons proceed when
+  the result is in, not at the click. While a read is pending a second Connect
+  for the same server, or a second submit of the same dialog, is ignored. A
+  failed deletion of a removed server's secrets no longer fails the save that
+  removed it: the file is written, the error is shown and the deletion is tried
+  again at the next save. Quitting waits at most two seconds for queued jobs.
+- **What a result is applied to.** A result is tied to what it was read or
+  written for, because the UI keeps changing while a job waits. A read of a
+  server's secrets carries the profile it was read for; if the profile has
+  changed when the result arrives (another mechanism, saved marks, channels)
+  the result is dropped and read again, so a key is never sent as a password.
+  What finishes a write (a server's registration, the note that a password or
+  a SASL key is saved, the record of a new store) is bound to the settings
+  window and the server it shows. No mechanism outside the window completes
+  it; the window is kept still instead (next item).
+- **Restriction while the store is written (decided by the maintainer).**
+  The settings window counts what the store thread still owes it
+  (`store_waits`: password, SASL key and upload token writes and deletions, the marked
+  passwords of a new server's Save or Connect, and a move to another store).
+  While it is above zero the window refuses to leave (`save_before_leaving`,
+  the one exit of the title bar, Escape, Back and quit) and refuses to show
+  another server or remove one (`switch_server`, which also serves the main
+  window's "Server settings"), and a second Save, Connect or move is ignored.
+  Only this window waits: the main window's menus and tabs and other windows
+  keep working. The costs are accepted: a store that does not answer keeps the
+  settings window open and refuses an ordinary quit (a signal or the system's
+  shutdown still ends the app), and a refused attempt can be made again a
+  moment later.
+  The reason is shown (#965): while `store_waits` is above zero
+  the note `credential_store_waiting` ("waiting for the credential store;
+  answer the operating system's prompt if there is one") is shown in a band
+  above the scrolling pane, so it is readable wherever the pane is scrolled,
+  and it goes when the wait ends. An autosave that falls due
+  meanwhile is not made but scheduled again (`autosave_committed`): a move
+  records the new store in the file before the window learns of it, and a save
+  in between would write the old one back. In production only `Worker` holds
+  the store; `Credentials` is the store of tests without a worker.
+- **Switching the store.** Each job uses the store that is current at its
+  place in the queue (`Worker::current`), not the one installed when it was
+  queued. `Worker::current` is the only owner of which store is in use
+  (`secrets::store` reads it); no window keeps a copy, so a window closed
+  during the move leaves nothing stale, and a move to the store already in
+  use does nothing. The move is a single job (`run_switching`: copy, record
+  the choice, delete the originals) that switches the store as it ends, so a
+  password saved or removed meanwhile is queued before it and copied, or
+  after it and goes to the new store.
+- **Accepted limitation.** The settings file is read after the copy and
+  written at once, so a setting saved by another window during the copy is
+  kept. Only the gap between that read and write remains, like every other
+  read-modify-write of the file; the file is not serialized with the store
+  queue.
+- **Not done.** Settings file reads and writes stay on the UI thread (the
+  move to another backend is the one place that does it on the store thread).

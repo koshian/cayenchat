@@ -256,10 +256,8 @@ fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         next.selected_profile_mut().unwrap().sasl_enabled = true;
 
         // Connecting reads saved credentials before committing settings.
-        let i18n = super::Localizer::new(next.language);
         let (server, sasl) =
-            super::saved_connection_secrets(next.selected_profile().unwrap(), &store, &i18n)
-                .unwrap();
+            super::saved_connection_secrets(next.selected_profile().unwrap(), &store).unwrap();
         assert!(server.is_none());
         assert!(sasl.is_none());
         assert_ne!(next.selected_profile().unwrap().id, removed.id);
@@ -451,12 +449,11 @@ fn the_store_is_touched_only_for_passwords_noted_as_saved() {
     for key in [profile.server_password_key(), profile.sasl_password_key()] {
         store.set(&key, &Secret::new("stored")).unwrap();
     }
-    let i18n = super::Localizer::new(previous.language);
 
     // Nothing noted: connecting at startup reads nothing, and asks for SASL.
     let (_, missing) = super::saved_connection_config(&profile, previous.language, &store).unwrap();
     assert!(missing.sasl);
-    let (server, sasl) = super::saved_connection_secrets(&profile, &store, &i18n).unwrap();
+    let (server, sasl) = super::saved_connection_secrets(&profile, &store).unwrap();
     assert!(server.is_none() && sasl.is_none());
     // Neither does removing the server delete anything.
     let mut next = previous.clone();
@@ -468,7 +465,7 @@ fn the_store_is_touched_only_for_passwords_noted_as_saved() {
     let mut noted = profile.clone();
     noted.set_server_password_saved(true);
     noted.set_sasl_password_saved(true);
-    let (server, sasl) = super::saved_connection_secrets(&noted, &store, &i18n).unwrap();
+    let (server, sasl) = super::saved_connection_secrets(&noted, &store).unwrap();
     assert!(server.is_some() && sasl.is_some());
     assert_eq!(touches(), 2);
     let mut previous = previous.clone();

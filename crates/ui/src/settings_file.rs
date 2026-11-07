@@ -24,50 +24,83 @@ pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
-thread_local! {
+#[derive(Default)]
+pub(crate) struct TestState {
     /// `None` while no test holds a file; then the file's content.
-    static FILE: std::cell::RefCell<Option<Settings>> = const { std::cell::RefCell::new(None) };
-    static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static UNREADABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    file: Option<Settings>,
+    enabled: bool,
+    failing: bool,
+    unreadable: bool,
+}
+
+/// What a test's file is made of. Each test thread has its own, so tests do
+/// not meet; the credential store thread of a test shares its starter's
+/// (`share`, `adopt`), as the real one shares the real file.
+#[cfg(test)]
+pub(crate) type SharedState = std::sync::Arc<std::sync::Mutex<TestState>>;
+
+#[cfg(test)]
+thread_local! {
+    static STATE: std::cell::RefCell<SharedState> = std::cell::RefCell::new(SharedState::default());
+}
+
+#[cfg(test)]
+fn with_state<T>(f: impl FnOnce(&mut TestState) -> T) -> T {
+    let state = STATE.with_borrow(Clone::clone);
+    let mut state = state.lock().unwrap();
+    f(&mut state)
+}
+
+/// The test file of this thread, to give to a thread it starts.
+#[cfg(test)]
+pub(crate) fn share() -> SharedState {
+    STATE.with_borrow(Clone::clone)
+}
+
+/// Makes this thread use the test file of the thread that started it.
+#[cfg(test)]
+pub(crate) fn adopt(state: SharedState) {
+    STATE.with_borrow_mut(|own| *own = state);
 }
 
 /// Makes saving fail (or work again) to test what a failed save leaves.
 #[cfg(test)]
 pub(crate) fn fail_saves(failing: bool) {
-    FAILING.set(failing);
+    with_state(|state| state.failing = failing);
 }
 
 /// Makes loading fail (or work again), as an unsupported or damaged file does.
 #[cfg(test)]
 pub(crate) fn fail_loads(failing: bool) {
-    UNREADABLE.set(failing);
+    with_state(|state| state.unreadable = failing);
 }
 
 #[cfg(test)]
 pub(crate) fn load() -> Result<Option<Settings>, String> {
-    if UNREADABLE.get() {
-        return Err("cannot read the settings file".into());
-    }
-    Ok(FILE.with_borrow(Clone::clone))
+    with_state(|state| {
+        if state.unreadable {
+            return Err("cannot read the settings file".into());
+        }
+        Ok(state.file.clone())
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn save(settings: &Settings) -> Result<(), String> {
-    if FAILING.get() {
-        return Err("cannot write the settings file".into());
-    }
-    if ENABLED.get() {
-        FILE.with_borrow_mut(|file| *file = Some(settings.clone()));
-    }
-    Ok(())
+    with_state(|state| {
+        if state.failing {
+            return Err("cannot write the settings file".into());
+        }
+        if state.enabled {
+            state.file = Some(settings.clone());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>, String> {
-    let backup = FILE
-        .with_borrow(Clone::clone)
-        .map(|_| "settings-backup.json".into());
+    let backup = with_state(|state| state.file.clone()).map(|_| "settings-backup.json".into());
     save(settings).map(|()| backup)
 }
 
@@ -94,7 +127,7 @@ pub(crate) struct TestFile;
 #[cfg(test)]
 impl TestFile {
     pub(crate) fn with(settings: &Settings) -> Self {
-        ENABLED.set(true);
+        with_state(|state| state.enabled = true);
         let _ = save(settings);
         Self
     }
@@ -103,10 +136,7 @@ impl TestFile {
 #[cfg(test)]
 impl Drop for TestFile {
     fn drop(&mut self) {
-        ENABLED.set(false);
-        FAILING.set(false);
-        UNREADABLE.set(false);
-        FILE.with_borrow_mut(|file| *file = None);
+        with_state(|state| *state = TestState::default());
     }
 }
 
@@ -483,8 +513,13 @@ mod tests {
             form.upload_token
                 .update(cx, |field, cx| field.set_text("token", cx));
             form.connect_upload_account(cx);
-            assert!(form.upload_connected);
+            // The window is held until the note is made.
+            assert!(form.store_busy());
+            assert!(!form.save_before_leaving(cx));
         });
+        cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         let store = cx.update(|_, cx| secrets::store(cx));
         assert!(
@@ -499,17 +534,19 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
-        form.update(cx, |form, cx| {
-            form.disconnect_upload_account(cx);
-            assert!(form.upload_connected);
-        });
+        form.update(cx, |form, cx| form.disconnect_upload_account(cx));
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         cx.update(|_, cx| cx.set_global(secrets::Credentials(store)));
 
         form.update(cx, |form, cx| {
             form.disconnect_upload_account(cx);
-            assert!(!form.upload_connected);
+            assert!(form.store_busy());
         });
+        cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
+        assert!(form.read_with(cx, |form, _| !form.upload_connected));
         assert!(!noted());
         drop(file);
     }
@@ -831,6 +868,7 @@ mod tests {
         form.update_in(cx, |form, window, cx| {
             form.connect_from_settings(window, cx)
         });
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
             assert!(
                 form.feedback
@@ -958,8 +996,9 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.feedback.is_some());
             assert!(!form.saved.profile(&id).is_some());
             assert_eq!(
@@ -971,8 +1010,9 @@ mod tests {
             );
         });
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.saved.profile(&id).is_some());
             assert!(form.settings.credential_state(Credential::Sasl).0);
             assert!(
@@ -1064,6 +1104,212 @@ mod tests {
             );
         });
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_window_stays_on_its_server_while_the_store_is_written(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.store_wait(cx);
+            // Neither leaving nor showing or removing another server.
+            assert!(!form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
+            form.store_done(cx);
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, b_id);
+            assert!(form.save_before_leaving(cx));
+        });
+        drop(file);
+    }
+
+    /// A store that holds a write or a deletion until the test lets it go,
+    /// like a system store waiting for the user to allow it.
+    struct Gated {
+        inner: MemoryBackend,
+        gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Whether a call is being held now.
+        holding: std::sync::atomic::AtomicBool,
+        on_set: bool,
+    }
+
+    impl Gated {
+        /// Installs it with the store thread of a real run; `release` lets
+        /// one held call go.
+        fn install(on_set: bool, cx: &mut gpui::App) -> (std::sync::mpsc::Sender<()>, Arc<Self>) {
+            let (release, gate) = std::sync::mpsc::channel();
+            let backend = Arc::new(Self {
+                inner: MemoryBackend::new(CredentialBackendKind::System),
+                gate: std::sync::Mutex::new(gate),
+                holding: std::sync::atomic::AtomicBool::new(false),
+                on_set,
+            });
+            cx.set_global(secrets::Worker::start(CredentialStore::with_backend(
+                backend.clone(),
+            )));
+            (release, backend)
+        }
+
+        fn hold(&self) {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.holding.store(true, SeqCst);
+            let released = self
+                .gate
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(20));
+            self.holding.store(false, SeqCst);
+            released.expect("the test lets the call go");
+        }
+
+        /// Waits until a call is held.
+        fn wait_until_held(&self) {
+            let started = std::time::Instant::now();
+            while !self.holding.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(started.elapsed().as_secs() < 20, "a call is held");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl cayenchat_storage::credentials::CredentialBackend for Gated {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn is_memory(&self) -> bool {
+            true
+        }
+
+        fn get(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+            self.inner.get(key)
+        }
+
+        fn set(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+            value: &Secret,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            if self.on_set {
+                self.hold();
+            }
+            self.inner.set(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            if !self.on_set {
+                self.hold();
+            }
+            self.inner.delete(key)
+        }
+    }
+
+    fn wait_for_store(form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext) {
+        cx.executor().allow_parking();
+        let started = std::time::Instant::now();
+        while form.read_with(cx, |form, _| form.store_busy()) {
+            assert!(started.elapsed().as_secs() < 20, "the store finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    fn a_store_that_waits_refuses_leaving_and_says_why(cx: &mut TestAppContext) {
+        let mut settings = upload_settings("imgbb", false);
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let release = cx.update(|cx| Gated::install(true, cx).0);
+        let (form, cx) = open(&settings, cx);
+
+        form.update(cx, |form, cx| {
+            form.upload_token
+                .update(cx, |field, cx| field.set_text("token", cx));
+            form.connect_upload_account(cx);
+            assert!(form.store_busy());
+            assert!(!form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
+        });
+        // Quitting goes through the same check and is refused too.
+        assert!(cx.update(|_, cx| crate::settings_block_quit(cx)));
+
+        release.send(()).unwrap();
+        wait_for_store(&form, cx);
+        form.update(cx, |form, cx| {
+            assert!(form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, b_id);
+        });
+        drop(file);
+    }
+
+    /// The move records the new store in the file before the form learns of
+    /// it; a save in between would write the old one back (#965).
+    #[gpui::test]
+    fn an_edit_during_a_move_waits_instead_of_writing_the_old_store_back(cx: &mut TestAppContext) {
+        let settings = upload_settings("imgbb", true);
+        let file = TestFile::with(&settings);
+        let (release, backend) = cx.update(|cx| Gated::install(false, cx));
+        // A secret to move, so that the originals are deleted at the end.
+        cayenchat_storage::credentials::CredentialBackend::set(
+            &backend.inner,
+            &cayenchat_storage::SecretKey::uploader_token("imgbb"),
+            &Secret::new("token"),
+        )
+        .unwrap();
+        let (form, cx) = open(&settings, cx);
+
+        form.update(cx, |form, cx| {
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            assert!(form.store_busy());
+        });
+        // The move has recorded the new store in the file and is deleting
+        // the originals; the form still shows the old one.
+        backend.wait_until_held();
+        assert_eq!(
+            super::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        form.update(cx, |form, cx| {
+            assert_eq!(
+                form.settings.values.credential_backend,
+                CredentialBackendKind::System
+            );
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_pause_elapsed(cx);
+            form.autosave_now(None, cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert!(saved.notifications.private_messages, "nothing is saved");
+        assert_eq!(
+            saved.credential_backend,
+            CredentialBackendKind::LocalFile,
+            "the old store is not written back"
+        );
+
+        release.send(()).unwrap();
+        wait_for_store(&form, cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages, "saved afterwards");
+        assert_eq!(saved.credential_backend, CredentialBackendKind::LocalFile);
         drop(file);
     }
 
@@ -1350,6 +1596,7 @@ mod tests {
         assert!(!store.contains(&new_key).unwrap());
         // Its own Save registers it and stores the checked password.
         form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         assert_eq!(store.get(&new_key).unwrap().unwrap().expose(), "typed");
         form.update(cx, |form, _| assert!(form.settings.saved_server_password));
         drop(file);
@@ -1427,7 +1674,10 @@ mod tests {
 
         super::fail_saves(true);
         form.update(cx, |form, cx| {
-            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx)
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
             assert!(form.feedback.is_some());
             assert_eq!(
                 form.settings.values.credential_backend,
@@ -1448,6 +1698,7 @@ mod tests {
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
         });
+        cx.run_until_parked();
         cx.update(|_, cx| {
             let new = secrets::store(cx);
             assert_eq!(new.kind(), CredentialBackendKind::LocalFile);

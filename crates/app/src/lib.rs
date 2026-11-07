@@ -59,10 +59,9 @@ const MAX_ORDER_NAMES: usize = 2_000;
 /// above), so a flood of messages from new nicknames cannot fill the channel
 /// tree; further ones go to the server log.
 pub const MAX_PRIVATE_CONVERSATIONS_PER_NETWORK: usize = 100;
-/// Sequences set aside when history is requested for a conversation: the
-/// most lines one reply can add. They sit between the lines that arrived
-/// before the request and those after it, so inserting the reply keeps
-/// every log in ascending sequence order.
+/// Sequences set aside for one older page (the most lines it can add), below
+/// everything the conversation holds. Recent history and recovered lines
+/// take ordinary sequences when they are processed.
 pub const HISTORY_RESERVE: usize = 256;
 /// Lines kept per conversation; the oldest 1,000 go when it is exceeded.
 const MAX_RETAINED: usize = 2_000;
@@ -77,6 +76,9 @@ pub const OLDER_PAGE_LIMIT: usize = 50;
 /// (and among which its reference is chosen): a page ends where the log
 /// begins, so only overlap with the top of the log is possible.
 const OLDER_PAGE_OVERLAP_WINDOW: usize = HISTORY_RESERVE;
+/// Newest lines of a channel searched for the point to recover from when a
+/// disconnect cuts it off.
+const RESUME_SCAN_WINDOW: usize = 256;
 /// Where message sequences start. Ordinary messages count up from here;
 /// older pages, which go before everything a conversation holds, count
 /// down from it, so every log stays in ascending sequence order without
@@ -182,10 +184,11 @@ pub struct AppState {
     /// Recently seen message keys per conversation, created only for
     /// conversations that receive identifiable messages.
     duplicates: HashMap<ConversationId, DuplicateFilter>,
-    /// Conversations waiting for requested history, with the first of their
-    /// reserved sequences. A reply without an entry is stale and ignored.
-    pending_history: HashMap<ConversationId, u64>,
-    /// Replies being answered line by line: where the next line of each
+    /// Conversations waiting for requested history, with the lines of the
+    /// reply received so far. They are appended, in server-time order, when
+    /// the reply ends. A reply without an entry is stale and ignored.
+    pending_history: HashMap<ConversationId, Vec<(Message, bool)>>,
+    /// Older pages being answered line by line: where the next line of each
     /// goes (see [`HistoryBlock`]). One that no longer matches its request
     /// is stale and replaced by the next line.
     history_blocks: HashMap<ConversationId, HistoryBlock>,
@@ -200,9 +203,6 @@ pub struct AppState {
     /// Channels whose log a disconnect cut off, until the missed lines
     /// arrive or recovery is given up.
     resume_points: HashMap<ConversationId, ResumePoint>,
-    /// Sequences reserved just before our own JOIN line, where the first
-    /// `LATEST *` reply of that join goes (see [`AppState::reserve_join_history`]).
-    join_reserves: HashMap<ConversationId, u64>,
     /// The channel order the user chose per network (lowercased names, parted
     /// channels included so a rejoined one returns to its place).
     channel_orders: HashMap<NetworkId, Vec<String>>,
@@ -225,11 +225,9 @@ pub enum MoveTo {
 }
 
 /// Where a disconnect cut a channel's log off: the newest message its
-/// source identified, and sequences reserved right after the lines
-/// received until then, where the missed lines go.
+/// source identified, which the missed lines follow on the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResumePoint {
-    start: u64,
     native_id: Option<NativeMessageId>,
     timestamp: Option<Timestamp>,
 }
@@ -245,22 +243,39 @@ pub struct HistoryResume {
     pub timestamp: Option<Timestamp>,
 }
 
-/// The sequences a reply to a history request fills as its lines arrive:
-/// `start..start + HISTORY_RESERVE`, set aside when it was requested (a
-/// page of older history: when its first line arrived). When the reply
-/// ends, the lines inside are put in server-time order and nothing outside
-/// moves.
+/// The sequences an older page fills as its lines arrive:
+/// `start..start + HISTORY_RESERVE`, set aside when its first line arrived.
+/// When the page ends, the lines inside are put in server-time order and
+/// nothing outside moves.
 #[derive(Debug)]
 struct HistoryBlock {
     start: u64,
     /// The sequence of the next line.
     next: u64,
-    /// The older-page request it answers; `None` for recent history.
-    request: Option<u64>,
+    /// The older-page request it answers.
+    request: u64,
     /// Most lines the block takes.
     room: usize,
-    /// The top of the log when an older page started, for overlap.
-    near_top: Option<DuplicateFilter>,
+    /// The top of the log when the page started, for overlap.
+    near_top: DuplicateFilter,
+}
+
+/// The order, as indexes, in which lines with these timestamps go in
+/// server-time order, keeping lines of equal time in arrival order. A line
+/// without a time counts as having its predecessor's time (one at the start
+/// has none and stays before every timed line), so it stays where it
+/// arrived relative to it.
+fn server_time_order(timestamps: impl Iterator<Item = Option<Timestamp>>) -> Vec<usize> {
+    let mut time = None;
+    let times: Vec<Option<Timestamp>> = timestamps
+        .map(|own| {
+            time = own.or(time);
+            time
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..times.len()).collect();
+    order.sort_by_key(|&index| times[index]);
+    order
 }
 
 /// A line of requested history as a log message.
@@ -348,7 +363,6 @@ impl AppState {
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
-            join_reserves: HashMap::new(),
             channel_orders: HashMap::new(),
             channel_ranks: HashMap::new(),
             groups: Vec::new(),
@@ -477,7 +491,6 @@ impl AppState {
             self.history_blocks.remove(id);
             self.older_history.remove(id);
             self.resume_points.remove(id);
-            self.join_reserves.remove(id);
             self.unread.remove(id);
             self.highlighted.remove(id);
             self.active_channels.remove(id);
@@ -941,7 +954,6 @@ impl AppState {
         self.history_blocks.remove(&id);
         self.older_history.remove(&id);
         self.resume_points.remove(&id);
-        self.join_reserves.remove(&id);
         self.unread.remove(&id);
         self.highlighted.remove(&id);
         self.attention
@@ -1129,7 +1141,6 @@ impl AppState {
             // and a channel left on purpose has nothing to recover.
             self.older_history.remove(&id);
             self.resume_points.remove(&id);
-            self.join_reserves.remove(&id);
             if let Some(channel) = self.conversation_mut(id) {
                 channel.members.clear();
                 channel.modes = None;
@@ -1474,7 +1485,7 @@ impl AppState {
                 continue;
             }
             let messages = &conversation.messages;
-            let tail = &messages[messages.len().saturating_sub(HISTORY_RESERVE)..];
+            let tail = &messages[messages.len().saturating_sub(RESUME_SCAN_WINDOW)..];
             let Some(newest) = tail
                 .iter()
                 .filter(|message| message.timestamp.is_some())
@@ -1484,11 +1495,9 @@ impl AppState {
                 continue;
             };
             let point = ResumePoint {
-                start: self.next_message_sequence + 1,
                 native_id: newest.native_id.clone(),
                 timestamp: newest.timestamp,
             };
-            self.next_message_sequence += HISTORY_RESERVE as u64;
             self.resume_points.insert(id, point);
         }
     }
@@ -1512,26 +1521,20 @@ impl AppState {
     }
 
     /// The missed lines of a channel cut off by a disconnect were asked for
-    /// ([`AppState::history_resume`]): they go where the cut was, before
-    /// every line received since, not where the request was made. Without
-    /// a resume point this is [`AppState::history_requested`].
+    /// ([`AppState::history_resume`]). The resume point stays until the
+    /// reply ends. Like [`AppState::history_requested`], the reply is
+    /// appended when it is processed.
     pub fn history_resumed(&mut self, network: NetworkId, name: &str) {
         let Some(id) = self.channel_id(network, name) else {
             return;
         };
-        match self.resume_points.get(&id) {
-            Some(point) => {
-                self.join_reserves.remove(&id);
-                self.pending_history.insert(id, point.start);
-            }
-            None => self.history_requested_for(id),
-        }
+        self.pending_history.insert(id, Vec::new());
     }
 
-    /// History was requested for a channel: sequences are reserved here, so
-    /// the reply lands before every line that arrives after this call. A
-    /// channel cut off by a disconnect that asks for its latest lines
-    /// instead of what it missed gives up recovering.
+    /// History was requested for a channel: its reply is expected, and is
+    /// appended at the end of the log when it ends. A channel cut off by a
+    /// disconnect that asks for its latest lines instead of what it missed
+    /// gives up recovering.
     pub fn history_requested(&mut self, network: NetworkId, name: &str) {
         let Some(id) = self.channel_id(network, name) else {
             return;
@@ -1543,40 +1546,16 @@ impl AppState {
     /// private one found by the source's target discovery.
     pub fn history_requested_for(&mut self, id: ConversationId) {
         self.resume_points.remove(&id);
-        let start = match self.join_reserves.remove(&id) {
-            Some(start) => start,
-            None => {
-                let start = self.next_message_sequence + 1;
-                self.next_message_sequence += HISTORY_RESERVE as u64;
-                start
-            }
-        };
-        self.pending_history.insert(id, start);
+        self.pending_history.insert(id, Vec::new());
     }
 
-    /// Our own JOIN of a channel is about to be logged: the recent history
-    /// asked for after it goes before the JOIN line, as the lines recovered
-    /// after a reconnect go before the rejoin. Call it before the line is
-    /// appended. A channel with a resume point recovers there instead.
-    pub fn reserve_join_history(&mut self, network: NetworkId, name: &str) {
-        let Some(id) = self.channel_id(network, name) else {
-            return;
-        };
-        if self.resume_points.contains_key(&id) {
-            return;
-        }
-        let start = self.next_message_sequence + 1;
-        self.next_message_sequence += HISTORY_RESERVE as u64;
-        self.join_reserves.insert(id, start);
-    }
-
-    /// Inserts the reply to [`AppState::history_requested`], oldest first,
-    /// where the request was made. Lines the conversation already has
-    /// (playback, or live lines that the reply repeats) are skipped by the
-    /// duplicate filter, lines beyond [`HISTORY_RESERVE`] are dropped, and
-    /// nothing is marked unread or highlighted. A reply without a pending
-    /// request (a reset, a disconnect, another connection) changes nothing.
-    /// Returns how many lines were added.
+    /// Adds the reply to [`AppState::history_requested`] at the end of the
+    /// log, oldest first, when it is processed. Lines the conversation
+    /// already has (playback, or live lines that the reply repeats) are
+    /// skipped by the duplicate filter, and nothing is marked unread or
+    /// highlighted. A reply without a pending request (a reset, a
+    /// disconnect, another connection) changes nothing. Returns how many
+    /// lines were added.
     pub fn insert_channel_history(
         &mut self,
         network: NetworkId,
@@ -1622,84 +1601,37 @@ impl AppState {
     }
 
     /// One line of the reply to [`AppState::history_requested`] arrived: it
-    /// is shown at once, after the lines of the reply before it and before
-    /// every line that is not part of the reply. Lines the conversation
-    /// already has are skipped by the duplicate filter, lines beyond
-    /// [`HISTORY_RESERVE`] are dropped, and nothing is marked unread or
-    /// highlighted. A line without a pending request (a reset, a
-    /// disconnect, another connection) changes nothing. Returns whether the
-    /// line was added.
+    /// is held until the reply ends (see [`AppState::finish_history_for`]).
+    /// A line without a pending request (a reset, a disconnect, another
+    /// connection) changes nothing. Returns whether the line was taken.
     pub fn push_history_line(&mut self, id: ConversationId, line: timeline::TimelineLine) -> bool {
-        let Some(&start) = self.pending_history.get(&id) else {
+        let Some(lines) = self.pending_history.get_mut(&id) else {
             return false;
         };
-        let Some(position) = self
-            .conversations
-            .iter()
-            .position(|conversation| conversation.id == id)
-        else {
-            return false;
-        };
-        let block = self
-            .history_blocks
-            .get(&id)
-            .filter(|block| block.request.is_none() && block.start == start);
-        let next = block.map_or(start, |block| block.next);
-        if next >= start + HISTORY_RESERVE as u64 {
-            return false;
-        }
         let attention = line.attention;
-        let mut message = requested_message(line);
-        if (message.native_id.is_some() || message.timestamp.is_some())
-            && !self.duplicates.entry(id).or_default().admit(&message)
-        {
-            return false;
-        }
-        message.sequence = next;
-        self.history_blocks.insert(
-            id,
-            HistoryBlock {
-                start,
-                next: next + 1,
-                request: None,
-                room: HISTORY_RESERVE,
-                near_top: None,
-            },
-        );
-        self.place_streamed(id, position, message, attention);
+        lines.push((requested_message(line), attention));
         true
     }
 
     /// The reply to [`AppState::history_requested`] ended (also when it
-    /// failed or timed out): the lines it brought are put in server-time
-    /// order among themselves (see [`AppState::settle_block`]), `gap_note`
-    /// (an activity line) goes first where the reply says lines may be
-    /// missing, and the request is over. Returns how many lines the reply
-    /// holds, the note included.
+    /// failed or timed out): `gap_note` (an activity line) is appended where
+    /// the reply says lines may be missing, then the lines it brought, in
+    /// server-time order among themselves, each through the conversation's
+    /// duplicate filter, at the end of the log with ordinary sequences.
+    /// Nothing is marked unread or highlighted. Returns how many lines were
+    /// added, the note included.
     pub fn finish_history_for(&mut self, id: ConversationId, gap_note: Option<String>) -> usize {
-        let Some(start) = self.pending_history.remove(&id) else {
+        let Some(lines) = self.pending_history.remove(&id) else {
             return 0;
         };
-        if self
-            .resume_points
-            .get(&id)
-            .is_some_and(|point| point.start == start)
-        {
-            self.resume_points.remove(&id);
+        // Whatever this reply recovers, the cut is answered.
+        self.resume_points.remove(&id);
+        if self.conversation(id).is_none() {
+            return 0;
         }
-        let streamed = self
-            .history_blocks
-            .remove(&id)
-            .is_some_and(|block| block.request.is_none() && block.start == start);
-        let Some(position) = self
-            .conversations
-            .iter()
-            .position(|conversation| conversation.id == id)
-        else {
-            return 0;
-        };
-        let note = gap_note.map(|note| {
-            new_message(
+        let mut added = 0;
+        if let Some(note) = gap_note {
+            let note = new_message(
                 String::new(),
                 note,
                 Line::Activity,
@@ -1707,13 +1639,21 @@ impl AppState {
                     provenance: Provenance::Requested,
                     ..MessageMeta::live()
                 },
-            )
-        });
-        if !streamed && note.is_none() {
-            return 0;
+            );
+            added += usize::from(self.append_to_conversation(id, note));
         }
-        let end = start + HISTORY_RESERVE as u64;
-        self.settle_block(id, position, start, end, note)
+        let order = server_time_order(lines.iter().map(|(message, _)| message.timestamp));
+        let mut slots: Vec<Option<(Message, bool)>> = lines.into_iter().map(Some).collect();
+        for index in order {
+            let (message, attention) = slots[index].take().expect("each line once");
+            if self.append_to_conversation(id, message) {
+                added += 1;
+                if attention {
+                    self.note_attention(id);
+                }
+            }
+        }
+        added
     }
 
     /// Inserts a streamed line at its place in the block it belongs to.
@@ -1757,16 +1697,7 @@ impl AppState {
         let low = messages.partition_point(|message| message.sequence < first);
         let high = messages.partition_point(|message| message.sequence < end);
         let arrived: Vec<Message> = messages.drain(low..high).collect();
-        let mut time = None;
-        let times: Vec<Option<Timestamp>> = arrived
-            .iter()
-            .map(|message| {
-                time = message.timestamp.or(time);
-                time
-            })
-            .collect();
-        let mut order: Vec<usize> = (0..arrived.len()).collect();
-        order.sort_by_key(|&index| times[index]);
+        let order = server_time_order(arrived.iter().map(|message| message.timestamp));
         let shift = usize::from(note.is_some());
         let reordered = shift == 1 || order.iter().enumerate().any(|(at, &from)| at != from);
         let old: Vec<u64> = arrived.iter().map(|message| message.sequence).collect();
@@ -1843,9 +1774,8 @@ impl AppState {
             return None;
         }
         // The oldest line by source time near the top: recent history is
-        // placed after the lines that arrived before it was asked for (a
-        // non-replayed join reserves its slot), so the first line is not
-        // necessarily the oldest.
+        // appended after the lines processed before it, so the first line is
+        // not necessarily the oldest.
         let head =
             &conversation.messages[..conversation.messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)];
         let oldest = head
@@ -1928,7 +1858,7 @@ impl AppState {
         if !self
             .history_blocks
             .get(&id)
-            .is_some_and(|block| block.request == Some(request))
+            .is_some_and(|block| block.request == request)
         {
             // The first line of the page: set its sequences aside, below
             // everything given out so far. A temporary window over the top
@@ -1952,11 +1882,11 @@ impl AppState {
                 HistoryBlock {
                     start,
                     next: start,
-                    request: Some(request),
+                    request,
                     room: MAX_RETAINED
                         .saturating_sub(messages.len())
                         .min(HISTORY_RESERVE),
-                    near_top: Some(near_top),
+                    near_top,
                 },
             );
         }
@@ -1970,10 +1900,7 @@ impl AppState {
         let attention = line.attention;
         let mut message = requested_message(line);
         let admitted = !recent.is_some_and(|filter| filter.contains(&message))
-            && block
-                .near_top
-                .as_mut()
-                .is_none_or(|near_top| near_top.admit(&message));
+            && block.near_top.admit(&message);
         if !admitted {
             return false;
         }
@@ -2005,7 +1932,7 @@ impl AppState {
         state.in_flight = None;
         let mut added = 0;
         if let Some(block) = self.history_blocks.remove(&id)
-            && block.request == Some(request)
+            && block.request == request
             && let Some(position) = self.conversations.iter().position(|c| c.id == id)
         {
             let end = block.start + HISTORY_RESERVE as u64;

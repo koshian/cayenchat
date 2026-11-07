@@ -46,6 +46,7 @@ impl Render for UrlTooltip {
         div().pl(TOOLTIP_OFFSET.0).pt(TOOLTIP_OFFSET.1).child(
             hover_popup(self.0.clone(), cx)
                 .id("url-tooltip")
+                .debug_selector(|| "url-tooltip".into())
                 .text_color(theme.panes.url_tooltip_link)
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url)),
