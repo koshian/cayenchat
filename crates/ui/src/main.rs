@@ -6644,10 +6644,10 @@ fn pane_text_size(saved: u16, standard: Option<f32>) -> Option<Pixels> {
 
 /// The line height a log pane sets, as a multiple of its font size: the
 /// saved percentage clamped to the allowed range, or None (GPUI's default
-/// line height) when none is saved (#953).
+/// line height) when it is the default one (#953).
 fn pane_line_height(saved: u16) -> Option<f32> {
     match cayenchat_storage::clamp_line_height_percent(saved) {
-        0 => None,
+        cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT => None,
         percent => Some(f32::from(percent) / 100.),
     }
 }
@@ -7831,9 +7831,10 @@ impl ChatWindow {
                 ),
                 |d, size| d.text_size(size),
             )
-            .when_some(pane_line_height(appearance.log_line_height), |d, ratio| {
-                d.line_height(relative(ratio))
-            })
+            .when_some(
+                pane_line_height(appearance.channel_log_line_height),
+                |d, ratio| d.line_height(relative(ratio)),
+            )
             .when_some(look.text, |d, color| d.text_color(color))
             .children(wallpaper)
             .child(self.input_to_draft(&self.log_focus, cx))
@@ -7855,9 +7856,10 @@ impl ChatWindow {
                 pane_text_size(appearance.combined_log_font_size, None),
                 |d, size| d.text_size(size),
             )
-            .when_some(pane_line_height(appearance.log_line_height), |d, ratio| {
-                d.line_height(relative(ratio))
-            })
+            .when_some(
+                pane_line_height(appearance.combined_log_line_height),
+                |d, ratio| d.line_height(relative(ratio)),
+            )
             .child(panes.combined_log.clone().cached(pane_style()));
 
         let members = div()
