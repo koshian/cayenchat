@@ -762,7 +762,7 @@ impl SettingsWindow {
         let Some(editor) = self.avatar_editor.take() else {
             return;
         };
-        let (source, crop) = (editor.source(), editor.crop());
+        let (source, crop) = (editor.source(cx), editor.crop(cx));
         let (profile, kind) = (editor.profile, editor.source_kind);
         self.avatar_opening = true;
         cx.notify();

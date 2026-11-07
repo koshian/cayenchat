@@ -1435,7 +1435,11 @@ URL), at most one pending request with a session-wide identifier, and the
 last `Outcome`. With an image host configured, `ui::ircv3_settings` also
 accepts an image dropped on the section, pasted into the URL field (the
 field propagates image-only pastes like chat drafts) or chosen in the
-system file dialog, opens it in `ui::avatar_editor` (square selection over
+system file dialog, opens it in `ui::avatar_editor` (the one shared range
+editor `ui::crop_editor::ImageCropEditor` with `CropConstraint::Square`,
+which the wallpaper chooser uses as `CropConstraint::Free`; avatar
+specifics are the result preview, the buttons and the upload; the square
+selection over
 a 320-logical-pixel view: corner handles resize the square (the opposite
 corner stays), dragging inside moves it, the area outside is shaded, and
 mouse moves are followed window-wide during a drag; after a drop leaving

@@ -547,25 +547,28 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
     wcx.run_until_parked();
     // The whole image is selected to begin with; nothing is set yet.
     let region = view
-        .read_with(wcx, |view, _| view.crop_region_for_test())
+        .read_with(wcx, |view, cx| view.crop_region_for_test(cx))
         .unwrap();
     assert_eq!((region.width, region.height), (400.0, 200.0));
     // The range editor is drawn in the window.
     wcx.update(|window, _| window.refresh());
     wcx.run_until_parked();
-    assert!(wcx.debug_bounds("channel-look-crop-picture").is_some());
+    assert!(wcx.debug_bounds("image-crop-picture").is_some());
     assert_eq!(
         view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx)),
         ""
     );
 
     view.update(wcx, |view, cx| {
-        view.set_crop_region_for_test(Region {
-            x: 100.0,
-            y: 50.0,
-            width: 200.0,
-            height: 100.0,
-        });
+        view.set_crop_region_for_test(
+            Region {
+                x: 100.0,
+                y: 50.0,
+                width: 200.0,
+                height: 100.0,
+            },
+            cx,
+        );
         view.use_crop_for_test(cx);
     });
     wcx.run_until_parked();
@@ -576,7 +579,7 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
     assert_eq!((cut.width(), cut.height()), (200, 100));
     // The editor closed, and the wallpaper is saved with the look.
     assert!(
-        view.read_with(wcx, |view, _| view.crop_region_for_test())
+        view.read_with(wcx, |view, cx| view.crop_region_for_test(cx))
             .is_none()
     );
     wcx.executor()
@@ -594,12 +597,15 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
     });
     wcx.run_until_parked();
     view.update(wcx, |view, cx| {
-        view.set_crop_region_for_test(Region {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 100.0,
-        });
+        view.set_crop_region_for_test(
+            Region {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            cx,
+        );
         view.use_crop_for_test(cx);
     });
     wcx.run_until_parked();
@@ -615,7 +621,7 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
     });
     wcx.run_until_parked();
     assert!(
-        view.read_with(wcx, |view, _| view.crop_region_for_test())
+        view.read_with(wcx, |view, cx| view.crop_region_for_test(cx))
             .is_none()
     );
     assert!(

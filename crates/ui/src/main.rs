@@ -18,6 +18,7 @@ mod color_picker;
 mod compact_urls;
 mod connect_auth;
 mod conversation_log;
+mod crop_editor;
 mod decorations;
 mod default_avatar;
 mod desktop;
