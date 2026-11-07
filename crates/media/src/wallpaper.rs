@@ -44,6 +44,28 @@ pub fn load(path: &Path, tint: u32, cancel: &CancelFlag) -> Result<Thumbnail, Lo
     Ok(thumbnail)
 }
 
+/// Checks that `bytes` are a wallpaper image this app can draw (PNG, JPEG,
+/// GIF or WebP within the decoder's size limits) and returns the file name
+/// extension for its format. Decodes it, so run it off the UI thread.
+pub fn validate(bytes: &[u8]) -> Result<&'static str, LoadError> {
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(LoadError::TooLarge);
+    }
+    let extension = match decode::format(bytes)? {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Gif => "gif",
+        _ => "webp",
+    };
+    let limits = Limits {
+        thumbnail_width: MAX_SIDE,
+        thumbnail_height: MAX_SIDE,
+        ..Limits::default()
+    };
+    decode::thumbnail(bytes, &limits, &CancelFlag::default())?;
+    Ok(extension)
+}
+
 /// Blurs `thumbnail` and moves its colors toward `tint`.
 fn filter(thumbnail: &mut Thumbnail, tint: u32) {
     let pixels = std::mem::take(&mut thumbnail.bgra);
@@ -96,6 +118,20 @@ mod tests {
         assert!(image.bgra.chunks(4).all(|p| p[3] == 255));
         let middle = &image.bgra[(16 * 32 + 16) * 4..][..3];
         assert!(middle[0] > 0x30 && middle[2] < 0x80, "{middle:?}");
+    }
+
+    #[test]
+    fn validate_names_the_format_and_refuses_what_is_not_an_image() {
+        let mut png = Vec::new();
+        image::RgbaImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(validate(&png), Ok("png"));
+        assert_eq!(validate(b"not an image"), Err(LoadError::NotImage));
+        // A cut-off file is malformed, not accepted on its header alone.
+        assert!(validate(&png[..png.len() / 2]).is_err());
+        let huge = vec![0u8; MAX_FILE_BYTES as usize + 1];
+        assert_eq!(validate(&huge), Err(LoadError::TooLarge));
     }
 
     #[test]

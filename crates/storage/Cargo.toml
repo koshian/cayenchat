@@ -16,6 +16,9 @@ keyring = "4.2"
 uuid = { version = "1", features = ["v4"] }
 # Tells apart the long names that are cut to fit a file name.
 sha2 = "0.10"
+base64.workspace = true
+# Compresses `.cayentheme` files (already in the tree through GPUI).
+flate2.workspace = true
 
 # Writes the macOS Keychain item with one call (see `KeyringEntries::write`).
 [target.'cfg(target_os = "macos")'.dependencies]

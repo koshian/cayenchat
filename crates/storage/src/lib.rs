@@ -15,7 +15,12 @@ pub mod credentials;
 pub mod layout;
 pub mod order;
 mod private_file;
+pub mod theme_file;
 pub mod transfer;
+
+pub use theme_file::{
+    RegionWallpaper, RegionWallpapers, ThemeFile, ThemeKind, ThemeOrigin, WallpaperRegion,
+};
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -683,6 +688,13 @@ pub struct Appearance {
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
+    /// Standard wallpapers of the four areas while the light theme is active
+    /// (#962); the dark theme's are in `dark`. Added after version 15
+    /// without a version change; files without it read as none.
+    pub wallpapers: RegionWallpapers,
+    /// The theme the light values came from (#962); unset is the built-in
+    /// default.
+    pub origin: ThemeOrigin,
     /// Colors the user saved to pick again, as `#RRGGBB` in the order added.
     /// At most [`MAX_SAVED_COLORS`], without repeats. Added after version 15
     /// without a version change; files without it read as empty.
@@ -746,6 +758,11 @@ pub struct ChannelLook {
     /// (0 to 100); unset is [`DEFAULT_WALLPAPER_OPACITY`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_opacity: Option<u8>,
+    /// Show no wallpaper in this channel even where the standard has one
+    /// (#962). With neither this nor a path, the channel inherits the
+    /// standard wallpaper. Files without it read as inheriting.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_wallpaper: bool,
 }
 
 fn is_zero(value: &u16) -> bool {
@@ -768,6 +785,7 @@ impl ChannelLook {
             || self.text.is_some()
             || self.wallpaper.is_some()
             || self.wallpaper_opacity.is_some()
+            || self.no_wallpaper
     }
 
     /// Makes every field usable: a size is clamped, a percentage capped, and
@@ -788,6 +806,10 @@ impl ChannelLook {
             self.wallpaper = None;
         }
         self.wallpaper_opacity = self.wallpaper_opacity.map(|p| p.min(100));
+        // "No wallpaper" and a wallpaper path exclude each other.
+        if self.no_wallpaper {
+            self.wallpaper = None;
+        }
     }
 }
 
@@ -814,6 +836,11 @@ pub struct DarkColors {
     pub link_background: String,
     pub url_tooltip_link_color: String,
     pub url_tooltip_text_color: String,
+    /// Standard wallpapers of the four areas while the dark theme is active
+    /// (#962). Added after version 15 without a version change.
+    pub wallpapers: RegionWallpapers,
+    /// The theme the dark values came from (#962).
+    pub origin: ThemeOrigin,
 }
 
 impl Default for DarkColors {
@@ -833,6 +860,8 @@ impl Default for DarkColors {
             link_background: String::new(),
             url_tooltip_link_color: HOVER_POPUP_LINK_COLOR.into(),
             url_tooltip_text_color: HOVER_POPUP_TEXT_COLOR.into(),
+            wallpapers: RegionWallpapers::default(),
+            origin: ThemeOrigin::default(),
         }
     }
 }
@@ -873,6 +902,8 @@ impl Default for Appearance {
             input_font_size: 0,
             time_font_size: 0,
             dark: DarkColors::default(),
+            wallpapers: RegionWallpapers::default(),
+            origin: ThemeOrigin::default(),
             saved_colors: Vec::new(),
             channel_looks: Vec::new(),
         }
@@ -1902,6 +1933,7 @@ impl Settings {
         self.appearance.clean_palette();
         self.appearance.clamp_font_sizes();
         self.appearance.clean_channel_looks();
+        self.appearance.clean_themes();
         let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
