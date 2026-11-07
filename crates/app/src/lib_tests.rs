@@ -1095,7 +1095,7 @@ fn line(text: &str, millis: Option<u64>, msgid: Option<&str>) -> timeline::Timel
 }
 
 #[test]
-fn requested_history_goes_where_it_was_requested_without_unread_marks() {
+fn requested_history_follows_processing_order_without_unread_marks() {
     let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     state.dispatch(Command::SelectChannel(ConversationId(2)));
@@ -1133,7 +1133,7 @@ fn requested_history_goes_where_it_was_requested_without_unread_marks() {
     assert_eq!(added, 2);
     assert_eq!(
         texts(&state, 0),
-        ["alice has joined", "old one", "old two", "live"]
+        ["alice has joined", "live", "old one", "old two"]
     );
     let messages = &state.conversations()[0].messages;
     assert!(
@@ -1141,9 +1141,9 @@ fn requested_history_goes_where_it_was_requested_without_unread_marks() {
             .windows(2)
             .all(|pair| pair[0].sequence < pair[1].sequence)
     );
-    assert_eq!(messages[1].provenance, Provenance::Requested);
+    assert_eq!(messages[1].provenance, Provenance::Live);
     assert_eq!(messages[2].provenance, Provenance::Requested);
-    assert_eq!(messages[3].provenance, Provenance::Live);
+    assert_eq!(messages[3].provenance, Provenance::Requested);
     assert!(!state.is_unread(ConversationId(1)), "history is not news");
     // Unrelated channels are untouched, and later lines follow.
     assert_eq!(texts(&state, 1), ["other channel"]);
@@ -1228,7 +1228,7 @@ fn stale_history_replies_are_ignored() {
 }
 
 #[test]
-fn requested_history_is_bounded_by_the_reserve_and_the_log_limit() {
+fn requested_history_is_bounded_by_the_log_limit_only() {
     let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     for index in 0..MAX_RETAINED - 10 {
@@ -1255,18 +1255,19 @@ fn requested_history_is_bounded_by_the_reserve_and_the_log_limit() {
         .collect();
     assert_eq!(
         state.insert_channel_history(network, "#a", lines),
-        HISTORY_RESERVE
+        HISTORY_RESERVE + 50
     );
     let messages = &state.conversations()[0].messages;
     assert!(messages.len() <= MAX_RETAINED);
-    assert_eq!(messages.last().unwrap().text, "after");
+    assert_eq!(
+        messages.last().unwrap().text,
+        format!("h{}", HISTORY_RESERVE + 49)
+    );
     assert!(
         messages
             .windows(2)
             .all(|pair| pair[0].sequence < pair[1].sequence)
     );
-    let history = messages.iter().filter(|m| m.is_history()).count();
-    assert_eq!(history, HISTORY_RESERVE);
 }
 
 /// A peer's messages as the IRC adapter routes them.
@@ -2167,7 +2168,7 @@ fn a_disconnect_records_where_each_joined_channel_was_cut_off() {
 }
 
 #[test]
-fn missed_lines_go_where_the_cut_was_without_duplicates_or_news() {
+fn missed_lines_follow_the_rejoin_without_duplicates_or_news() {
     let (mut state, network, id) = cut_off();
     rejoin(&mut state, network, true);
     state.history_resumed(network, "#a");
@@ -2198,11 +2199,11 @@ fn missed_lines_go_where_the_cut_was_without_duplicates_or_news() {
     assert_eq!(added, 1, "only B is new");
     assert_eq!(
         texts(&state, 0),
-        ["A0", "A", "mine", "B", "alice has joined", "D", "C"]
+        ["A0", "A", "mine", "alice has joined", "D", "C", "B"]
     );
     assert!(ascending(&state, 0));
     assert_eq!(
-        state.conversations()[0].messages[3].provenance,
+        state.conversations()[0].messages[6].provenance,
         Provenance::Requested
     );
     assert!(!state.is_unread(id), "missed lines are not news");
@@ -2230,10 +2231,12 @@ fn a_recovery_that_hit_its_limit_says_lines_may_be_missing() {
         Some("Some messages sent while disconnected are not shown.".into()),
     );
     let messages = &state.conversations()[0].messages;
-    let note = &messages[3];
+    // After the rejoin line, in processing order.
+    assert_eq!(messages[3].text, "alice has joined");
+    let note = &messages[4];
     assert!(note.activity && note.is_history());
     assert!(note.text.starts_with("Some messages"));
-    assert_eq!(messages[4].text, "Y");
+    assert_eq!(messages[5].text, "Y");
     assert!(ascending(&state, 0));
 }
 
@@ -2259,7 +2262,7 @@ fn results_of_an_earlier_attempt_are_not_applied_to_a_later_one() {
     state.set_history_paging(network, true);
     state.set_status(network, ConnectionStatus::Disconnected("third".into()));
     assert_eq!(state.history_resume(network), resume);
-    // Attempt 3 gets its answer, at the original cut.
+    // Attempt 3 gets its answer, recovered from the original cut.
     rejoin(&mut state, network, true);
     state.history_resumed(network, "#a");
     state.insert_resumed_history(
@@ -2271,7 +2274,9 @@ fn results_of_an_earlier_attempt_are_not_applied_to_a_later_one() {
         ],
         None,
     );
-    assert_eq!(texts(&state, 0)[..4], ["A0", "A", "mine", "B"]);
+    // B was missed since the original cut and follows the last rejoin.
+    assert_eq!(texts(&state, 0).last(), Some(&"B"));
+    assert_eq!(texts(&state, 0).iter().filter(|t| **t == "B").count(), 1);
     assert_eq!(texts(&state, 0).iter().filter(|t| **t == "E").count(), 1);
     assert!(ascending(&state, 0));
 }
@@ -2636,11 +2641,10 @@ fn system_messages_reach_the_server_log_and_stay_bounded() {
 }
 
 #[test]
-fn first_join_history_goes_before_the_join_line() {
+fn first_join_history_follows_the_join_line() {
     let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.joined_channel(network, "#a");
-    state.reserve_join_history(network, "#a");
     state.append_channel_activity(network, "#a", "alice has joined".into());
     // The request goes out after the join line, with lines already logged.
     state.append_channel_activity(network, "#a", "topic".into());
@@ -2657,7 +2661,7 @@ fn first_join_history_goes_before_the_join_line() {
     assert_eq!(added, 2);
     assert_eq!(
         texts(&state, 0),
-        ["A", "B", "alice has joined", "topic", "new"]
+        ["alice has joined", "topic", "new", "A", "B"]
     );
 }
 
@@ -2821,7 +2825,7 @@ fn timed_line(text: &str, millis: Option<u64>) -> timeline::TimelineLine {
 }
 
 #[test]
-fn history_lines_show_as_they_arrive_and_are_ordered_when_the_reply_ends() {
+fn history_lines_are_held_and_appended_in_time_order_when_the_reply_ends() {
     let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     let id = ConversationId(1);
@@ -2855,13 +2859,13 @@ fn history_lines_show_as_they_arrive_and_are_ordered_when_the_reply_ends() {
 
     // The reply comes newest first.
     assert!(state.push_history_line(id, timed_line("c", Some(30))));
-    assert_eq!(texts(&state, 0), ["my own", "c", "live"], "shown at once");
+    assert_eq!(texts(&state, 0), ["my own", "live"], "held until the end");
     assert!(state.push_history_line(id, timed_line("b", Some(20))));
     assert!(state.push_history_line(id, timed_line("a", Some(10))));
-    assert_eq!(texts(&state, 0), ["my own", "c", "b", "a", "live"]);
+    assert_eq!(texts(&state, 0), ["my own", "live"]);
 
     assert_eq!(state.finish_history_for(id, None), 3);
-    assert_eq!(texts(&state, 0), ["my own", "a", "b", "c", "live"]);
+    assert_eq!(texts(&state, 0), ["my own", "live", "a", "b", "c"]);
     assert!(ascending(&state, 0));
     // Nothing outside the block moved.
     assert_eq!(sequences(&state, "my own"), own);
