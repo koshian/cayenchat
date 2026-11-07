@@ -146,6 +146,7 @@
   "nickname_change_submit": "変更",
   "nickname_change_required": "ニックネームを入力してください。",
   "log_menu_copy": "コピー",
+  "log_menu_copy_url": "URL をコピー",
   "log_menu_paste": "発言欄に貼り付け",
   "log_menu_mode": "チャンネルのモードを変更…",
   "log_menu_topic": "チャンネルのトピックを変更…",

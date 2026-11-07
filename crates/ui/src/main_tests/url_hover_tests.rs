@@ -397,3 +397,113 @@ fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut Test
     // One line is still only the selected part of the body.
     assert_eq!(copied((2, 1), (2, 4), true, cx).as_deref(), Some("hre"));
 }
+
+fn open_with_url(
+    cx: &mut TestAppContext,
+) -> (gpui::Entity<ChatWindow>, &mut gpui::VisualTestContext) {
+    crate::support::install_test_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+                Event::ChannelMessage {
+                    channel: "#a".into(),
+                    sender: "bob".into(),
+                    text: "https://example.org/x".into(),
+                    notice: false,
+                    server_time: None,
+                    msgid: None,
+                    account: None,
+                    replayed: false,
+                },
+            ],
+            Worker::Running,
+            cx,
+        );
+        let channel = chat.state.conversations()[0].id;
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(channel));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    (chat, cx)
+}
+
+fn right_click(cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    cx.simulate_mouse_move(at, None, Modifiers::none());
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: at,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_right_click_on_a_url_offers_to_copy_it(cx: &mut TestAppContext) {
+    let (chat, cx) = open_with_url(cx);
+    let bounds = cx.debug_bounds("message-text-0").expect("row drawn");
+    // On the nickname prefix: no URL.
+    right_click(cx, point(bounds.origin.x + px(2.), bounds.center().y));
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.log_menu.as_ref().unwrap().url.is_none());
+    });
+    // On the link.
+    right_click(cx, point(bounds.origin.x + px(60.), bounds.center().y));
+    chat.update_in(cx, |chat, window, cx| {
+        assert_eq!(
+            chat.log_menu.as_ref().unwrap().url.as_deref(),
+            Some("https://example.org/x")
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into()));
+        chat.log_menu_choice(crate::LogMenuChoice::CopyUrl, window, cx);
+        assert!(chat.log_menu.is_none());
+    });
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("https://example.org/x")
+    );
+}
+
+#[gpui::test]
+fn no_url_bubble_shows_while_the_log_menu_is_open(cx: &mut TestAppContext) {
+    let (chat, cx) = open_with_url(cx);
+    let bounds = cx.debug_bounds("message-text-0").expect("row drawn");
+    let at = point(bounds.origin.x + px(60.), bounds.center().y);
+    cx.simulate_mouse_move(at, None, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("url-tooltip").is_some(), "shown on hover");
+    // The menu opens at the pointer: the shown bubble goes.
+    right_click(cx, at);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("url-tooltip").is_none(), "closed by menu");
+    // Closed, the hover works again.
+    chat.update(cx, |chat, cx| {
+        chat.dismiss_menus();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.simulate_mouse_move(at, None, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("url-tooltip").is_some(), "back to normal");
+}
