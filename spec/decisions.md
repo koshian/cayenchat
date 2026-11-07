@@ -3769,6 +3769,15 @@ the start of the session.
   settings window open and refuses an ordinary quit (a signal or the system's
   shutdown still ends the app), and a refused attempt can be made again a
   moment later.
+  The reason is shown (#965): while `store_waits` is above zero
+  the note `credential_store_waiting` ("waiting for the credential store;
+  answer the operating system's prompt if there is one") is shown in a band
+  above the scrolling pane, so it is readable wherever the pane is scrolled,
+  and it goes when the wait ends. An autosave that falls due
+  meanwhile is not made but scheduled again (`autosave_committed`): a move
+  records the new store in the file before the window learns of it, and a save
+  in between would write the old one back. In production only `Worker` holds
+  the store; `Credentials` is the store of tests without a worker.
 - **Switching the store.** Each job uses the store that is current at its
   place in the queue (`Worker::current`), not the one installed when it was
   queued. `Worker::current` is the only owner of which store is in use
