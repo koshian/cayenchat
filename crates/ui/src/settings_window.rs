@@ -584,7 +584,12 @@ impl SettingsForm {
                 link_background: value(&self.dark_link_background),
                 url_tooltip_link_color: value(&self.dark_url_tooltip_link_color),
                 url_tooltip_text_color: value(&self.dark_url_tooltip_text_color),
+                // Not text fields: changed by the wallpaper and theme buttons.
+                wallpapers: self.values.appearance.dark.wallpapers.clone(),
+                origin: self.values.appearance.dark.origin.clone(),
             },
+            wallpapers: self.values.appearance.wallpapers.clone(),
+            origin: self.values.appearance.origin.clone(),
             saved_colors: self.values.appearance.saved_colors.clone(),
             channel_looks: self.values.appearance.channel_looks.clone(),
         };

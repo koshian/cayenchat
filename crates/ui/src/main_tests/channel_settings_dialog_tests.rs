@@ -151,6 +151,67 @@ fn the_dialog_saves_the_channel_log_look_and_rejects_a_bad_one(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn the_dialog_tells_inheriting_no_wallpaper_and_its_own_apart(cx: &mut TestAppContext) {
+    use crate::channel_settings_dialog::WallpaperChoice;
+    install_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    let picture = std::env::temp_dir().join(format!("cayen-look-{}.png", std::process::id()));
+    std::fs::write(&picture, b"x").unwrap();
+    let open = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+        chat.update_in(cx, |chat, window, cx| {
+            chat.show_channel_settings(NetworkId(1), "#A", window, cx);
+            chat.channel_settings.as_ref().unwrap().view().clone()
+        })
+    };
+    let saved_look = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+        chat.read_with(cx, |chat, _| {
+            chat.saved.appearance.channel_looks.first().cloned()
+        })
+    };
+
+    // Nothing chosen is inheriting: no override is stored at all.
+    let view = open(&chat, cx);
+    view.update(cx, |view, cx| {
+        assert_eq!(view.look(cx).unwrap().wallpaper, None);
+        assert!(!view.look(cx).unwrap().no_wallpaper);
+    });
+    // "No wallpaper" is stored apart from "inherit", and drops a typed file.
+    view.update(cx, |view, cx| {
+        view.set_look_field(4, &picture.to_string_lossy(), cx);
+        view.set_wallpaper_choice(WallpaperChoice::Off, cx);
+        view.save(cx);
+    });
+    let look = saved_look(&chat, cx).unwrap();
+    assert!(look.no_wallpaper && look.wallpaper.is_none());
+    // Reopened it shows that choice; its own file replaces it.
+    let view = open(&chat, cx);
+    view.update(cx, |view, cx| {
+        assert!(view.look(cx).unwrap().no_wallpaper);
+        view.set_wallpaper_choice(WallpaperChoice::Own, cx);
+        // Its own picture needs a file.
+        assert!(view.look(cx).is_err());
+        view.set_look_field(4, &picture.to_string_lossy(), cx);
+        view.save(cx);
+    });
+    let look = saved_look(&chat, cx).unwrap();
+    assert!(!look.no_wallpaper);
+    assert_eq!(look.wallpaper.as_deref(), picture.to_str());
+    // Back to the standard removes the override.
+    let view = open(&chat, cx);
+    view.update(cx, |view, cx| {
+        view.set_wallpaper_choice(WallpaperChoice::Inherit, cx);
+        view.save(cx);
+    });
+    assert!(saved_look(&chat, cx).is_none());
+    std::fs::remove_file(&picture).unwrap();
+    drop(file);
+}
+
+#[gpui::test]
 fn enter_and_space_act_once_on_the_focused_control(cx: &mut TestAppContext) {
     install_globals(cx);
     let settings = crate::settings_with_channels("-#a");
@@ -257,9 +318,9 @@ fn the_dialog_opens_with_auto_join_focused(cx: &mut TestAppContext) {
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_chat, view, _file, cx) = open_dialog_for_b(cx);
     // Auto-join, decode, encode, four character references, the six log look
-    // fields with the wallpaper's Browse button, reset, cancel and save:
-    // seventeen stops. Seventeen Tabs make a full circle.
-    for _ in 0..17 {
+    // fields with the wallpaper's three choices and Browse button, reset,
+    // cancel and save: twenty stops. Twenty Tabs make a full circle.
+    for _ in 0..20 {
         tab(cx);
     }
     press(cx, "space");
@@ -287,9 +348,10 @@ fn tab_visits_the_controls_in_order(cx: &mut TestAppContext) {
         );
     });
     // Encode, then four character-reference stops, the log look's seven
-    // (six fields and Browse), reset and cancel: thirteen more Tabs reach
+    // (six fields, the three wallpaper choices and Browse), reset and cancel:
+    // sixteen more Tabs reach
     // Cancel, whose Enter closes the dialog unsaved.
-    for _ in 0..13 {
+    for _ in 0..16 {
         tab(cx);
     }
     press(cx, "enter");

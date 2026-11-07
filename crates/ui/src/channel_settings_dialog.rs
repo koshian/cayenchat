@@ -174,6 +174,26 @@ struct LookFields {
     text: Entity<TextInput>,
     wallpaper: Entity<TextInput>,
     opacity: Entity<TextInput>,
+    wallpaper_choice: WallpaperChoice,
+}
+
+/// What the channel does about the wallpaper (#962).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WallpaperChoice {
+    /// Follow the standard wallpaper of the channel log.
+    Inherit,
+    /// None, even where the standard has one.
+    Off,
+    /// The picture named in the file field.
+    Own,
+}
+
+impl WallpaperChoice {
+    const ALL: [(Self, &'static str); 3] = [
+        (Self::Inherit, "channel_look_wallpaper_inherit"),
+        (Self::Off, "channel_look_wallpaper_off"),
+        (Self::Own, "channel_look_wallpaper_own"),
+    ];
 }
 
 impl LookFields {
@@ -184,7 +204,15 @@ impl LookFields {
         };
         let look = look.cloned().unwrap_or_default();
         let color = |value: Option<String>| value.unwrap_or_default();
+        let wallpaper_choice = if look.no_wallpaper {
+            WallpaperChoice::Off
+        } else if look.wallpaper.is_some() {
+            WallpaperChoice::Own
+        } else {
+            WallpaperChoice::Inherit
+        };
         Self {
+            wallpaper_choice,
             font_size: field(
                 match look.font_size {
                     0 => String::new(),
@@ -217,10 +245,11 @@ impl LookFields {
         ]
     }
 
-    fn clear(&self, cx: &mut App) {
+    fn clear(&mut self, cx: &mut App) {
         for field in self.all() {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
+        self.wallpaper_choice = WallpaperChoice::Inherit;
     }
 
     /// The look the fields hold, or why it cannot be used.
@@ -265,9 +294,23 @@ impl LookFields {
                     .ok_or_else(|| i18n.text("channel_look_opacity_invalid"))?,
             )
         };
-        let wallpaper = text(&self.wallpaper);
+        // A file typed into the field is the channel's own picture even
+        // when "inherit" is still marked; "no wallpaper" ignores the field.
+        let typed = text(&self.wallpaper);
+        let choice = match self.wallpaper_choice {
+            WallpaperChoice::Inherit if !typed.is_empty() => WallpaperChoice::Own,
+            choice => choice,
+        };
+        let wallpaper = if choice == WallpaperChoice::Own {
+            typed
+        } else {
+            String::new()
+        };
         if wallpaper.len() > MAX_WALLPAPER_PATH_BYTES {
             return Err(i18n.text("channel_look_wallpaper_long"));
+        }
+        if choice == WallpaperChoice::Own && wallpaper.is_empty() {
+            return Err(i18n.text("channel_look_wallpaper_empty"));
         }
         if !wallpaper.is_empty() && !std::path::Path::new(&wallpaper).is_file() {
             return Err(i18n.text("channel_look_wallpaper_missing"));
@@ -279,6 +322,7 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_opacity,
+            no_wallpaper: choice == WallpaperChoice::Off,
             ..ChannelLook::default()
         })
     }
@@ -293,6 +337,7 @@ struct Controls {
     decode: FocusHandle,
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
+    wallpaper_choice: [FocusHandle; 3],
     browse: FocusHandle,
     reset: FocusHandle,
     cancel: FocusHandle,
@@ -307,6 +352,7 @@ impl Controls {
             decode: handle(),
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
+            wallpaper_choice: std::array::from_fn(|_| handle()),
             browse: handle(),
             reset: handle(),
             cancel: handle(),
@@ -330,7 +376,13 @@ impl Controls {
         );
         let [size, background, alternate, text, wallpaper, opacity] = look.all();
         let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
-        order.extend([size, background, alternate, text, wallpaper].map(field));
+        order.extend([size, background, alternate, text].map(field));
+        order.extend(
+            self.wallpaper_choice
+                .iter()
+                .map(|handle| (handle.clone(), Some(5))),
+        );
+        order.push(field(wallpaper));
         order.push((self.browse.clone(), Some(5)));
         order.push(field(opacity));
         order.extend([
@@ -430,11 +482,25 @@ impl ChannelSettingsView {
                 this.look
                     .wallpaper
                     .update(cx, |field, cx| field.set_text(&path, cx));
+                this.look.wallpaper_choice = WallpaperChoice::Own;
                 this.error = None;
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Marks how the channel treats the wallpaper. Inheriting or none
+    /// leaves no stale file name behind in the field.
+    pub(crate) fn set_wallpaper_choice(&mut self, choice: WallpaperChoice, cx: &mut Context<Self>) {
+        self.look.wallpaper_choice = choice;
+        if choice != WallpaperChoice::Own {
+            self.look
+                .wallpaper
+                .update(cx, |field, cx| field.set_text("", cx));
+        }
+        self.error = None;
+        cx.notify();
     }
 
     /// Reset to default: the encodings, the reference mode and the log look
@@ -728,6 +794,24 @@ impl Render for ChannelSettingsView {
             .focus(move |style| style.border_color(ring))
             .child(self.i18n.text("channel_look_browse"))
             .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
+        let mut wallpaper_choices = div().flex().flex_wrap().gap_1();
+        let shown = match self.look.wallpaper_choice {
+            WallpaperChoice::Inherit if !self.look.wallpaper.read(cx).text().trim().is_empty() => {
+                WallpaperChoice::Own
+            }
+            choice => choice,
+        };
+        for (index, (choice, key)) in WallpaperChoice::ALL.into_iter().enumerate() {
+            wallpaper_choices = wallpaper_choices.child(
+                settings_theme::button(("channel-look-wallpaper", index), shown == choice, cx)
+                    .track_focus(&self.controls.wallpaper_choice[index])
+                    .focus(move |style| style.border_color(ring))
+                    .child(self.i18n.text(key))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_wallpaper_choice(choice, cx)),
+                    ),
+            );
+        }
         let look = div()
             .id("channel-look")
             .debug_selector(|| "channel-look".into())
@@ -750,6 +834,12 @@ impl Render for ChannelSettingsView {
             .child(row("channel_look_background", &self.look.background))
             .child(row("channel_look_alternate", &self.look.alternate))
             .child(row("channel_look_text", &self.look.text))
+            .child(
+                div()
+                    .text_color(palette.text)
+                    .child(self.i18n.text("channel_look_wallpaper_choice")),
+            )
+            .child(wallpaper_choices)
             .child(
                 div()
                     .flex()
