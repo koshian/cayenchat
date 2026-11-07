@@ -17,13 +17,16 @@ use gpui::{App, Global};
 
 use crate::localization::Localizer;
 
+/// The store of an app without a worker (tests); production has a `Worker`.
 pub struct Credentials(pub CredentialStore);
 
 impl Global for Credentials {}
 
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
     let store = CredentialStore::open(kind);
-    cx.set_global(Credentials(store.clone()));
+    // The worker is the only owner of the store: a move of the secrets
+    // changes the store it holds, and a second copy in `Credentials` would
+    // go stale. `Credentials` is for tests without a worker.
     cx.set_global(Worker::start(store));
 }
 
@@ -49,9 +52,13 @@ impl Global for Worker {}
 impl Worker {
     pub fn start(store: CredentialStore) -> Self {
         let (queue, jobs) = mpsc::channel::<Job>();
+        #[cfg(test)]
+        let test_file = crate::settings_file::share();
         let spawned = std::thread::Builder::new()
             .name("credential-store".into())
             .spawn(move || {
+                #[cfg(test)]
+                crate::settings_file::adopt(test_file);
                 while let Ok(job) = jobs.recv() {
                     job();
                 }

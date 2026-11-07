@@ -596,6 +596,7 @@
   "credential_switch_confirm": "ローカルファイルを使う",
   "credential_switched": "資格情報の保存先を変更し、保存済みの {count} 件を移しました。",
   "credential_switched_source_unavailable": "資格情報の保存先を変更しました。以前の保存先を読めなかったため、保存済みの項目は移していません。",
+  "credential_store_waiting": "資格情報の保存を待っています。OS の確認画面が出ている場合は応答してください。それまでは、閉じる操作、サーバーの切り替え、終了を受け付けません。",
   "credential_in_use": "（使用中）",
   "image_upload_tab": "画像アップロード",
   "image_upload_intro": "IRC の入力欄に貼り付け・ドロップした画像を、あなたが所有する画像ホスティングのアカウントへアップロードできます。IRC にはその結果のリンクだけがテキストとして送られます。",

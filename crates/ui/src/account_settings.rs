@@ -153,7 +153,7 @@ impl SettingsWindow {
         // record the choice, and only then delete the originals, so a
         // failure before the choice is saved leaves every secret in the
         // backend still in use.
-        self.store_wait();
+        self.store_wait(cx);
         let moving = {
             let to = to.clone();
             secrets::run_switching(cx, move |from| {
@@ -168,7 +168,7 @@ impl SettingsWindow {
                 .await
                 .unwrap_or_else(|| Err(secrets::stopped().into()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 this.credential_backend_moved(kind, to, moved, cx)
             });
         })
@@ -364,11 +364,11 @@ impl SettingsWindow {
         }
         let key = SecretKey::uploader_token(&provider);
         let writing = secrets::run(cx, move |store| store.set(&key, &Secret::new(token)));
-        self.store_wait();
+        self.store_wait(cx);
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 match result {
                     Ok(()) => {
                         this.upload_token
@@ -394,11 +394,11 @@ impl SettingsWindow {
         };
         let key = SecretKey::uploader_token(&provider);
         let deleting = secrets::run(cx, move |store| store.delete(&key));
-        self.store_wait();
+        self.store_wait(cx);
         cx.spawn(async move |this, cx| {
             let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 match result {
                     Ok(()) => {
                         let noted = this.note_upload_token(&provider, false);

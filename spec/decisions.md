@@ -3401,7 +3401,7 @@ there is no network, bouncer or connection behind it.
 
 ## D076 — The channel menu's settings dialog is drawn in the chat window (#781)
 
-**Status:** Accepted; the dialog became a window of its own in D087 (#950)
+**Status:** Accepted; the dialog became a window of its own in D088 (#950)
 
 2026-10-30. Refines D073's "Channel settings dialog".
 
@@ -3658,7 +3658,7 @@ the start of the session.
 
 - **Decision.** The channel settings dialog (D076) has a "channel log look"
   section: a font size, a background, an alternate row and a text color, a
-  wallpaper file and its filter settings (D087). An empty field follows the
+  wallpaper file and its filter settings (D088). An empty field follows the
   global appearance. The values are `Appearance::channel_looks`, a list
   keyed by server profile id and channel name (matched with the network's
   case mapping, as the encodings are), not part of the server profile:
@@ -3677,7 +3677,7 @@ the start of the session.
   and drops a result that arrives for another key. The picture is the
   backmost layer and the log's background color lies over it with an
   opacity, so a high-contrast photo leaves the text readable in the light
-  and the dark theme (D087 replaced the first version's baked-in tint and
+  and the dark theme (D088 replaced the first version's baked-in tint and
   strength by this). There are no tiling or position options. A file that
   cannot be read shows no wallpaper.
 - **Not done.** Other panes, a transparent background or window, and
@@ -3704,7 +3704,7 @@ the start of the session.
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
 
-## D087 — Wallpaper filter settings per channel (#950)
+## D088 — Wallpaper filter settings per channel (#950)
 
 - **Decision.** D084's fixed filter (sigma 8, 60 % tint) hid photos. The
   wallpaper is now the backmost layer, drawn as loaded, and the channel
@@ -3869,6 +3869,15 @@ the start of the session.
   settings window open and refuses an ordinary quit (a signal or the system's
   shutdown still ends the app), and a refused attempt can be made again a
   moment later.
+  The reason is shown (#965): while `store_waits` is above zero
+  the note `credential_store_waiting` ("waiting for the credential store;
+  answer the operating system's prompt if there is one") is shown in a band
+  above the scrolling pane, so it is readable wherever the pane is scrolled,
+  and it goes when the wait ends. An autosave that falls due
+  meanwhile is not made but scheduled again (`autosave_committed`): a move
+  records the new store in the file before the window learns of it, and a save
+  in between would write the old one back. In production only `Worker` holds
+  the store; `Credentials` is the store of tests without a worker.
 - **Switching the store.** Each job uses the store that is current at its
   place in the queue (`Worker::current`), not the one installed when it was
   queued. `Worker::current` is the only owner of which store is in use

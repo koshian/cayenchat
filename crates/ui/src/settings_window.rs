@@ -2037,15 +2037,25 @@ impl SettingsWindow {
     }
 
     /// Starts waiting for a store job; `store_done` ends it.
-    pub(crate) fn store_wait(&mut self) {
+    pub(crate) fn store_wait(&mut self, cx: &mut Context<Self>) {
         self.store_waits += 1;
+        cx.notify();
     }
 
-    pub(crate) fn store_done(&mut self) {
+    pub(crate) fn store_done(&mut self, cx: &mut Context<Self>) {
         self.store_waits = self.store_waits.saturating_sub(1);
+        cx.notify();
     }
 
     fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
+        // A job of the store thread may still change what the form holds
+        // (the credential backend a move records in the file before the form
+        // learns of it). Saving now could write the old value back, so the
+        // save waits until the store thread is done.
+        if self.store_busy() {
+            self.schedule_autosave(cx);
+            return false;
+        }
         match self.save_settings(SaveMode::Committed, cx) {
             Ok(()) => {
                 if self.autosave_error.take().is_some() {
@@ -2556,7 +2566,7 @@ impl SettingsWindow {
             return;
         }
         let shown = self.settings.values.selected_server.clone();
-        self.store_wait();
+        self.store_wait(cx);
         let keys: Vec<_> = marked.iter().map(|(which, _)| which.key(&shown)).collect();
         let writing = secrets::run(cx, move |store| {
             let mut written = Vec::new();
@@ -2573,7 +2583,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let written = writing.await;
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 let outcome = this.marked_passwords_written(&shown, written, cx);
                 then(this, outcome, cx);
             });
@@ -2621,11 +2631,11 @@ impl SettingsWindow {
         let key = which.key(profile);
         let writing = secrets::run(cx, move |store| store.set(&key, &secret));
         let profile = profile.to_owned();
-        self.store_wait();
+        self.store_wait(cx);
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 this.credential_done(which, &profile, result, true, cx)
             });
         })
@@ -2715,11 +2725,11 @@ impl SettingsWindow {
         };
         let key = which.key(&id);
         let deleting = secrets::run(cx, move |store| store.delete(&key));
-        self.store_wait();
+        self.store_wait(cx);
         cx.spawn(async move |this, cx| {
             let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 this.credential_done(which, &id, result, false, cx)
             });
         })
@@ -2908,11 +2918,11 @@ impl SettingsWindow {
         let writing = secrets::run(cx, move |store| store.set(&key, &secret_text));
         let public = cayenchat_irc_core::sasl_public_key(secret).ok();
         let profile = profile.to_owned();
-        self.store_wait();
+        self.store_wait(cx);
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.store_done();
+                this.store_done(cx);
                 if this.key_done(&profile, result, true, cx)
                     && this.settings.values.selected_server == profile
                 {
@@ -2942,7 +2952,7 @@ impl SettingsWindow {
                 let key = SecretKey::sasl_key(&profile.id);
                 let deleting = this
                     .update(cx, |this, cx| {
-                        this.store_wait();
+                        this.store_wait(cx);
                         secrets::run(cx, move |store| store.delete(&key))
                     })
                     .ok();
@@ -2951,7 +2961,7 @@ impl SettingsWindow {
                 };
                 let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
                 let _ = this.update(cx, |this, cx| {
-                    this.store_done();
+                    this.store_done(cx);
                     this.key_done(&profile.id, result, false, cx);
                     if this.settings.values.selected_server == profile.id {
                         this.settings.sasl_public_key = None;
@@ -5586,19 +5596,44 @@ impl SettingsWindow {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .flex()
+                    .flex_col()
+                    // Outside the scrolling pane, so the reason a refused
+                    // leave gives is readable wherever the pane is scrolled.
+                    .when(self.store_busy(), |d| {
+                        d.child(
+                            div()
+                                .id("credential-store-waiting")
+                                .flex_shrink_0()
+                                .w_full()
+                                .px_4()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .text_color(theme.warning)
+                                .child(self.i18n.text("credential_store_waiting")),
+                        )
+                    })
                     .child(
                         div()
-                            .id("settings-pane")
-                            .track_scroll(&self.pane_scroll)
-                            .size_full()
-                            .overflow_y_scroll()
-                            .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
-                    )
-                    .child(scrollbar::scrollbar(
-                        "scrollbar-settings-pane",
-                        &self.pane_scroll,
-                        theme.text_muted,
-                    )),
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .child(
+                                div()
+                                    .id("settings-pane")
+                                    .track_scroll(&self.pane_scroll)
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                            )
+                            .child(scrollbar::scrollbar(
+                                "scrollbar-settings-pane",
+                                &self.pane_scroll,
+                                theme.text_muted,
+                            )),
+                    ),
             )
             .children(auto_join)
             .on_action(cx.listener(Self::open_settings_action))
