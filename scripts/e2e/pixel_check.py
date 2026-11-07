@@ -13,7 +13,7 @@ does not move with changes elsewhere in the window.
 Needs what `gui_session.py` needs. The pure parts (`Pixels`, `Rect`,
 `parse_color`) are unit tested without a display in `test_pixel_check.py`.
 """
-import json, os, socket, subprocess, sys, tempfile, threading
+import json, os, socket, struct, subprocess, sys, tempfile, threading, zlib
 from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +110,71 @@ class Pixels:
         if found:
             raise PixelMismatch(f"{what}: {found} pixels of {hex_color(parse_color(color))}, "
                                 f"want none ({self.summary()})")
+
+    def to_png(self):
+        """8-bit RGB PNG, filter 0 on every row (what `from_png` reads)."""
+        raw = b"".join(b"\0" + b"".join(bytes((r[i + 2], r[i + 1], r[i]))
+                                          for i in range(0, len(r), 4)) for r in self.rows)
+
+        def chunk(kind, data):
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+    @classmethod
+    def from_png(cls, data):
+        """Reads only what `to_png` writes; anything else is refused."""
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            raise ValueError("not a PNG")
+        pos, header, idat = 8, None, b""
+        while pos + 8 <= len(data):
+            size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+            body = data[pos + 8:pos + 8 + size]
+            pos += 12 + size
+            if kind == b"IHDR":
+                header = struct.unpack(">IIBBBBB", body)
+            elif kind == b"IDAT":
+                idat += body
+        if header is None or header[2:] != (8, 2, 0, 0, 0):
+            raise ValueError("only 8-bit RGB, non-interlaced PNGs written by to_png are read")
+        width, height = header[:2]
+        raw = zlib.decompress(idat)
+        stride = 1 + width * 3
+        if len(raw) != stride * height:
+            raise ValueError("unexpected PNG data size")
+        rows = []
+        for y in range(height):
+            line = raw[y * stride:(y + 1) * stride]
+            if line[0] != 0:
+                raise ValueError("only PNG filter 0 is read")
+            rows.append(b"".join(bytes((line[i + 2], line[i + 1], line[i], 255))
+                                 for i in range(1, len(line), 3)))
+        return cls(width, height, rows)
+
+    def difference(self, other, tolerance=0):
+        """(number of pixels that differ by more than `tolerance` in some
+        channel, the first such (x, y) or None). A different size differs
+        entirely."""
+        if (self.width, self.height) != (other.width, other.height):
+            return self.width * self.height, None
+        count, first = 0, None
+        for y, (a, b) in enumerate(zip(self.rows, other.rows)):
+            if a == b:
+                continue
+            for x in range(self.width):
+                if any(abs(a[x * 4 + c] - b[x * 4 + c]) > tolerance for c in range(3)):
+                    count += 1
+                    first = first or (x, y)
+        return count, first
+
+    def expect_same_as(self, golden, tolerance=0, what="the area"):
+        count, first = self.difference(golden, tolerance)
+        if count:
+            raise PixelMismatch(f"{what}: {count} of {golden.width * golden.height} pixels differ "
+                                f"from the reference, the first at {first}")
 
     def summary(self, top=4):
         total = self.width * self.height
