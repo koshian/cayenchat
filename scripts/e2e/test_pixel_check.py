@@ -52,6 +52,24 @@ class PixelsTest(unittest.TestCase):
         with self.assertRaises(PixelMismatch):
             picture.cut(Rect(0, 0, 2, 2)).expect_present(B)
 
+    def test_png_round_trip(self):
+        picture = self.picture()
+        again = Pixels.from_png(picture.to_png())
+        self.assertEqual(again.rows, picture.rows)
+        with self.assertRaises(ValueError):
+            Pixels.from_png(b"not a png")
+
+    def test_same_as_reference_fails_on_a_changed_pixel(self):
+        picture = self.picture()
+        picture.expect_same_as(Pixels.from_rgb([[A, A, B], [A, A, B]]))
+        changed = Pixels.from_rgb([[A, A, B], [A, (0x33, 0x66, 0xCD), B]])
+        with self.assertRaises(PixelMismatch):
+            picture.expect_same_as(changed)
+        picture.expect_same_as(changed, tolerance=1)
+        self.assertEqual(picture.difference(changed), (1, (1, 1)))
+        with self.assertRaises(PixelMismatch):
+            picture.expect_same_as(picture.cut(Rect(0, 0, 2, 2)))
+
 
 if __name__ == "__main__":
     unittest.main()
