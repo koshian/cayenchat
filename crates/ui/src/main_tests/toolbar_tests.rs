@@ -398,6 +398,7 @@ fn the_upload_button_explains_a_missing_service_before_asking_for_a_file(cx: &mu
     });
     // The test platform has no file dialog and panics if one is opened.
     chat.update_in(cx, |chat, window, cx| chat.toolbar_upload(window, cx));
+    cx.run_until_parked();
     assert!(cx.has_pending_prompt(), "the missing service is announced");
 }
 

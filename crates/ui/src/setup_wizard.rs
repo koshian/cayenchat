@@ -13,7 +13,7 @@
 use cayenchat_storage::{PRESETS, ServerProfile, Settings, TextEncoding};
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, TextInput, button_order, dialog, secrets, settings_file, theme};
+use crate::{ChatWindow, TextInput, button_order, dialog, settings_file, theme};
 
 const BOX_MAX_WIDTH: Pixels = px(480.);
 /// What quick setup joins; the server is the first preset.
@@ -205,7 +205,12 @@ impl ChatWindow {
             let mut probe = self.saved.clone();
             let id = add_easy_server(&mut probe, &nickname);
             probe.profile(&id).and_then(|profile| {
-                crate::saved_connection_config(profile, probe.language, &secrets::store(cx)).err()
+                crate::saved_connection_config(
+                    profile,
+                    probe.language,
+                    crate::StoredConnection::nothing(),
+                )
+                .err()
             })
         };
         if let Some(error) = invalid {
@@ -265,7 +270,11 @@ impl ChatWindow {
             .profile(&id)
             .ok_or_else(|| self.i18n.text("not_connected"))
             .and_then(|profile| {
-                crate::saved_connection_config(profile, settings.language, &secrets::store(cx))
+                crate::saved_connection_config(
+                    profile,
+                    settings.language,
+                    crate::StoredConnection::nothing(),
+                )
             })
             .and_then(|(config, missing)| self.connect_profile(&id, config, missing, window, cx));
         match connected {
