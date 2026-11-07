@@ -3735,7 +3735,7 @@ the start of the session.
   it; the window is kept still instead (next item).
 - **Restriction while the store is written (decided by the maintainer).**
   The settings window counts what the store thread still owes it
-  (`store_waits`: password and SASL key writes and deletions, the marked
+  (`store_waits`: password, SASL key and upload token writes and deletions, the marked
   passwords of a new server's Save or Connect, and a move to another store).
   While it is above zero the window refuses to leave (`save_before_leaving`,
   the one exit of the title bar, Escape, Back and quit) and refuses to show

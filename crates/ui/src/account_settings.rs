@@ -364,9 +364,11 @@ impl SettingsWindow {
         }
         let key = SecretKey::uploader_token(&provider);
         let writing = secrets::run(cx, move |store| store.set(&key, &Secret::new(token)));
+        self.store_wait();
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
+                this.store_done();
                 match result {
                     Ok(()) => {
                         this.upload_token
@@ -392,9 +394,11 @@ impl SettingsWindow {
         };
         let key = SecretKey::uploader_token(&provider);
         let deleting = secrets::run(cx, move |store| store.delete(&key));
+        self.store_wait();
         cx.spawn(async move |this, cx| {
             let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
+                this.store_done();
                 match result {
                     Ok(()) => {
                         let noted = this.note_upload_token(&provider, false);

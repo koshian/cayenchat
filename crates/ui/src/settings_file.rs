@@ -483,8 +483,12 @@ mod tests {
             form.upload_token
                 .update(cx, |field, cx| field.set_text("token", cx));
             form.connect_upload_account(cx);
+            // The window is held until the note is made.
+            assert!(form.store_busy());
+            assert!(!form.save_before_leaving(cx));
         });
         cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
         assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         let store = cx.update(|_, cx| secrets::store(cx));
@@ -506,8 +510,12 @@ mod tests {
         assert!(noted());
         cx.update(|_, cx| cx.set_global(secrets::Credentials(store)));
 
-        form.update(cx, |form, cx| form.disconnect_upload_account(cx));
+        form.update(cx, |form, cx| {
+            form.disconnect_upload_account(cx);
+            assert!(form.store_busy());
+        });
         cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
         assert!(form.read_with(cx, |form, _| !form.upload_connected));
         assert!(!noted());
         drop(file);
