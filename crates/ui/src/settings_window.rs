@@ -23,7 +23,7 @@ use cayenchat_storage::{
     ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
-use std::{collections::HashMap, time::Duration};
+use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
 /// What was typed for a server that is not shown: its unsaved passwords and
 /// whether each is to be saved with the settings.
@@ -569,6 +569,8 @@ impl SettingsForm {
             channel_tree_font_size: font_size_value(&self.font_sizes[3], settings.language, cx)?,
             input_font_size: font_size_value(&self.font_sizes[4], settings.language, cx)?,
             time_font_size: font_size_value(&self.font_sizes[5], settings.language, cx)?,
+            channel_log_line_height: self.values.appearance.channel_log_line_height,
+            combined_log_line_height: self.values.appearance.combined_log_line_height,
             dark: DarkColors {
                 member_list_background: value(&self.dark_member_list_background),
                 channel_tree_background: value(&self.dark_channel_tree_background),
@@ -910,6 +912,30 @@ enum KeyFileError {
 /// bytes, so anything near this size is not one.
 const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
 
+const LINE_HEIGHT_TRACK_WIDTH: f32 = 220.;
+const LINE_HEIGHT_THUMB: f32 = 14.;
+
+/// Where along the slider (`0..=1`) a saved line height sits; the ends are
+/// the smallest and the largest allowed height.
+fn line_height_fraction(percent: u16) -> f32 {
+    let percent = cayenchat_storage::clamp_line_height_percent(percent);
+    f32::from(percent - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT)
+        / f32::from(
+            cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT,
+        )
+}
+
+/// The line height at a slider fraction (`0..=1`), in whole percents.
+fn line_height_at(fraction: f32) -> u16 {
+    let span =
+        cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT;
+    cayenchat_storage::MIN_LINE_HEIGHT_PERCENT
+        + (fraction.clamp(0., 1.) * f32::from(span)).round() as u16
+}
+
+/// Marks a drag as the line height slider's own.
+struct LineHeightDrag(EntityId, usize);
+
 /// The pane font sizes as shown in their fields, in [`FontTarget`] order;
 /// the standard size (0) is an empty field.
 pub(crate) fn font_size_texts(appearance: &Appearance) -> [String; 6] {
@@ -1174,6 +1200,9 @@ pub(crate) struct SettingsWindow {
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
+    /// Where the log line height slider's track was last painted, to turn
+    /// the pointer position into a value (#953).
+    line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1441,6 +1470,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
+            line_height_tracks: Default::default(),
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -4567,6 +4597,127 @@ impl SettingsWindow {
             )
     }
 
+    /// The saved line height of the channel log (0) or combined log (1).
+    fn line_height_mut(&mut self, log: usize) -> &mut u16 {
+        let appearance = &mut self.settings.values.appearance;
+        if log == 0 {
+            &mut appearance.channel_log_line_height
+        } else {
+            &mut appearance.combined_log_line_height
+        }
+    }
+
+    /// Sets a log's line height from a pointer position over its slider.
+    fn pick_line_height(&mut self, log: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let track = self.line_height_tracks[log].get();
+        // The thumb's center travels from half a thumb in to half a thumb
+        // before the end, so the value follows the thumb under the pointer.
+        let travel = f32::from(track.size.width) - LINE_HEIGHT_THUMB;
+        if travel <= 0. {
+            return;
+        }
+        let fraction = (f32::from(position.x - track.origin.x) - LINE_HEIGHT_THUMB / 2.) / travel;
+        let percent = line_height_at(fraction);
+        let current = self.line_height_mut(log);
+        if *current != percent {
+            *current = percent;
+            cx.notify();
+        }
+    }
+
+    /// The line height slider of the channel log (0) or combined log (1)
+    /// (#953), with a button back to the default.
+    fn line_height_slider(&self, log: usize, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let primary = settings_theme::primary_color(cx);
+        let appearance = &self.settings.values.appearance;
+        let percent = if log == 0 {
+            appearance.channel_log_line_height
+        } else {
+            appearance.combined_log_line_height
+        };
+        let fraction = line_height_fraction(percent);
+        let owner = cx.entity_id();
+        let track = self.line_height_tracks[log].clone();
+        let travel = LINE_HEIGHT_TRACK_WIDTH - LINE_HEIGHT_THUMB;
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(settings_theme::label_column().child(self.i18n.text("log_line_height")))
+            .child(
+                div()
+                    .id(("log-line-height", log))
+                    .relative()
+                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
+                    .h(px(20.))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .child(
+                        canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(9.))
+                            .w_full()
+                            .h(px(2.))
+                            .bg(theme.border),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(fraction * travel))
+                            .top(px(3.))
+                            .size(px(LINE_HEIGHT_THUMB))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(primary)
+                            .bg(primary),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.pick_line_height(log, event.position, cx)
+                        }),
+                    )
+                    .on_drag(LineHeightDrag(owner, log), |_, _, _, cx| {
+                        cx.new(|_| crate::splitter::NoGhost)
+                    })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<LineHeightDrag>, _, cx| {
+                            let drag = event.drag(cx);
+                            if drag.0 == owner && drag.1 == log {
+                                this.pick_line_height(log, event.event.position, cx);
+                            }
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .child(format!("{percent}%")),
+            )
+            .child(
+                div()
+                    .id(("log-line-height-reset", log))
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .child(self.i18n.text("line_height_reset"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        *this.line_height_mut(log) = cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT;
+                        cx.notify();
+                    })),
+            )
+    }
+
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
@@ -4805,7 +4956,9 @@ impl SettingsWindow {
                     })),
             )
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
+            .child(self.line_height_slider(0, cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
+            .child(self.line_height_slider(1, cx))
             .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
             .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
@@ -5436,6 +5589,34 @@ mod join_summary_tests {
         assert_eq!(join_summary(&names(&["#a", "#b"]), String::new()), "#a, #b");
         let many = names(&["#1", "#2", "#3", "#4", "#5", "#6"]);
         assert_eq!(join_summary(&many, String::new()), "#1, #2, #3, #4, #5, …");
+    }
+}
+
+#[cfg(test)]
+mod line_height_slider_tests {
+    use super::{line_height_at, line_height_fraction};
+
+    #[test]
+    fn the_ends_are_the_minimum_and_the_maximum() {
+        assert_eq!(line_height_at(0.), 100);
+        assert_eq!(line_height_at(1.), 200);
+        assert_eq!(line_height_at(-3.), 100);
+        assert_eq!(line_height_at(9.), 200);
+        assert_eq!(line_height_fraction(100), 0.);
+        assert_eq!(line_height_fraction(200), 1.);
+    }
+
+    #[test]
+    fn every_percent_round_trips_including_the_default() {
+        for percent in 100..=200 {
+            assert_eq!(line_height_at(line_height_fraction(percent)), percent);
+        }
+        assert_eq!(
+            line_height_at(line_height_fraction(
+                cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
+            )),
+            cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
+        );
     }
 }
 
