@@ -151,6 +151,14 @@ pub fn input_palette(cx: &App) -> crate::theme::Theme {
     palette
 }
 
+/// The fill of a primary button, for controls that should look as active.
+pub fn primary_color(cx: &App) -> Hsla {
+    match current(cx) {
+        Some(native) => color(native.button.primary_background).into(),
+        None => crate::theme::current(cx).selected.into(),
+    }
+}
+
 /// Preserve each caller's click handler, labels and stable element IDs.
 pub fn button(id: impl Into<ElementId>, primary: bool, cx: &App) -> Stateful<Div> {
     let fallback = crate::theme::current(cx);

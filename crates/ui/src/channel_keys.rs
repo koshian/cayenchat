@@ -10,6 +10,7 @@
 //! file, a log, the diagnostics or the input history.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use cayenchat_irc_core::{ConnectionConfig, valid_channel_key};
 use cayenchat_model::{NetworkId, names::CaseMapping};
@@ -93,17 +94,31 @@ pub fn plain_join_channels(text: &str) -> Option<Vec<String>> {
     .then_some(channels)
 }
 
-/// Gives `config` the saved keys of the auto-join channels of `profile`. A
-/// store that cannot be read, or a saved key the connection cannot send,
-/// just means no key: the 475 then asks for it.
-pub fn use_stored_keys(
-    config: &mut ConnectionConfig,
-    profile: &ServerProfile,
-    store: &CredentialStore,
-) {
-    config.channel_keys = stored_channel_keys(profile, store);
+/// Gives `config` the saved keys read for it (`read_stored_keys`). A saved
+/// key the connection cannot send just means no key: the 475 then asks for
+/// it.
+pub fn use_keys(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
+    config.channel_keys = keys;
     if config.validate().is_err() {
         config.channel_keys.clear();
+    }
+}
+
+/// The saved keys of the auto-join channels `profile` notes as keyed, read on
+/// the store thread. A store that cannot be read means no keys. The store is
+/// not touched when no channel is noted (#643).
+pub fn read_stored_keys(
+    cx: &App,
+    profile: &ServerProfile,
+) -> impl Future<Output = BTreeMap<String, String>> + use<> {
+    let profile = profile.clone();
+    let reading = (!profile.channels_to_read_keys_for().is_empty())
+        .then(|| secrets::run(cx, move |store| stored_channel_keys(&profile, store)));
+    async move {
+        match reading {
+            Some(reading) => reading.await.unwrap_or_default(),
+            None => BTreeMap::new(),
+        }
     }
 }
 
@@ -150,7 +165,7 @@ pub fn keyed_channel_added(before: &[String], profile: &ServerProfile) -> bool {
 
 /// The saved keys of the channels `profile` notes as keyed. The store is not
 /// touched when there are none (#643).
-fn stored_channel_keys(
+pub(crate) fn stored_channel_keys(
     profile: &ServerProfile,
     store: &CredentialStore,
 ) -> BTreeMap<String, String> {
@@ -203,7 +218,6 @@ impl ChatWindow {
         let generation = session.generation;
         let revision = session.channel_key_revision;
         self.registered_connection(network)?;
-        let store = secrets::store(cx);
         // The store is read only for channels noted as keyed (#643); a JOIN
         // of any other channel that a key refuses asks for it (475).
         let channels: Vec<(String, bool)> = channels
@@ -224,32 +238,27 @@ impl ChatWindow {
                 revision,
                 channels,
             },
-            store,
             cx,
         );
         Ok(())
     }
 
     /// Starts the saved-key read for a manual JOIN.
-    fn spawn_join_read(
-        &mut self,
-        network: NetworkId,
-        request: JoinRead,
-        store: CredentialStore,
-        cx: &mut Context<Self>,
-    ) {
+    fn spawn_join_read(&mut self, network: NetworkId, request: JoinRead, cx: &mut Context<Self>) {
         let JoinRead {
             profile,
             generation,
             revision,
             channels,
         } = request;
-        let reading = cx.background_spawn({
+        let reading = secrets::run(cx, {
             let profile = profile.clone();
-            async move { join_keys(&store, &profile, channels) }
+            move |store| join_keys(store, &profile, channels)
         });
         cx.spawn(async move |this, cx| {
-            let keyed = reading.await;
+            let Some(keyed) = reading.await else {
+                return;
+            };
             let _ = this.update(cx, |this, cx| {
                 this.send_joins(network, &profile, generation, revision, keyed, cx)
             });
@@ -435,7 +444,6 @@ impl ChatWindow {
             (Some(_), false) if join.stale => StoreChange::Forget,
             _ => return,
         };
-        let store = secrets::store(cx);
         let key = SecretKey::channel_key(&profile, channel);
         let channel = channel.to_owned();
         let Some((generation, revision)) = self.sessions.get_mut(&network).map(|session| {
@@ -454,18 +462,22 @@ impl ChatWindow {
             StoreChange::Save(typed) => Some(typed.expose().to_owned()),
             StoreChange::Forget => None,
         };
-        let writing = cx.background_spawn(async move {
-            match change {
-                StoreChange::Save(typed) => store
-                    .set(&key, &typed)
-                    .map_err(|error| ("channel_key_save_failed", error)),
-                StoreChange::Forget => store
-                    .delete(&key)
-                    .map_err(|error| ("channel_key_forget_failed", error)),
-            }
+        let failure = match &change {
+            StoreChange::Save(_) => "channel_key_save_failed",
+            StoreChange::Forget => "channel_key_forget_failed",
+        };
+        let writing = secrets::run(cx, move |store| match change {
+            StoreChange::Save(typed) => store
+                .set(&key, &typed)
+                .map_err(|error| ("channel_key_save_failed", error)),
+            StoreChange::Forget => store
+                .delete(&key)
+                .map_err(|error| ("channel_key_forget_failed", error)),
         });
         cx.spawn(async move |this, cx| {
-            let result = writing.await;
+            let result = writing
+                .await
+                .unwrap_or_else(|| Err((failure, secrets::stopped())));
             let _ = this.update(cx, |this, cx| {
                 this.key_store_written(
                     network,
@@ -569,7 +581,6 @@ impl ChatWindow {
         if read.is_empty() {
             return;
         }
-        let store = secrets::store(cx);
         let profile = profile.clone();
         let Some((generation, revision)) = self.sessions.get(&network).and_then(|session| {
             if session.profile_id != profile.id {
@@ -579,10 +590,7 @@ impl ChatWindow {
         }) else {
             return;
         };
-        let reading = cx.background_spawn({
-            let profile = profile.clone();
-            async move { stored_channel_keys(&profile, &store) }
-        });
+        let reading = read_stored_keys(cx, &profile);
         cx.spawn(async move |this, cx| {
             let keys = reading.await;
             let _ = this.update(cx, |this, _| {

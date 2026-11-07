@@ -6,21 +6,21 @@ use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, Disconnect, FocusNextField, FocusPreviousField, OpenSettings, Reconnect,
     ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts, autostart, avatar_editor,
-    color_picker, decorations, diagnostics, focus_reveal, forget_removed_profiles, i18n_error,
+    color_picker, decorations, delete_secrets, diagnostics, focus_reveal, i18n_error,
     input::TextInput, ircv3_settings, localization::Localizer, notification_rules,
-    saved_connection_secrets, scrollbar, secrets, settings_file, settings_theme, shortcut_settings,
+    removed_secret_keys, scrollbar, secrets, settings_file, settings_theme, shortcut_settings,
     theme,
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
-    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, Language,
+    NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile, Settings,
+    TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
-use std::{collections::HashMap, time::Duration};
+use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
 /// What was typed for a server that is not shown: its unsaved passwords and
 /// whether each is to be saved with the settings.
@@ -566,6 +566,8 @@ impl SettingsForm {
             channel_tree_font_size: font_size_value(&self.font_sizes[3], settings.language, cx)?,
             input_font_size: font_size_value(&self.font_sizes[4], settings.language, cx)?,
             time_font_size: font_size_value(&self.font_sizes[5], settings.language, cx)?,
+            channel_log_line_height: self.values.appearance.channel_log_line_height,
+            combined_log_line_height: self.values.appearance.combined_log_line_height,
             dark: DarkColors {
                 member_list_background: value(&self.dark_member_list_background),
                 channel_tree_background: value(&self.dark_channel_tree_background),
@@ -673,7 +675,7 @@ impl SettingsForm {
     pub(crate) fn connection_config(
         &self,
         settings: &mut Settings,
-        store: &CredentialStore,
+        stored: impl crate::StoredSource,
         i18n: &Localizer,
         cx: &App,
     ) -> Result<(ConnectionConfig, crate::connect_auth::Missing), String> {
@@ -687,7 +689,10 @@ impl SettingsForm {
         let profile = settings
             .selected_profile()
             .ok_or_else(|| i18n.text("server_required"))?;
-        let (saved_server, saved_sasl) = saved_connection_secrets(profile, store, i18n)?;
+        let stored = stored.stored(profile);
+        let (saved_server, saved_sasl) = stored
+            .secrets
+            .map_err(|error| secrets::error_text(i18n, &error))?;
         let sasl_found = profile.sasl_enabled.then(|| saved_sasl.is_some());
         let found = (saved_server.is_some(), sasl_found);
         let mut config = crate::connection_config_without_secrets(profile, settings.language)?;
@@ -704,7 +709,7 @@ impl SettingsForm {
             false,
         );
         crate::connect_auth::while_incomplete(&mut config, |config| {
-            crate::channel_keys::use_stored_keys(config, profile, store);
+            crate::channel_keys::use_keys(config, stored.keys);
             config.validate()
         })?;
         // What the read found corrects the note of stored passwords; the
@@ -906,6 +911,30 @@ enum KeyFileError {
 /// The most of a key file that is read; a P-256 PEM key is a few hundred
 /// bytes, so anything near this size is not one.
 const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
+
+const LINE_HEIGHT_TRACK_WIDTH: f32 = 220.;
+const LINE_HEIGHT_THUMB: f32 = 14.;
+
+/// Where along the slider (`0..=1`) a saved line height sits; the ends are
+/// the smallest and the largest allowed height.
+fn line_height_fraction(percent: u16) -> f32 {
+    let percent = cayenchat_storage::clamp_line_height_percent(percent);
+    f32::from(percent - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT)
+        / f32::from(
+            cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT,
+        )
+}
+
+/// The line height at a slider fraction (`0..=1`), in whole percents.
+fn line_height_at(fraction: f32) -> u16 {
+    let span =
+        cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT;
+    cayenchat_storage::MIN_LINE_HEIGHT_PERCENT
+        + (fraction.clamp(0., 1.) * f32::from(span)).round() as u16
+}
+
+/// Marks a drag as the line height slider's own.
+struct LineHeightDrag(EntityId, usize);
 
 /// The pane font sizes as shown in their fields, in [`FontTarget`] order;
 /// the standard size (0) is an empty field.
@@ -1161,6 +1190,9 @@ pub(crate) struct SettingsWindow {
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
+    /// Where the log line height slider's track was last painted, to turn
+    /// the pointer position into a value (#953).
+    line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1180,6 +1212,16 @@ pub(crate) struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
+    /// Secrets of removed servers that could not be deleted yet; every save
+    /// tries them again.
+    forget_pending: Vec<SecretKey>,
+    /// Connect was pressed and the store thread is still reading.
+    connecting: bool,
+    /// Credential writes, deletions and moves of the store thread that this
+    /// window waits for (passwords, SASL keys, a switch of the store). While
+    /// any is pending the window neither closes nor shows another server:
+    /// what finishes them is bound to this window and the server shown (D087).
+    store_waits: usize,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
     /// as it was, until the text is valid.
@@ -1413,6 +1455,7 @@ impl SettingsWindow {
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
+            secrets::flush(cx, std::time::Duration::from_secs(2));
             async {}
         }));
         let saved = settings.values.clone();
@@ -1426,6 +1469,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
+            line_height_tracks: Default::default(),
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -1438,6 +1482,9 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
+            forget_pending: Vec::new(),
+            connecting: false,
+            store_waits: 0,
             field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
@@ -1718,7 +1765,6 @@ impl SettingsWindow {
         mut settings: Settings,
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
-        let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
@@ -1733,25 +1779,138 @@ impl SettingsWindow {
         }
         let _ = self.owner.update(cx, |owner, _, _| owner.notes_written());
         // After the save: a failed save must not cost the secrets of profiles
-        // the file still holds (#760). A failed deletion leaves `previous`
-        // unchanged, so the next Save retries it.
-        forget_removed_profiles(previous, &settings, &store)
-            .map_err(|error| secrets::error_text(&self.i18n, &error))?;
+        // the file still holds (#760). The deletion is done by the store
+        // thread; one that fails is tried again by the next Save.
+        self.forget_removed(removed_secret_keys(previous, &settings), cx);
         Ok(settings)
     }
 
-    pub(crate) fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Queues the deletion of the secrets of removed servers (and those a
+    /// earlier deletion failed for) on the store thread.
+    fn forget_removed(&mut self, keys: Vec<SecretKey>, cx: &mut Context<Self>) {
+        self.forget_pending.extend(keys);
+        self.forget_pending.sort();
+        self.forget_pending.dedup();
+        if self.forget_pending.is_empty() {
+            return;
+        }
+        let keys = std::mem::take(&mut self.forget_pending);
+        let retry = keys.clone();
+        let deleting = secrets::run(cx, move |store| delete_secrets(keys, store));
+        cx.spawn(async move |this, cx| {
+            let failed = deleting.await;
+            let _ = this.update(cx, |this, cx| match failed {
+                Some(failed) => {
+                    if let Some((_, error)) = failed.first() {
+                        this.autosave_error = Some(this.i18n.format(
+                            "credential_delete_failed",
+                            &[("error", &secrets::error_text(&this.i18n, error))],
+                        ));
+                        cx.notify();
+                    }
+                    this.forget_pending
+                        .extend(failed.into_iter().map(|(key, _)| key));
+                }
+                None => this.forget_pending.extend(retry),
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn connect_from_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // A second click waits for the first: the store thread is reading.
+        if std::mem::replace(&mut self.connecting, true) {
+            return;
+        }
         self.follow_saved_server_order(cx);
+        // The passwords marked on a draft are written first, then what is
+        // saved for the server is read, both on the store thread; the
+        // connection starts when they are in.
+        let marked = self.marked_passwords(cx);
+        let clicked = self.settings.values.selected_server.clone();
+        self.write_marked_passwords(marked, cx, move |this, written, cx| {
+            // Another server shown meanwhile: the click is dropped.
+            if this.settings.values.selected_server != clicked {
+                this.connecting = false;
+                cx.notify();
+                return;
+            }
+            let read = written.and_then(|()| {
+                let mut settings = this.settings.snapshot(cx)?;
+                this.drop_other_drafts(&mut settings);
+                let profile = settings
+                    .selected_profile()
+                    .cloned()
+                    .ok_or_else(|| this.i18n.text("server_required"))?;
+                Ok(profile)
+            });
+            let profile = match read {
+                Ok(profile) => profile,
+                Err(error) => {
+                    this.connecting = false;
+                    this.feedback = Some(error);
+                    cx.notify();
+                    return;
+                }
+            };
+            this.read_for_connect(profile, cx);
+        });
+    }
+
+    /// Reads on the store thread what is saved for `profile`, then goes on
+    /// with Connect.
+    fn read_for_connect(&mut self, profile: ServerProfile, cx: &mut Context<Self>) {
+        let reading = crate::read_stored_connections(cx, vec![profile.clone()]);
+        let handle = self.window;
+        cx.spawn(async move |this, cx| {
+            let stored = reading.await.pop();
+            let _ = cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.connect_with_stored(&profile.id, stored, window, cx)
+                })
+            });
+        })
+        .detach();
+    }
+
+    /// The rest of `connect_from_settings` once what is saved for the server
+    /// has been read. The form is taken again: edits made meanwhile count,
+    /// but another server shown now means the click is dropped.
+    fn connect_with_stored(
+        &mut self,
+        profile: &str,
+        stored: Option<crate::StoredConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.connecting = false;
+        if self.settings.values.selected_server != profile {
+            return;
+        }
+        // The profile was edited while the read was queued (another
+        // authentication mechanism, say): what was read does not fit it, so
+        // it is read again instead of being applied.
+        if let Some(stored) = &stored {
+            let current = self.settings.snapshot(cx).ok().and_then(|mut settings| {
+                self.drop_other_drafts(&mut settings);
+                settings.selected_profile().cloned()
+            });
+            if let Some(current) = current
+                && !stored.fits(&current)
+            {
+                self.connecting = true;
+                self.read_for_connect(current, cx);
+                return;
+            }
+        }
         let result = (|| {
+            let stored =
+                stored.ok_or_else(|| secrets::error_text(&self.i18n, &secrets::stopped()))?;
             let mut settings = self.settings.snapshot(cx)?;
             self.drop_other_drafts(&mut settings);
-            let (config, missing) = self.settings.connection_config(
-                &mut settings,
-                &secrets::store(cx),
-                &self.i18n,
-                cx,
-            )?;
-            self.store_marked_passwords(&mut settings, cx)?;
+            let (config, missing) =
+                self.settings
+                    .connection_config(&mut settings, stored, &self.i18n, cx)?;
             self.autosave = None;
             // `saved` follows only once the file is written, so a failed
             // Connect leaves the draft unsaved.
@@ -1857,10 +2016,33 @@ impl SettingsWindow {
     /// Saves before the window closes or the app quits. Returns whether
     /// that may go on: when saving fails, the form and the error stay so the
     /// edits can be retried; nothing is discarded without a successful save.
+    ///
+    /// Every way out passes here (the title bar, Escape, Back, a quit): a
+    /// Save or a credential change that waits for the store thread ends in
+    /// this window, so leaving before it is in would lose its result (a
+    /// server registration, the note that a password or key is saved). The
+    /// attempt is refused and can be made again a moment later.
     pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.store_busy() {
+            return false;
+        }
         self.autosave = None;
         let _ = self.commit_shown_server(cx);
         self.autosave_committed(cx)
+    }
+
+    /// Whether the store thread still owes this window a result.
+    pub(crate) fn store_busy(&self) -> bool {
+        self.store_waits > 0
+    }
+
+    /// Starts waiting for a store job; `store_done` ends it.
+    pub(crate) fn store_wait(&mut self) {
+        self.store_waits += 1;
+    }
+
+    pub(crate) fn store_done(&mut self) {
+        self.store_waits = self.store_waits.saturating_sub(1);
     }
 
     fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1896,16 +2078,26 @@ impl SettingsWindow {
     /// becomes a registered server once this succeeds; if it fails, it stays
     /// a draft.
     pub(crate) fn save_servers(&mut self, cx: &mut Context<Self>) {
-        self.autosave = None;
-        match self.save_settings(SaveMode::Explicit, cx) {
-            Ok(()) => {
-                self.autosave_error = None;
-                self.field_error = None;
-                self.feedback = None;
-            }
-            Err(error) => self.feedback = Some(error),
+        // A second click waits for the first.
+        if self.store_busy() {
+            return;
         }
-        cx.notify();
+        self.autosave = None;
+        // The passwords marked on a draft are written first, on the store
+        // thread; the settings follow when they are in. The shown server
+        // cannot change meanwhile (`switch_server`).
+        let marked = self.marked_passwords(cx);
+        self.write_marked_passwords(marked, cx, move |this, written, cx| {
+            match written.and_then(|()| this.save_settings(SaveMode::Explicit, cx)) {
+                Ok(()) => {
+                    this.autosave_error = None;
+                    this.field_error = None;
+                    this.feedback = None;
+                }
+                Err(error) => this.feedback = Some(error),
+            }
+            cx.notify();
+        });
     }
 
     /// Removes the drafts other than the shown server from `settings`: the
@@ -1952,7 +2144,6 @@ impl SettingsWindow {
                     .unwrap_or_default();
             }
         }
-        self.store_marked_passwords(&mut settings, cx)?;
         if settings == self.saved && !(explicit && self.servers_unsaved(cx)) {
             // Nothing to write: registering the same URL again still asks
             // for its image to be fetched again.
@@ -2325,53 +2516,95 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Writes the passwords whose box is checked on the shown server when
-    /// it is a draft that `settings` is about to register (its own Save or
-    /// Connect), and notes them saved there. A registered server has no box:
-    /// its passwords are written by the Save button only, never by an
-    /// autosave. A failure stops the save and keeps what was typed.
-    fn store_marked_passwords(
+    /// The passwords whose box is checked on the shown server when it is a
+    /// draft that its own Save or Connect is about to register. A registered
+    /// server has no box: its passwords are written by the Save button only,
+    /// never by an autosave.
+    fn marked_passwords(&self, cx: &App) -> Vec<(Credential, Secret)> {
+        if self.shown_server_registered() {
+            return Vec::new();
+        }
+        let Some(profile) = self
+            .settings
+            .values
+            .profile(&self.settings.values.selected_server)
+        else {
+            return Vec::new();
+        };
+        [Credential::Server, Credential::Sasl]
+            .into_iter()
+            .filter(|which| *which != Credential::Sasl || profile.sasl_enabled)
+            .filter_map(|which| {
+                let (saved, changing) = self.settings.credential_state(which);
+                let text = self.settings.credential_field(which).read(cx).text();
+                (!(saved || changing || text.is_empty() || !self.settings.remember(which)))
+                    .then(|| (which, Secret::new(text)))
+            })
+            .collect()
+    }
+
+    /// Writes `marked` on the store thread, in order, up to the first
+    /// failure. `then` gets the outcome, noted as `marked_passwords_written`.
+    fn write_marked_passwords(
         &mut self,
-        settings: &mut Settings,
+        marked: Vec<(Credential, Secret)>,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+    ) {
+        if marked.is_empty() {
+            then(self, Ok(()), cx);
+            return;
+        }
+        let shown = self.settings.values.selected_server.clone();
+        self.store_wait();
+        let keys: Vec<_> = marked.iter().map(|(which, _)| which.key(&shown)).collect();
+        let writing = secrets::run(cx, move |store| {
+            let mut written = Vec::new();
+            for ((which, secret), key) in marked.iter().zip(&keys) {
+                let result = store.set(key, secret);
+                let failed = result.is_err();
+                written.push((*which, result));
+                if failed {
+                    break;
+                }
+            }
+            written
+        });
+        cx.spawn(async move |this, cx| {
+            let written = writing.await;
+            let _ = this.update(cx, |this, cx| {
+                this.store_done();
+                let outcome = this.marked_passwords_written(&shown, written, cx);
+                then(this, outcome, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Notes the passwords the store thread wrote as saved. A failure stops
+    /// the save and keeps what was typed.
+    fn marked_passwords_written(
+        &mut self,
+        shown: &str,
+        written: Option<Vec<(Credential, Result<(), cayenchat_storage::CredentialError>)>>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let store = secrets::store(cx);
-        let both = [Credential::Server, Credential::Sasl];
         let failed = |this: &Self, error: cayenchat_storage::CredentialError| {
             this.i18n.format(
                 "credential_save_failed",
                 &[("error", &secrets::error_text(&this.i18n, &error))],
             )
         };
-        let shown = self.settings.values.selected_server.clone();
-        if self.shown_server_registered() {
-            return Ok(());
-        }
-        for which in both {
-            let (saved, changing) = self.settings.credential_state(which);
-            let text = self
-                .settings
-                .credential_field(which)
-                .read(cx)
-                .text()
-                .to_owned();
-            if saved || changing || text.is_empty() || !self.settings.remember(which) {
-                continue;
-            }
-            let Some(profile) = settings.profile_mut(&shown) else {
-                continue;
-            };
-            if which == Credential::Sasl && !profile.sasl_enabled {
-                continue;
-            }
-            store
-                .set(&which.key(&shown), &Secret::new(text))
-                .map_err(|error| failed(self, error))?;
-            which.note(profile, true);
-            if let Some(profile) = self.settings.values.profile_mut(&shown) {
+        let written = written.ok_or_else(|| failed(self, secrets::stopped()))?;
+        for (which, result) in written {
+            result.map_err(|error| failed(self, error))?;
+            if let Some(profile) = self.settings.values.profile_mut(shown) {
                 which.note(profile, true);
             }
-            self.settings.set_saved(which, true, &self.i18n, cx);
+            // Only while the form still shows the server it was typed for.
+            if self.settings.values.selected_server == shown {
+                self.settings.set_saved(which, true, &self.i18n, cx);
+            }
         }
         Ok(())
     }
@@ -2385,8 +2618,18 @@ impl SettingsWindow {
         secret: Secret,
         cx: &mut Context<Self>,
     ) {
-        let result = secrets::store(cx).set(&which.key(profile), &secret);
-        self.credential_done(which, profile, result, true, cx);
+        let key = which.key(profile);
+        let writing = secrets::run(cx, move |store| store.set(&key, &secret));
+        let profile = profile.to_owned();
+        self.store_wait();
+        cx.spawn(async move |this, cx| {
+            let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done();
+                this.credential_done(which, &profile, result, true, cx)
+            });
+        })
+        .detach();
     }
 
     /// Shows the outcome of a store write.
@@ -2470,8 +2713,17 @@ impl SettingsWindow {
         else {
             return;
         };
-        let result = secrets::store(cx).delete(&which.key(&id));
-        self.credential_done(which, &id, result, false, cx);
+        let key = which.key(&id);
+        let deleting = secrets::run(cx, move |store| store.delete(&key));
+        self.store_wait();
+        cx.spawn(async move |this, cx| {
+            let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done();
+                this.credential_done(which, &id, result, false, cx)
+            });
+        })
+        .detach();
     }
 
     /// The saved server the key buttons act on. A server that is not saved
@@ -2651,15 +2903,25 @@ impl SettingsWindow {
         secret: &cayenchat_irc_core::SecretText,
         cx: &mut Context<Self>,
     ) {
-        let result =
-            secrets::store(cx).set(&SecretKey::sasl_key(profile), &Secret::new(secret.as_str()));
+        let key = SecretKey::sasl_key(profile);
+        let secret_text = Secret::new(secret.as_str());
+        let writing = secrets::run(cx, move |store| store.set(&key, &secret_text));
         let public = cayenchat_irc_core::sasl_public_key(secret).ok();
-        if self.key_done(profile, result, true, cx)
-            && self.settings.values.selected_server == profile
-        {
-            self.settings.sasl_public_key = public;
-        }
-        cx.notify();
+        let profile = profile.to_owned();
+        self.store_wait();
+        cx.spawn(async move |this, cx| {
+            let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                this.store_done();
+                if this.key_done(&profile, result, true, cx)
+                    && this.settings.values.selected_server == profile
+                {
+                    this.settings.sasl_public_key = public;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Delete: removes the key from the store, after a confirmation.
@@ -2677,8 +2939,19 @@ impl SettingsWindow {
         );
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
+                let key = SecretKey::sasl_key(&profile.id);
+                let deleting = this
+                    .update(cx, |this, cx| {
+                        this.store_wait();
+                        secrets::run(cx, move |store| store.delete(&key))
+                    })
+                    .ok();
+                let Some(deleting) = deleting else {
+                    return;
+                };
+                let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
                 let _ = this.update(cx, |this, cx| {
-                    let result = secrets::store(cx).delete(&SecretKey::sasl_key(&profile.id));
+                    this.store_done();
                     this.key_done(&profile.id, result, false, cx);
                     if this.settings.values.selected_server == profile.id {
                         this.settings.sasl_public_key = None;
@@ -2742,21 +3015,33 @@ impl SettingsWindow {
         let Some(profile) = self.key_profile(cx) else {
             return;
         };
-        let stored = secrets::store(cx).get(&SecretKey::sasl_key(&profile.id));
-        let public = match stored {
-            Ok(Some(secret)) => cayenchat_irc_core::sasl_public_key(secret.expose())
-                .map_err(|error| self.key_error_text(error)),
-            Ok(None) => Err(self.i18n.text("sasl_key_missing")),
-            Err(error) => Err(self.i18n.format(
-                "sasl_key_read_failed",
-                &[("error", &secrets::error_text(&self.i18n, &error))],
-            )),
-        };
-        match public {
-            Ok(public) => self.settings.sasl_public_key = Some(public),
-            Err(text) => self.feedback = Some(text),
-        }
-        cx.notify();
+        let key = SecretKey::sasl_key(&profile.id);
+        let reading = secrets::run(cx, move |store| store.get(&key));
+        cx.spawn(async move |this, cx| {
+            let stored = reading.await.unwrap_or_else(|| Err(secrets::stopped()));
+            let _ = this.update(cx, |this, cx| {
+                let public = match stored {
+                    Ok(Some(secret)) => cayenchat_irc_core::sasl_public_key(secret.expose())
+                        .map_err(|error| this.key_error_text(error)),
+                    Ok(None) => Err(this.i18n.text("sasl_key_missing")),
+                    Err(error) => Err(this.i18n.format(
+                        "sasl_key_read_failed",
+                        &[("error", &secrets::error_text(&this.i18n, &error))],
+                    )),
+                };
+                // Only for the server it was asked for.
+                if this.settings.values.selected_server == profile.id {
+                    match public {
+                        Ok(public) => this.settings.sasl_public_key = Some(public),
+                        Err(text) => this.feedback = Some(text),
+                    }
+                } else if let Err(text) = public {
+                    this.feedback = Some(text);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Copy: the public key only.
@@ -3260,6 +3545,10 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        // What the store thread still owes belongs to the server shown.
+        if self.store_busy() {
+            return;
+        }
         // Leaving a registered server takes its typed text over first; text
         // that is not valid keeps the form where it is.
         if let Err(error) = self.commit_shown_server(cx) {
@@ -3281,6 +3570,9 @@ impl SettingsWindow {
     /// Removes the selected server. Saving the removal disconnects it and
     /// forgets its passwords, so a saved server asks first.
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store_busy() {
+            return;
+        }
         let id = self.settings.values.selected_server.clone();
         let Some(profile) = self.saved.profile(&id).filter(|p| !p.host.is_empty()) else {
             self.settings.values.remove_selected_server();
@@ -3302,7 +3594,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
-                    if this.settings.values.selected_server == id {
+                    if !this.store_busy() && this.settings.values.selected_server == id {
                         this.settings.values.remove_selected_server();
                         this.show_selected_server(cx);
                         // Confirmed, so it is saved at once like any
@@ -4391,6 +4683,127 @@ impl SettingsWindow {
             )
     }
 
+    /// The saved line height of the channel log (0) or combined log (1).
+    fn line_height_mut(&mut self, log: usize) -> &mut u16 {
+        let appearance = &mut self.settings.values.appearance;
+        if log == 0 {
+            &mut appearance.channel_log_line_height
+        } else {
+            &mut appearance.combined_log_line_height
+        }
+    }
+
+    /// Sets a log's line height from a pointer position over its slider.
+    fn pick_line_height(&mut self, log: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let track = self.line_height_tracks[log].get();
+        // The thumb's center travels from half a thumb in to half a thumb
+        // before the end, so the value follows the thumb under the pointer.
+        let travel = f32::from(track.size.width) - LINE_HEIGHT_THUMB;
+        if travel <= 0. {
+            return;
+        }
+        let fraction = (f32::from(position.x - track.origin.x) - LINE_HEIGHT_THUMB / 2.) / travel;
+        let percent = line_height_at(fraction);
+        let current = self.line_height_mut(log);
+        if *current != percent {
+            *current = percent;
+            cx.notify();
+        }
+    }
+
+    /// The line height slider of the channel log (0) or combined log (1)
+    /// (#953), with a button back to the default.
+    fn line_height_slider(&self, log: usize, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let primary = settings_theme::primary_color(cx);
+        let appearance = &self.settings.values.appearance;
+        let percent = if log == 0 {
+            appearance.channel_log_line_height
+        } else {
+            appearance.combined_log_line_height
+        };
+        let fraction = line_height_fraction(percent);
+        let owner = cx.entity_id();
+        let track = self.line_height_tracks[log].clone();
+        let travel = LINE_HEIGHT_TRACK_WIDTH - LINE_HEIGHT_THUMB;
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(settings_theme::label_column().child(self.i18n.text("log_line_height")))
+            .child(
+                div()
+                    .id(("log-line-height", log))
+                    .relative()
+                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
+                    .h(px(20.))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .child(
+                        canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(9.))
+                            .w_full()
+                            .h(px(2.))
+                            .bg(theme.border),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(fraction * travel))
+                            .top(px(3.))
+                            .size(px(LINE_HEIGHT_THUMB))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(primary)
+                            .bg(primary),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.pick_line_height(log, event.position, cx)
+                        }),
+                    )
+                    .on_drag(LineHeightDrag(owner, log), |_, _, _, cx| {
+                        cx.new(|_| crate::splitter::NoGhost)
+                    })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<LineHeightDrag>, _, cx| {
+                            let drag = event.drag(cx);
+                            if drag.0 == owner && drag.1 == log {
+                                this.pick_line_height(log, event.event.position, cx);
+                            }
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .child(format!("{percent}%")),
+            )
+            .child(
+                div()
+                    .id(("log-line-height-reset", log))
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .child(self.i18n.text("line_height_reset"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        *this.line_height_mut(log) = cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT;
+                        cx.notify();
+                    })),
+            )
+    }
+
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
@@ -4629,7 +5042,9 @@ impl SettingsWindow {
                     })),
             )
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
+            .child(self.line_height_slider(0, cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
+            .child(self.line_height_slider(1, cx))
             .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
             .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
@@ -5259,6 +5674,34 @@ mod join_summary_tests {
 }
 
 #[cfg(test)]
+mod line_height_slider_tests {
+    use super::{line_height_at, line_height_fraction};
+
+    #[test]
+    fn the_ends_are_the_minimum_and_the_maximum() {
+        assert_eq!(line_height_at(0.), 100);
+        assert_eq!(line_height_at(1.), 200);
+        assert_eq!(line_height_at(-3.), 100);
+        assert_eq!(line_height_at(9.), 200);
+        assert_eq!(line_height_fraction(100), 0.);
+        assert_eq!(line_height_fraction(200), 1.);
+    }
+
+    #[test]
+    fn every_percent_round_trips_including_the_default() {
+        for percent in 100..=200 {
+            assert_eq!(line_height_at(line_height_fraction(percent)), percent);
+        }
+        assert_eq!(
+            line_height_at(line_height_fraction(
+                cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
+            )),
+            cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
+        );
+    }
+}
+
+#[cfg(test)]
 mod follow_file_flag_tests {
     use super::follow_file_flag;
 
@@ -5880,6 +6323,7 @@ mod escape_tests {
         assert_eq!(note(cx), (false, false));
 
         cx.update(|window, cx| form.update(cx, |form, cx| form.generate_key(window, cx)));
+        cx.run_until_parked();
         let stored = store.get(&SecretKey::sasl_key(&id)).unwrap().unwrap();
         assert!(cayenchat_irc_core::sasl_key_is_valid(stored.expose()));
         assert_eq!(note(cx), (true, true));
@@ -5898,6 +6342,7 @@ mod escape_tests {
         // Showing again reads the store, as the user asked.
         form.update(cx, |form, _| form.settings.sasl_public_key = None);
         form.update(cx, |form, cx| form.show_public_key(cx));
+        cx.run_until_parked();
         assert_eq!(
             form.read_with(cx, |form, _| form.settings.sasl_public_key.clone()),
             Some(public)
@@ -5912,6 +6357,7 @@ mod escape_tests {
         assert!(store.get(&SecretKey::sasl_key(&id)).unwrap().is_none());
         assert_eq!(note(cx), (false, false));
         form.update(cx, |form, cx| form.show_public_key(cx));
+        cx.run_until_parked();
         assert!(form.read_with(cx, |form, _| form.settings.sasl_public_key.is_none()));
     }
 

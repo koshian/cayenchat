@@ -56,6 +56,9 @@ pub struct ServerSession {
     /// A startup connection waits for the first frame (D068, Launch): the
     /// tree shows it as connecting before the credential store is read.
     pub starting: bool,
+    /// What is saved for this server is being read from the credential
+    /// store to connect it by hand; another Connect waits for that.
+    pub reading_saved: bool,
     /// The connection was ended just before the machine slept: no retry
     /// is scheduled, and the wake-up reconnects it unless the user took
     /// over meanwhile.
@@ -139,6 +142,7 @@ impl ServerSession {
             sent_secrets: (None, None),
             manual_disconnect: false,
             starting: false,
+            reading_saved: false,
             asleep: false,
             retry_pending: false,
             retry_attempt: 0,
