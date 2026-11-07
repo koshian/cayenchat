@@ -71,6 +71,47 @@ pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>,
     save(settings).map(|()| backup)
 }
 
+/// The directory of the imported themes (#962).
+#[cfg(not(test))]
+pub(crate) fn library_directory() -> Result<std::path::PathBuf, String> {
+    cayenchat_storage::theme_file::library_directory()
+}
+
+/// The directory of the wallpapers that applied themes left (#962).
+#[cfg(not(test))]
+pub(crate) fn wallpaper_directory() -> Result<std::path::PathBuf, String> {
+    cayenchat_storage::theme_file::wallpaper_directory()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where a test keeps themes and wallpapers; without one there are none.
+    static THEME_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Points the theme directories of the running test at `root`.
+#[cfg(test)]
+pub(crate) fn use_theme_root(root: &std::path::Path) {
+    THEME_ROOT.with_borrow_mut(|dir| *dir = Some(root.to_owned()));
+}
+
+#[cfg(test)]
+pub(crate) fn library_directory() -> Result<std::path::PathBuf, String> {
+    THEME_ROOT
+        .with_borrow(Clone::clone)
+        .map(|root| root.join("themes"))
+        .ok_or_else(|| "no theme directory in this test".to_owned())
+}
+
+#[cfg(test)]
+pub(crate) fn wallpaper_directory() -> Result<std::path::PathBuf, String> {
+    THEME_ROOT
+        .with_borrow(Clone::clone)
+        .map(|root| root.join("wallpapers"))
+        .ok_or_else(|| "no theme directory in this test".to_owned())
+}
+
 /// Notes in the settings file whether the upload token of `provider` is
 /// saved, and returns the note as it is then (#642). Nothing is written when
 /// the note already says so; a file that cannot be read is left alone.
@@ -107,6 +148,7 @@ impl Drop for TestFile {
         FAILING.set(false);
         UNREADABLE.set(false);
         FILE.with_borrow_mut(|file| *file = None);
+        THEME_ROOT.with_borrow_mut(|dir| *dir = None);
     }
 }
 

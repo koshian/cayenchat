@@ -345,7 +345,7 @@ fn pruning_removes_only_unused_files_of_our_own_naming() {
     let foreign = dir.path().join("notes.txt");
     std::fs::write(&stale, b"IMG").unwrap();
     std::fs::write(&foreign, b"x").unwrap();
-    prune_wallpapers(dir.path(), &appearance);
+    prune_wallpapers(dir.path(), &[&appearance]);
     assert!(Path::new(&kept).is_file() && foreign.is_file());
     assert!(!stale.exists());
 }

@@ -3681,8 +3681,8 @@ the start of the session.
   (default 40 %) fades the picture over the background color. It is drawn
   stretched to cover the log (no tiling or position options). A file that
   cannot be read shows no wallpaper.
-- **Not done.** Other panes, a transparent background or window, and
-  separate light/dark colors.
+- **Not done.** A transparent background or window, and
+  separate light/dark colors. (Other panes and the standard wallpaper: D087.)
 
 ## D085 — `7bit-jis` folded into `ISO-2022-JP` (#942)
 
@@ -3728,3 +3728,64 @@ the start of the session.
   irc-core's `MAX_HISTORY_LINES` (100) and the retained-line limit remain.
 - **Unchanged.** Older pages (scrolling back) still take reserved sequences
   below the log (D030); wire traffic and protocol are unchanged.
+
+## D087 — Appearance themes (`.cayentheme`) and standard wallpapers for four areas (#962)
+
+- **A theme is a source, not the setting.** Applying one copies its values
+  into `Appearance` (the light or the dark half, by the theme's `mode`);
+  nothing edited afterwards reaches the theme, and a theme never touches
+  connection or behavior settings. `Appearance` records only where the values
+  came from: `origin` (light) and `dark.origin` hold the theme's name and
+  `Appearance::fingerprint` of the values right after applying it. "Modified"
+  is the fingerprint differing from the current values (colors, popup opacity,
+  fonts, wallpapers; case of a color ignored), so there is no second copy to
+  keep in sync. No origin is the built-in **CayenChat Default Light** /
+  **Dark** (never stored, always the `Default` values), modified when the
+  values differ from them; "use default" applies the built-in theme and
+  clears the origin. Settings written before this read as the built-in name,
+  modified when their colors differ.
+- **Fonts are shared** by light and dark in `Appearance`, so a theme's fonts
+  replace both halves' fonts and count in both halves' fingerprints: applying
+  a dark theme that sets fonts shows the light one as modified. Accepted;
+  per-theme fonts would change the settings model.
+- **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
+  `dark.wallpapers` for dark): a file path and a strength per area — channel
+  log, combined log, member list, channel tree. They reuse `media::wallpaper`
+  (D084: blur, tint toward that area's background, one result per area, keyed
+  by file and tint) with one slot per area. A wallpaper makes the alternate
+  rows of the channel and combined log half transparent. The member list and
+  tree draw their background on the pane and the picture over it; the cached
+  views inside no longer paint the tree's background.
+- **Per-channel looks (D084) override the channel log's standard.**
+  `ChannelLook::no_wallpaper` joins the path: *inherit* (neither), *none*
+  (`no_wallpaper`), *own* (a path); the two never coexist. A channel's strength
+  applies to whichever picture shows. Files from before read as inheriting,
+  which is the former display while no standard wallpaper is set. Theme
+  changes never touch `channel_looks`.
+- **File.** A `.cayentheme` is one JSON document, gzip-compressed on export
+  (`flate2`; no archive format): `version` (1), `name`, `mode`, `colors`
+  (keys of `ThemeColors`; a missing key takes the built-in value, an unknown
+  one is ignored), `url_tooltip_opacity`, `fonts`, `wallpapers` (per area
+  `data` as Base64 and `opacity`). It holds no server, channel, per-channel
+  setting or path. Import accepts the gzip and the plain JSON, told apart by
+  the gzip magic bytes. Limits: file ≤ 48 MiB, expanded JSON ≤ 64 MiB (read
+  through `take`, so a compression bomb stops there), each image ≤ 8 MiB
+  decoded, 80-character names with control and bidi control characters
+  dropped, version, colors (`#RRGGBB`), numbers and every image (format and
+  pixel limits through `media::wallpaper::validate`, which the caller passes
+  to `storage` as a function so `storage` keeps no image dependency) are
+  checked before anything is applied; a failure changes nothing.
+- **Library and files.** Imported themes live as gzip files under
+  `<config>/CayenChat/themes/` with an `index.json` (at most 64; ids are
+  generated and checked before they name a path). Applying writes a theme's
+  images to `<config>/CayenChat/wallpapers/<sha256-prefix>.<ext>`, so the
+  applied appearance depends on neither the distributed file nor the library:
+  deleting a theme changes nothing applied. Applying then removes files there
+  that neither the saved nor the new settings use (only names of that form).
+  A wallpaper the user picks by hand stays where it is, as with channels.
+- **Export** writes only the edited light or dark half, under a name asked for
+  first (the origin's name is the default) and a file name and place from the
+  OS save dialog; it changes no setting, origin or modified state, and fails
+  rather than leave out a wallpaper that cannot be read or is too large.
+- **Not done.** Per-theme fonts, sharing other than through files, and
+  behavior switches such as alternate rows in themes.

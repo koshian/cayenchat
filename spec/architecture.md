@@ -471,7 +471,10 @@ absent, and so is the per-server `user_avatars` setting (D023; it was an
 Appearance setting, copied into each server on load), as are the
 peer avatar option and the per-server shared URL `peer_avatar_url` (D025),
 and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
-or repeated entries are dropped on load). The UI keeps the
+or repeated entries are dropped on load). The light and dark halves of `Appearance` also hold standard
+wallpapers for four areas and the origin of their values (a theme name and a
+fingerprint); `storage::theme_file` reads and writes `.cayentheme` files and
+keeps the library of imported themes (D087). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows

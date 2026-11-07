@@ -538,7 +538,7 @@ impl ThemeFile {
     }
 }
 
-fn builtin_name(dark: bool) -> &'static str {
+pub fn builtin_name(dark: bool) -> &'static str {
     if dark {
         DEFAULT_DARK_NAME
     } else {
@@ -820,13 +820,17 @@ pub fn library_directory() -> Result<PathBuf, String> {
         .join("themes"))
 }
 
-/// Deletes files in `wallpaper_dir` that `appearance` no longer refers to.
-/// Only files this module wrote (a 32-digit hexadecimal name) are touched.
-pub fn prune_wallpapers(wallpaper_dir: &Path, appearance: &Appearance) {
+/// Deletes files in `wallpaper_dir` that none of `appearances` refers to
+/// (the saved settings and the one about to be saved, say). Only files this
+/// module wrote (a 32-digit hexadecimal name) are touched.
+pub fn prune_wallpapers(wallpaper_dir: &Path, appearances: &[&Appearance]) {
     let Ok(entries) = fs::read_dir(wallpaper_dir) else {
         return;
     };
-    let used = appearance.wallpaper_paths();
+    let used: BTreeSet<&str> = appearances
+        .iter()
+        .flat_map(|appearance| appearance.wallpaper_paths())
+        .collect();
     for entry in entries.flatten() {
         let path = entry.path();
         let ours = path

@@ -71,6 +71,7 @@ mod shortcuts;
 mod signals;
 mod splitter;
 mod theme;
+mod theme_settings;
 mod toolbar;
 mod tooltip;
 mod wake;

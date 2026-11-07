@@ -524,7 +524,7 @@ impl SettingsForm {
     /// fields are not read (and not validated), so an unfinished connection
     /// entry does not stop other settings from being saved; the server list
     /// and selection are then the form's earlier values.
-    fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
+    pub(crate) fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
         let mut settings = self.values.clone();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         if with_servers {
@@ -1179,6 +1179,8 @@ pub(crate) struct SettingsWindow {
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
+    /// Imported themes and the state of the theme actions (#962).
+    pub(crate) themes: crate::theme_settings::ThemeUi,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1446,6 +1448,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
+            themes: crate::theme_settings::ThemeUi::new(),
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -4694,6 +4697,7 @@ impl SettingsWindow {
                 |settings, mode| settings.theme = mode,
                 cx,
             ))
+            .child(self.render_theme_settings(cx))
             .child(
                 div()
                     .flex()
@@ -4809,6 +4813,7 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(self.render_wallpaper_settings(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
             .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
