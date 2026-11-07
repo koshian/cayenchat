@@ -168,6 +168,7 @@ impl SettingsWindow {
                         )
                         .child(
                             settings_theme::button("avatar-editor-reset", false, cx)
+                                .debug_selector(|| "avatar-editor-reset".into())
                                 .child(self.i18n.text("ircv3_avatar_edit_reset"))
                                 .when(whole, |b| b.opacity(0.5))
                                 .on_click(cx.listener(move |_, _, _, cx| {
@@ -228,5 +229,87 @@ mod tests {
                 assert!(catalog.contains(&format!("\"{key}\"")), "{key}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use cayenchat_model::attachment::AttachmentSource;
+    use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
+
+    use crate::ChatWindow;
+
+    /// The settings window, the shared editor and the caller together: open
+    /// an image, change the square with real mouse events, read the crop the
+    /// upload would encode, cut it, and start over with the reset button.
+    #[gpui::test]
+    fn the_avatar_editor_follows_the_mouse_and_hands_its_square_to_the_upload(
+        cx: &mut TestAppContext,
+    ) {
+        crate::support::install_test_globals(cx);
+        let mut settings = crate::settings_with_channels("#a");
+        settings.image_upload.provider = Some("imgbb".to_owned());
+        let owner = cx
+            .add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = crate::SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = crate::settings_window::SettingsTab::Ircv3;
+            form
+        });
+
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(400, 200, image::Rgb([30, 120, 200]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        form.update(cx, |form, cx| {
+            form.open_avatar_editor(
+                "net".to_owned(),
+                std::sync::Arc::from(png),
+                AttachmentSource::Drop,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let crop = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, cx| {
+                form.avatar_editor.as_ref().map(|e| e.crop(cx))
+            })
+        };
+        // Starts as the largest centered square.
+        let first = crop(cx).expect("editor open");
+        assert_eq!((first.x, first.y, first.side), (100.0, 0.0, 200.0));
+
+        // Drag the bottom-right corner inwards: the 400x200 image is shown
+        // at 320x160, so its pixel (300, 200) is at (240, 160).
+        let picture = cx.debug_bounds("image-crop-picture").expect("drawn");
+        let at = |x: f32, y: f32| point(picture.origin.x + px(x), picture.origin.y + px(y));
+        let none = Modifiers::none();
+        cx.simulate_mouse_down(at(240.0, 160.0), MouseButton::Left, none);
+        cx.simulate_mouse_move(at(200.0, 120.0), Some(MouseButton::Left), none);
+        cx.simulate_mouse_up(at(200.0, 120.0), MouseButton::Left, none);
+        cx.run_until_parked();
+        let moved = crop(cx).unwrap();
+        assert!(moved.side < first.side, "{moved:?}");
+        // The opposite corner stays.
+        assert_eq!((moved.x, moved.y), (first.x, first.y));
+
+        // What the upload would encode is that square.
+        let (source, wanted) = form.read_with(cx, |form, cx| {
+            let editor = form.avatar_editor.as_ref().unwrap();
+            (editor.source(cx), editor.crop(cx))
+        });
+        assert_eq!(wanted, moved);
+        let encoded = source.encode(wanted).expect("encodes");
+        let cut = image::load_from_memory(&encoded.bytes).unwrap();
+        assert_eq!(cut.width(), cut.height());
+
+        // Reset returns to the initial square.
+        let reset = cx.debug_bounds("avatar-editor-reset").expect("button");
+        cx.simulate_click(reset.center(), none);
+        cx.run_until_parked();
+        assert_eq!(crop(cx).unwrap(), first);
     }
 }
