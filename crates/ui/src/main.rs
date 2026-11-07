@@ -6874,6 +6874,19 @@ fn pane_text_size(saved: u16, standard: Option<f32>) -> Option<Pixels> {
     }
 }
 
+/// The text size of the channel log: the channel's own over the saved one.
+fn channel_log_text_size(
+    look: &channel_look::ResolvedLook,
+    appearance: &Appearance,
+) -> Option<Pixels> {
+    let saved = if look.font_size != 0 {
+        look.font_size
+    } else {
+        appearance.channel_log_font_size
+    };
+    pane_text_size(saved, None)
+}
+
 /// The line height a log pane sets, as a multiple of its font size: the
 /// saved percentage clamped to the allowed range, or None (GPUI's default
 /// line height) when it is the default one (#953).
@@ -8052,17 +8065,9 @@ impl ChatWindow {
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
-            .when_some(
-                pane_text_size(
-                    if look.font_size != 0 {
-                        look.font_size
-                    } else {
-                        appearance.channel_log_font_size
-                    },
-                    None,
-                ),
-                |d, size| d.text_size(size),
-            )
+            .when_some(channel_log_text_size(&look, appearance), |d, size| {
+                d.text_size(size)
+            })
             .when_some(
                 pane_line_height(appearance.channel_log_line_height),
                 |d, ratio| d.line_height(relative(ratio)),
@@ -9465,10 +9470,10 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let look = self.channel_log_look(theme);
         let mut style = LogStyle::new(&self.appearance, look.theme);
-        // The time column grows with the channel's own size as it does with
-        // the time size.
+        // The time column grows with the log's text size as it does with the
+        // time size.
         if style.time_size.is_none() {
-            style.time_size = pane_text_size(look.font_size, None);
+            style.time_size = channel_log_text_size(&look, &self.appearance);
         }
         match self.channel_log_layout().row(row) {
             ChannelLogRow::Status => {
