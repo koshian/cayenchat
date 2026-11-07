@@ -1557,12 +1557,13 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
         assert_eq!(
             texts,
             [
+                "alice: live",
                 "alice: from yesterday",
                 "[NOTICE] maintenance",
-                "alice: live"
             ]
         );
-        assert!(b.messages[0].is_history());
+        assert!(!b.messages[0].is_history());
+        assert!(b.messages[1].is_history());
         let shown_in = |message: &cayenchat_model::Message| -> Vec<String> {
             message
                 .highlights
@@ -1573,18 +1574,18 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
         };
         // History is highlighted like a live line, a NOTICE is not.
         assert_eq!(shown_in(&b.messages[0]), ["alice"]);
-        assert!(b.messages[1].highlights.is_empty());
-        assert_eq!(shown_in(&b.messages[2]), ["alice"]);
-        // Both mentions can be visited, the older one first, though only the
-        // live one was notified.
-        let (older, live) = (b.messages[0].sequence, b.messages[2].sequence);
+        assert_eq!(shown_in(&b.messages[1]), ["alice"]);
+        assert!(b.messages[2].highlights.is_empty());
+        // Both mentions can be visited, in log order, though only the live
+        // one was notified.
+        let (live, older) = (b.messages[0].sequence, b.messages[1].sequence);
         let id = b.id;
         chat.state
             .dispatch(cayenchat_app::Command::NextNotifiedMessage);
-        assert_eq!(chat.state.take_reveal(), Some((id, older)));
+        assert_eq!(chat.state.take_reveal(), Some((id, live)));
         chat.state
             .dispatch(cayenchat_app::Command::NextNotifiedMessage);
-        assert_eq!(chat.state.take_reveal(), Some((id, live)));
+        assert_eq!(chat.state.take_reveal(), Some((id, older)));
         let b = &chat.state.conversations()[1];
         // The combined log shows every line the conversation holds, history
         // included, in sequence order.
@@ -1629,8 +1630,8 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
             .dispatch(cayenchat_app::Command::SelectChannel(a));
         chat.sync_log_lists();
         let before = chat.combined_rows.len();
-        // The history fills a sequence range reserved earlier, so the newest
-        // sequence does not move; the combined log must still be rebuilt.
+        // The history is appended with an ordinary sequence; the combined
+        // log must be rebuilt.
         let sequence = chat.state.last_message_sequence();
         chat.handle_events(
             NetworkId(1),
@@ -1651,7 +1652,7 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
             Worker::Running,
             cx,
         );
-        assert_eq!(chat.state.last_message_sequence(), sequence);
+        assert_eq!(chat.state.last_message_sequence(), sequence + 1);
         chat.sync_log_lists();
         assert_eq!(chat.combined_rows.len(), before + 1);
     });
@@ -2123,7 +2124,7 @@ fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut Te
 }
 
 #[gpui::test]
-fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppContext) {
+fn a_reconnect_recovers_missed_lines_after_the_disconnect_line(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
 
     crate::support::install_test_globals(cx);
@@ -2232,10 +2233,10 @@ fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppC
             texts,
             [
                 "A",
+                "Disconnected: connection reset",
+                "D",
                 super::HISTORY_GAP_NOTE,
                 "alice: while you were away",
-                "Disconnected: connection reset",
-                "D"
             ]
         );
         assert!(chat.state.history_resume(NetworkId(1)).is_empty());
@@ -3977,13 +3978,13 @@ fn actions_are_kept_as_their_own_text_on_every_path(cx: &mut TestAppContext) {
         assert_eq!(
             shown(0),
             [
-                (true, false, "left".to_owned()),
                 (true, false, "waves".to_owned()),
                 (true, false, "nods".to_owned()),
                 (false, false, "\u{1}ACTION\u{1}".to_owned()),
                 (false, false, "\u{1}ACTIONwaves\u{1}".to_owned()),
                 (false, true, "[NOTICE] \u{1}ACTION waves\u{1}".to_owned()),
                 (true, false, "dances!".to_owned()),
+                (true, false, "left".to_owned()),
             ]
         );
         let private = chat.state.conversations().len() - 1;

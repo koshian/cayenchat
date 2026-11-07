@@ -1210,8 +1210,8 @@ full manual GUI runs, repeated for every review):
   by the maintainer in a test build. That image becomes the reference
   (golden) and later runs only check for regressions against it. A golden is
   replaced only together with a person's confirmation of the new look in a
-  test build, never by a script on its own. Where the references live and how
-  their freshness is checked is settled separately (#959, second part).
+  test build, never by a script on its own. The references and the way to
+  replace them are described below ("Reference images").
 - **Lifecycle goes through the real path.** Quit, save and re-entry (a window
   closing while another is open, saving on exit) are tested through the same
   path the user takes (an integration test that quits the way the user does,
@@ -1225,6 +1225,35 @@ full manual GUI runs, repeated for every review):
 
 Only Linux/Xvfb is covered; as everywhere, a platform that was not tested is
 not called verified.
+
+#### Reference images
+
+References (golden) live in `assets/golden/<name>.png`, one pane of a fixed
+fixture each, with their provenance in `assets/golden/provenance.json`: the
+commit and whether the app sources were uncommitted (`dirty`), the SHA-256 of
+the binary and of the image, the capture time and system, what the picture
+shows, and who confirmed it and when. `scripts/e2e/golden_gui.py` handles
+them, in the style of `demo.py check`:
+
+- `compare --app BIN` renders the fixture and fails on any differing pixel,
+  saving the actual picture under `target/e2e/golden/`. It never writes a
+  reference. Text is drawn with the system's fonts, so the comparison means
+  something only on the system recorded in the entry; it is not run in CI.
+  Anything that changes with time (the log's timestamps) is cut out of the
+  picture, not tolerated.
+- `check` needs neither display nor build. It fails when a reference is more
+  than 100 commits to `crates/ui` / `crates/app` behind HEAD, comes from
+  uncommitted sources, or its file is not the recorded image, and it reports
+  one that no person has confirmed.
+- Replacing a reference: build the test build, run `update --app BIN` (it
+  writes the image and an entry with no confirmation), have a person look at
+  the new image in the test build and decide that it is the intended look,
+  and only then run `confirm --by NAME`. Commit the image and the entry
+  together and say in the PR what changed in the look. A script or a failing
+  `compare` never replaces a reference by itself.
+
+The first reference, `log-rows` (the log's text and alternate rows), stays
+unconfirmed until the maintainer has looked at it in a test build.
 
 ### GUI end-to-end test (Linux)
 
@@ -1243,7 +1272,7 @@ application; everything is observed from outside:
   identical (rows wrapping to two lines make the heights vary);
 - **text**: the log's own drag selection and Ctrl+C, read back with
   `xclip`, show which lines are on screen and in which order (the first
-  line of the channel after paging; A, the missed B and C, our rejoin,
+  line of the channel after paging; A, our rejoin, the missed B and C,
   then D after the reconnect, each once).
 
 Screenshots of every step and the app and Ergo logs go to `--out` (default
@@ -1251,7 +1280,7 @@ Screenshots of every step and the app and Ergo logs go to `--out` (default
 run ends, pass or fail. Two
 deliberate breakages were checked to fail it: resetting the log list when
 rows are inserted above (the pixel check fails) and placing recovered lines
-where the request was made instead of at the cut (the order check fails).
+before our rejoin instead of after it (the order check fails).
 
 ```sh
 cargo build --locked -p cayenchat-ui

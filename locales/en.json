@@ -146,6 +146,7 @@
   "nickname_change_submit": "Change",
   "nickname_change_required": "Enter a nickname.",
   "log_menu_copy": "Copy",
+  "log_menu_copy_url": "Copy URL",
   "log_menu_paste": "Paste into message box",
   "log_menu_mode": "Change channel modes…",
   "log_menu_topic": "Change channel topic…",

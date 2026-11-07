@@ -1,0 +1,13 @@
+{
+  "log-rows": {
+    "binary_sha256": "6a09f5abb1cb636a3e744fbf99de39058a2a3756486abd54c06ee32f77542774",
+    "captured": "2026-11-07T11:31:40+09:00",
+    "commit": "795000e3d70f88b622c56630109adba6a71ce3e3",
+    "confirmed": null,
+    "confirmed_by": null,
+    "dirty": false,
+    "image_sha256": "20fc16ca81649ffe3323bea2065e802b4aa13bb6bd8719b3738746c880e1a173",
+    "os": "Linux 6.12.115+deb13.1-amd64",
+    "shows": "channel log, text of 7 rows and alternate rows on, light theme, 1100x750 window, right of the timestamps"
+  }
+}

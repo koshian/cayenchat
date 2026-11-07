@@ -1231,8 +1231,8 @@ specification's "full support". event-playback, echo-message and
 labeled-response are not needed and not requested.
 
 Replies are consumed whole in the connection worker, reported once when
-the batch ends, and inserted by the application at the point of the
-request (reserved sequences) as requested history, which never notifies,
+the batch ends, and appended by the application in processing order (D086)
+as requested history, which never notifies,
 highlights or marks unread and is not shown in the combined subwindow.
 One request at a time, 50 lines asked, 100 kept, 64 channels queued, 30 s
 timeout. Older pages, gap recovery on reconnect, private-message history
@@ -1414,10 +1414,9 @@ message received before the cut (specification as in D030).
   minus 5 s for clock skew (the specification suggests 1–10 s), relying on
   the duplicate filter for the overlap. Never display time or arrival
   order. No reference, no recovery: the join behaves as before.
-- **Placement.** Sequences are reserved at the disconnect, so missed lines
-  go where the log was cut, before the rejoin and later live lines,
-  through the same insertion and duplicate filter as recent history; logs
-  are never re-sorted.
+- **Placement.** Superseded by D086: missed lines are appended in
+  processing order (after the disconnect and rejoin lines), through the same
+  duplicate filter as recent history; logs are never re-sorted.
 - **Lifetime.** The earliest unanswered cut is kept across failed
   attempts; a part, a reset, or a session that joined without history
   drops it. State is one point per conversation in `app` and the list in
@@ -3041,9 +3040,9 @@ target's latest message; timestamps only.
   servers stays separate.
 - **Quiet.** Discovery and its history use provenance `Requested`: no unread,
   highlight or notification.
-- **Placement.** Same reservation as channel history (D027, D031): the
-  block sits where the request was made. A known conversation that already
-  received a live line meanwhile shows the missed lines after it.
+- **Placement.** Same as channel history (D086): the block is appended in
+  processing order when the response is complete, after any live line that
+  arrived meanwhile.
 - **Not done.** Private conversations have no resume points (repeat
   `LATEST *` only); no account-aware identity; no live soju/Ergo check.
 
@@ -3705,3 +3704,27 @@ the start of the session.
 - **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
+
+## D086 — History is appended in processing order, not placed by reserved sequences (#954)
+
+- **Decision.** Recent history (`LATEST *`) and reconnect recovery no longer
+  reserve sequences. A reply is held while it arrives and, when it ends, put
+  in server-time order among itself and appended to the end of the log with
+  ordinary sequences. The log reads in the order the client processed things:
+  disconnect, rejoin, recovered lines; and on a first join, `has joined`, then
+  history (it used to come before the JOIN line).
+- **Why.** Reserving a slot at the disconnect (`ResumePoint`, 256 sequences)
+  or before our JOIN (`reserve_join_history`) put recovered lines above the
+  "disconnected" line, so after a sleep and reconnect lines posted during the
+  outage appeared before the event that cut them off, and history looked as if
+  it did not work. KISS: the client does not build an order.
+- **Kept as safety, independent of order.** The pending record (now only "a
+  reply is expected"; a reply without one changes nothing), the per-
+  conversation duplicate filter just before each append, `Provenance::Requested`
+  (no unread, highlight or notification), the gap note (appended when an
+  incomplete recovery ends), the wire reference of `ResumePoint` (msgid or
+  timestamp), and server-time ordering inside one reply.
+- **Limits.** `app` no longer caps one reply (the sequence reservation did);
+  irc-core's `MAX_HISTORY_LINES` (100) and the retained-line limit remain.
+- **Unchanged.** Older pages (scrolling back) still take reserved sequences
+  below the log (D030); wire traffic and protocol are unchanged.
