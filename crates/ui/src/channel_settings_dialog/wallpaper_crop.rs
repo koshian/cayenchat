@@ -39,8 +39,9 @@ const OUTPUT_SIDE: u32 = 1280;
 /// Corner handles, drawn and hit, in logical pixels.
 const HANDLE_SIDE: f32 = 10.0;
 const HANDLE_REACH: f64 = 9.0;
-/// Every file the application cut out starts with this, so only such files
-/// are ever deleted when a wallpaper is replaced.
+/// Every file the application cut out starts with this. Nothing deletes
+/// them: equal cuts share one file, and a channel's saved settings may still
+/// name it.
 const FILE_PREFIX: &str = "wallpaper-";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -200,20 +201,6 @@ fn keep(directory: &Path, png: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Deletes `old` when the application cut it out itself (it lies directly in
-/// `directory` and carries the prefix) and it is not `new`. A path the user
-/// typed is never touched.
-fn forget(directory: &Path, old: &Path, new: &Path) {
-    let ours = old.parent() == Some(directory)
-        && old.file_name().is_some_and(|name| {
-            name.to_str()
-                .is_some_and(|name| name.starts_with(FILE_PREFIX) && name.ends_with(".png"))
-        });
-    if ours && old != new {
-        let _ = std::fs::remove_file(old);
-    }
-}
-
 impl ChannelSettingsView {
     /// Opens the file chooser for the wallpaper.
     pub(super) fn browse_wallpaper(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,7 +272,6 @@ impl ChannelSettingsView {
         };
         let (source, region) = (editor.source.clone(), editor.region);
         let i18n = self.i18n.clone();
-        let old = self.look.wallpaper.read(cx).text().trim().to_owned();
         let directory = self.crop.directory.clone();
         self.crop.status = Some((i18n.text("channel_look_crop_saving"), false));
         self.crop.task = Some(cx.spawn(async move |this, cx| {
@@ -300,7 +286,6 @@ impl ChannelSettingsView {
                         .encode_region(region, OUTPUT_SIDE)
                         .map_err(|_| i18n.text("ircv3_avatar_edit_unreadable"))?;
                     let path = keep(&directory, &png)?;
-                    forget(&directory, Path::new(&old), &path);
                     Ok::<_, String>(path)
                 })
                 .await;
@@ -576,7 +561,7 @@ impl ChannelSettingsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drag, WallpaperCrop, file_name, forget, keep};
+    use super::{Drag, WallpaperCrop, keep};
     use cayenchat_media::avatar_edit::{self, AvatarSource, Region};
     use gpui::{Bounds, point, px, size};
 
@@ -649,27 +634,16 @@ mod tests {
     }
 
     #[test]
-    fn kept_files_are_named_by_content_and_only_ours_are_forgotten() {
+    fn kept_files_are_named_by_content_and_never_deleted() {
         let dir = std::env::temp_dir().join(format!("cayenchat-crop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = keep(&dir, b"one").unwrap();
         let second = keep(&dir, b"two").unwrap();
         assert_ne!(first, second);
         assert_eq!(keep(&dir, b"one").unwrap(), first, "same cut, same file");
-        // The replaced file of ours goes; the new one and a stranger stay.
-        let stranger = dir.join("photo.png");
-        std::fs::write(&stranger, b"x").unwrap();
-        forget(&dir, &stranger, &second);
-        forget(&dir, &second, &second);
-        assert!(stranger.is_file() && second.is_file());
-        forget(&dir, &first, &second);
-        assert!(!first.exists());
-        // A look-alike name elsewhere is not ours.
-        let elsewhere = std::env::temp_dir().join(file_name(b"three"));
-        std::fs::write(&elsewhere, b"x").unwrap();
-        forget(&dir, &elsewhere, &second);
-        assert!(elsewhere.is_file());
-        let _ = std::fs::remove_file(&elsewhere);
+        // Choosing another range leaves the earlier file: another channel
+        // (or the saved settings) may still use it.
+        assert!(first.is_file() && second.is_file());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

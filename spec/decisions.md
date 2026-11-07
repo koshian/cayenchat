@@ -3770,10 +3770,11 @@ the start of the session.
   keeps it as a PNG named by its content in `wallpapers` of the data
   directory (`storage::wallpaper_directory`; in a test build, of its test
   directory). The field then holds that path, so the original may be a
-  temporary file or be moved later. Replacing the wallpaper deletes the
-  previous file only when it is one of these (directly in that directory,
-  `wallpaper-*.png`); a typed path is never touched, and a file left when
-  the field is cleared stays. HEIC/AVIF cannot be decoded here and are
+  temporary file or be moved later. Nothing deletes these files: equal cuts
+  share one file (named by content), and a saved setting of another channel,
+  or one not yet saved, may still name it. A new cut leaves earlier files in
+  place; each is at most a 1280 px PNG, and a later cleanup would have to
+  check every channel's saved settings first. HEIC/AVIF cannot be decoded here and are
   refused with the avatar editor's message (export as JPEG). A path typed
   into the field is still used as it is, without the editor. Escape closes
   the editor before the window.

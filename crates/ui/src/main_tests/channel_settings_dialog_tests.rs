@@ -588,7 +588,7 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
         path.to_str()
     );
 
-    // A second cut replaces the first file of ours.
+    // A second cut leaves the first file: nothing deletes kept wallpapers.
     view.update(wcx, |view, cx| {
         view.drop_wallpaper_for_test(source.clone(), kept.clone(), cx)
     });
@@ -605,7 +605,7 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
     wcx.run_until_parked();
     let second = view.read_with(wcx, |view, cx| view.wallpaper_text_for_test(cx));
     assert_ne!(std::path::PathBuf::from(&second), path);
-    assert!(!path.exists() && std::path::Path::new(&second).is_file());
+    assert!(path.exists() && std::path::Path::new(&second).is_file());
 
     // A file that is not an image is reported and nothing changes.
     let text = dir.join("note.png");
