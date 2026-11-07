@@ -48,8 +48,14 @@ const FILE_PREFIX: &str = "wallpaper-";
 enum Drag {
     /// Moving the rectangle: where the drag started, and the rectangle then.
     Move { start: (f64, f64), from: Region },
-    /// Resizing from a corner; the opposite corner stays.
-    Resize { anchor: (f64, f64) },
+    /// Resizing from a corner or a side; the opposite corner `anchor` stays.
+    /// `far` is the dragged corner as it was, and `follows` tells which of
+    /// its axes the mouse moves (a side moves only one).
+    Resize {
+        anchor: (f64, f64),
+        far: (f64, f64),
+        follows: (bool, bool),
+    },
 }
 
 /// The image being cut and the rectangle on it.
@@ -104,18 +110,64 @@ impl WallpaperCrop {
             height,
         } = self.region;
         let (right, bottom) = (x + width, y + height);
+        let near = |a: f64, b: f64, reach: f64| (a - b).abs() <= reach;
+        // Corners first, from the far corner's point of view: the dragged
+        // corner, the opposite corner that stays, and which axes follow.
         let corners = [
             ((x, y), (right, bottom)),
             ((right, y), (x, bottom)),
             ((x, bottom), (right, y)),
             ((right, bottom), (x, y)),
         ];
-        self.drag = corners
+        let corner = corners
             .iter()
-            .find(|(corner, _)| {
-                (corner.0 - point.0).abs() <= reach && (corner.1 - point.1).abs() <= reach
+            .find(|(c, _)| near(c.0, point.0, reach) && near(c.1, point.1, reach))
+            .map(|(c, anchor)| Drag::Resize {
+                anchor: *anchor,
+                far: *c,
+                follows: (true, true),
+            });
+        // Then the four sides, which change one dimension. The reach is
+        // kept below a third of the other side so the middle still moves.
+        let across_x = reach.min(width / 3.0);
+        let across_y = reach.min(height / 3.0);
+        let within_x = (x - reach..=right + reach).contains(&point.0);
+        let within_y = (y - reach..=bottom + reach).contains(&point.1);
+        let side = |near_side: bool, far: (f64, f64), anchor: (f64, f64), follows| {
+            near_side.then_some(Drag::Resize {
+                anchor,
+                far,
+                follows,
             })
-            .map(|(_, anchor)| Drag::Resize { anchor: *anchor })
+        };
+        let sides = [
+            side(
+                within_x && near(point.1, y, across_y),
+                (x, y),
+                (right, bottom),
+                (false, true),
+            ),
+            side(
+                within_x && near(point.1, bottom, across_y),
+                (right, bottom),
+                (x, y),
+                (false, true),
+            ),
+            side(
+                within_y && near(point.0, x, across_x),
+                (x, y),
+                (right, bottom),
+                (true, false),
+            ),
+            side(
+                within_y && near(point.0, right, across_x),
+                (right, bottom),
+                (x, y),
+                (true, false),
+            ),
+        ];
+        self.drag = corner
+            .or_else(|| sides.into_iter().flatten().next())
             .or_else(|| {
                 let inside = (x..=right).contains(&point.0) && (y..=bottom).contains(&point.1);
                 inside.then_some(Drag::Move {
@@ -133,8 +185,16 @@ impl WallpaperCrop {
                     .source
                     .moved_region(from, point.0 - start.0, point.1 - start.1);
             }
-            Some(Drag::Resize { anchor }) => {
-                let region = self.source.region_from_drag(anchor, point);
+            Some(Drag::Resize {
+                anchor,
+                far,
+                follows,
+            }) => {
+                let target = (
+                    if follows.0 { point.0 } else { far.0 },
+                    if follows.1 { point.1 } else { far.1 },
+                );
+                let region = self.source.region_from_drag(anchor, target);
                 if self.source.region_usable(region) {
                     self.region = region;
                 }
@@ -455,7 +515,13 @@ impl ChannelSettingsView {
                 )
                 .absolute()
                 .size_full(),
-            )
+            );
+        // The margin around the picture takes presses too, so a corner or
+        // side at the image's edge can be grabbed from just outside it.
+        let picture = div()
+            .id("channel-look-crop-grab")
+            .p(px(HANDLE_REACH as f32))
+            .child(picture)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -513,7 +579,7 @@ impl ChannelSettingsView {
                         .text_color(palette.text_secondary)
                         .child(self.i18n.text("channel_look_crop_hint")),
                 )
-                .child(div().p(px(HANDLE_SIDE / 2.0)).child(picture))
+                .child(picture)
                 .children(status)
                 .child(buttons),
         )
@@ -598,7 +664,9 @@ mod tests {
         assert_eq!(
             editor.drag,
             Some(Drag::Resize {
-                anchor: (1600.0, 800.0)
+                anchor: (1600.0, 800.0),
+                far: (0.0, 0.0),
+                follows: (true, true),
             })
         );
         editor.drag_to((800.0, 200.0));
@@ -625,6 +693,32 @@ mod tests {
                 y: 200.0,
                 width: 800.0,
                 height: 600.0
+            }
+        );
+        editor.drag = None;
+        // A side changes one dimension only, and can be grabbed from just
+        // outside the rectangle.
+        editor.press((400.0, 190.0));
+        editor.drag_to((700.0, 400.0));
+        assert_eq!(
+            editor.region,
+            Region {
+                x: 0.0,
+                y: 400.0,
+                width: 800.0,
+                height: 400.0
+            }
+        );
+        editor.drag = None;
+        editor.press((820.0, 600.0));
+        editor.drag_to((500.0, 100.0));
+        assert_eq!(
+            editor.region,
+            Region {
+                x: 0.0,
+                y: 400.0,
+                width: 500.0,
+                height: 400.0
             }
         );
         editor.drag = None;

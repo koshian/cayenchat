@@ -3764,8 +3764,9 @@ the start of the session.
   is read before the platform deletes it, as for the avatar) and decode it
   with the avatar editor's decoder (`media::avatar_edit::open`: preview
   limits, EXIF orientation, at most 2048 px). A rectangle of any shape,
-  moved by its inside and resized by its corners (`Region`), selects the
-  range; "Use This Range" cuts it out, shrinks it to at most 1280 px and
+  moved by its inside and resized by its corners or sides (`Region`; a
+  grab reaches 9 px beyond them, also in the margin around the picture, so
+  an edge of the image can be grabbed), selects the range; "Use This Range" cuts it out, shrinks it to at most 1280 px and
   keeps it as a PNG named by its content in `wallpapers` of the data
   directory (`storage::wallpaper_directory`; in a test build, of its test
   directory). The field then holds that path, so the original may be a
