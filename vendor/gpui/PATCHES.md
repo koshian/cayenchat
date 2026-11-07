@@ -273,3 +273,12 @@ counted across all formats of one read and a 5 second deadline for the whole
 read. Dropping the `Task` cancels the read and closes the pipe. The synchronous
 `read_from_clipboard` is kept. When re-applying, keep these bounds and call the
 async API from CayenChat's paste paths.
+
+In `src/platform/mac/metal_renderer.rs`, `update_transparency` sets the Metal
+layer's opaque flag to `!transparent` (CayenChat #930). Upstream leaves it a
+`// todo(mac)?` stub and relies on the layer being created non-opaque; the draw
+path already clears with alpha 0 only while `is_opaque()` is false. With the
+patch an Opaque window gets an opaque layer cleared with alpha 1, and a
+Transparent one a non-opaque layer, so the window state and the layer agree
+when `set_background_appearance` switches back and forth. To re-apply: replace
+the stub body with `self.layer.set_opaque(!transparent);`.

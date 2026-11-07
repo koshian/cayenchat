@@ -264,6 +264,20 @@ impl LogList {
         offset < max - TOLERANCE
     }
 
+    /// Where the rows end, measured from the top of the list, when they end
+    /// above its bottom edge (a short or empty log); `None` when the rows
+    /// reach the bottom. Whole pixels, from the previous frame's layout, so a
+    /// caller can compare it across frames. A list that cannot scroll is
+    /// following its bottom, where the scroll offset is the height of all rows.
+    pub fn unfilled_from(&self) -> Option<Pixels> {
+        let viewport = self.state.viewport_bounds().size.height;
+        if self.state.max_offset_for_scrollbar().height > px(0.) {
+            return None;
+        }
+        let from = (-self.state.scroll_px_offset_for_scrollbar().y).round();
+        (from < viewport).then_some(from)
+    }
+
     /// How many message rows lie above row `visible_start` (the first row a
     /// scroll event reports as visible).
     pub fn message_rows_above(&self, visible_start: usize) -> usize {
@@ -409,6 +423,46 @@ mod tests {
 
     /// A row kept across a sync whose shape changed is measured again; the
     /// row count and the other rows stay as they are.
+    /// A short log reports where its rows end so the rest can be filled; a
+    /// log whose rows reach the bottom reports nothing.
+    #[gpui::test]
+    fn a_short_log_reports_where_its_rows_end(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, list};
+
+        struct Log(LogList);
+        impl Render for Log {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).h(px(300.)).child(
+                    list(self.0.state.clone(), |_, _, _| {
+                        div().w_full().h(px(40.)).into_any_element()
+                    })
+                    .size_full(),
+                )
+            }
+        }
+
+        let (view, cx) = cx.add_window_view(|_, _| {
+            let mut list = LogList::new();
+            list.sync(0, &[10, 20, 30]);
+            Log(list)
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |l, _| l.0.unfilled_from()),
+            Some(px(120.))
+        );
+        view.update(cx, |log, _| {
+            let sequences: Vec<u64> = (1..=10).map(|s| s * 10).collect();
+            log.0.sync(0, &sequences);
+        });
+        draw(cx);
+        assert_eq!(view.read_with(cx, |l, _| l.0.unfilled_from()), None);
+    }
+
     #[gpui::test]
     fn a_kept_row_whose_shape_changed_is_measured_again(cx: &mut gpui::TestAppContext) {
         use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, list};

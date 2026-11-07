@@ -1071,6 +1071,9 @@ struct ChatWindow {
     window_display: Option<String>,
     /// The native window title last set from `render`.
     shown_title: String,
+    /// The native window was last made transparent because a pane background
+    /// is see-through (set from `render`).
+    window_transparent: bool,
     /// Keep every CayenChat window above ordinary windows (Windows only).
     /// Applied to the windows opened later; the native state is set by
     /// `apply_always_on_top`, never while building a window.
@@ -1679,6 +1682,7 @@ impl ChatWindow {
             window_bounds: None,
             window_display: None,
             shown_title: String::new(),
+            window_transparent: false,
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: saved.connection_diagnostics,
@@ -7126,6 +7130,18 @@ impl Render for ChatWindow {
             window.os_set_title(&title);
             self.shown_title = title.clone();
         }
+        // A see-through pane needs a window without an opaque base. Where the
+        // platform cannot show the desktop through (no compositing), the
+        // window keeps its base and the pane shows over it.
+        let transparent = self.appearance.has_translucent_pane();
+        if transparent != self.window_transparent {
+            window.set_background_appearance(if transparent {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            });
+            self.window_transparent = transparent;
+        }
         self.check_double_enter(window, cx);
         let content = self.render_chat(window, cx);
         // The dialogs' backdrops start below the menu bar and the toolbar,
@@ -7841,6 +7857,40 @@ impl ChatWindow {
         }
     }
 
+    /// On a translucent log pane the rows paint themselves and the pane paints
+    /// nothing under them (`log_surface`), so the part below the last row of a
+    /// short log would show the desktop at no opacity. This fills that part
+    /// with the plain row color from `unfilled` (`LogList::unfilled_from`).
+    /// The layout it follows is the previous frame's, so one check after this
+    /// frame redraws the pane if the answer changed.
+    fn log_tail_filler(
+        unfilled: Option<Pixels>,
+        bg: Rgba,
+        list: impl Fn(&Self) -> Option<&LogList> + 'static,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        if bg.a >= 1. {
+            return None;
+        }
+        let chat = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = chat.update(cx, |chat, cx| {
+                if list(chat).map(LogList::unfilled_from) != Some(unfilled) {
+                    cx.notify();
+                }
+            });
+        });
+        unfilled.map(|from| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .top(from)
+                .bg(bg)
+        })
+    }
+
     /// Content of a cached pane; see [`ChatPane`].
     fn render_pane(
         &mut self,
@@ -7897,6 +7947,12 @@ impl ChatWindow {
                         }
                     });
                 });
+                let filler = Self::log_tail_filler(
+                    main.unfilled_from(),
+                    theme.panes.channel_log,
+                    move |chat| chat.channel_log_lists.get(&selected),
+                    cx,
+                );
                 div()
                     .relative()
                     .size_full()
@@ -7907,26 +7963,36 @@ impl ChatWindow {
                         )
                         .size_full(),
                     )
+                    .children(filler)
                     .child(bar)
                     .children(latest_button)
                     .into_any_element()
             }
-            PaneKind::CombinedLog => div()
-                .relative()
-                .size_full()
-                .child(
-                    list(
-                        self.combined_list.state.clone(),
-                        cx.processor(Self::render_combined_row),
+            PaneKind::CombinedLog => {
+                let filler = Self::log_tail_filler(
+                    self.combined_list.unfilled_from(),
+                    theme.panes.combined_log,
+                    |chat| Some(&chat.combined_list),
+                    cx,
+                );
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        list(
+                            self.combined_list.state.clone(),
+                            cx.processor(Self::render_combined_row),
+                        )
+                        .size_full(),
                     )
-                    .size_full(),
-                )
-                .child(scrollbar::scrollbar(
-                    "scrollbar-sub",
-                    &self.combined_list.state,
-                    theme.text_muted,
-                ))
-                .into_any_element(),
+                    .children(filler)
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-sub",
+                        &self.combined_list.state,
+                        theme.text_muted,
+                    ))
+                    .into_any_element()
+            }
             PaneKind::MemberList => {
                 let member_count = self.participants().len();
                 div()
@@ -8017,6 +8083,7 @@ impl ChatWindow {
         let look = self.channel_log_look(theme);
         let wallpaper = self.wallpaper.element(look.wallpaper.as_ref(), window, cx);
         let appearance = &self.appearance;
+        let translucent = appearance.has_translucent_pane();
         let draft_row_height = self.draft_row_height();
         let input_size = pane_text_size(appearance.input_font_size, None);
         // The input draws its own text size, so the pane's size goes to it.
@@ -8059,9 +8126,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px_2()
-            .py_1()
-            .bg(channel_log_bg)
+            .map(|d| log_surface(d, channel_log_bg))
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
@@ -8083,9 +8148,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px_2()
-            .py_1()
-            .bg(combined_bg)
+            .map(|d| log_surface(d, combined_bg))
             .when(!appearance.combined_log_font.is_empty(), |d| {
                 d.font_family(appearance.combined_log_font.clone())
             })
@@ -8989,7 +9052,9 @@ impl ChatWindow {
             // Relative, so a pane's own text size (#927) scales the line too.
             .line_height(relative(20. / 13.))
             .text_color(theme.text)
-            .bg(theme.surface)
+            // An opaque base here would hide the desktop behind a see-through
+            // pane (#930); the bars and the panes paint their own background.
+            .when(!translucent, |d| d.bg(theme.surface))
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::scroll_to_latest))
             .on_action(cx.listener(Self::toggle_selected_heading_action))
@@ -9280,6 +9345,34 @@ fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoEle
     .with_priority(1)
 }
 
+/// Padding and background of a log pane. An opaque background is painted under
+/// the rows. A translucent one is painted as the padding's border instead and
+/// each row paints its own color (`row_background`), so a row never stacks on
+/// the pane background and every row shows the same opacity.
+fn log_surface<T: Styled>(d: T, bg: Rgba) -> T {
+    if bg.a >= 1. {
+        return d.px_2().py_1().bg(bg);
+    }
+    let mut d = d.border_color(bg);
+    let widths = &mut d.style().border_widths;
+    widths.left = Some(px(8.).into());
+    widths.right = Some(px(8.).into());
+    widths.top = Some(px(4.).into());
+    widths.bottom = Some(px(4.).into());
+    d
+}
+
+/// Background a log row paints itself: the alternate color on alternate rows;
+/// on a translucent pane every other row paints the pane color too, because
+/// the pane paints nothing under the rows (`log_surface`).
+fn row_background(alternate: bool, alt: Rgba, plain: Rgba) -> Option<Rgba> {
+    if alternate {
+        Some(alt)
+    } else {
+        (plain.a < 1.).then_some(plain)
+    }
+}
+
 /// Layout of a cached pane inside its column.
 fn pane_style() -> StyleRefinement {
     StyleRefinement::default().flex_1().min_h_0()
@@ -9289,6 +9382,8 @@ fn pane_style() -> StyleRefinement {
 struct LogStyle {
     theme: Theme,
     channel_alt: Rgba,
+    channel_bg: Rgba,
+    combined_bg: Rgba,
     event_color: Rgba,
     notice_color: Rgba,
     combined_alt: Rgba,
@@ -9305,6 +9400,8 @@ impl LogStyle {
         Self {
             theme,
             channel_alt: theme.panes.channel_alternate,
+            channel_bg: theme.panes.channel_log,
+            combined_bg: theme.panes.combined_log,
             event_color: theme.panes.channel_event,
             notice_color: theme.panes.notice,
             combined_alt: theme.panes.combined_alternate,
@@ -9321,6 +9418,24 @@ impl LogStyle {
             decode_char_refs: appearance.decode_char_refs,
             reiwa_mode: appearance.reiwa_mode,
         }
+    }
+
+    /// Background the channel log row at `index` paints itself, if any.
+    fn channel_row_bg(&self, index: usize) -> Option<Rgba> {
+        row_background(
+            self.alternate_rows && index % 2 == 1,
+            self.channel_alt,
+            self.channel_bg,
+        )
+    }
+
+    /// Background the combined log row at `index` paints itself, if any.
+    fn combined_row_bg(&self, index: usize) -> Option<Rgba> {
+        row_background(
+            self.alternate_rows && index % 2 == 1,
+            self.combined_alt,
+            self.combined_bg,
+        )
     }
 
     /// Width of the time column: grows with a time size above the standard.
@@ -9588,9 +9703,7 @@ impl ChatWindow {
                         .flex()
                         .gap_1()
                         .py(px(1.))
-                        .when(style.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(style.channel_alt)
-                        })
+                        .when_some(style.channel_row_bg(index), |d, color| d.bg(color))
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -9843,9 +9956,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && index % 2 == 1, |d| {
-                d.bg(style.channel_alt)
-            })
+            .when_some(style.channel_row_bg(index), |d, color| d.bg(color))
             .when_some(
                 self.reveal_flash
                     .filter(|&(id, sequence, _)| {
@@ -10178,9 +10289,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.combined_alt)
-            })
+            .when_some(style.combined_row_bg(row), |d, color| d.bg(color))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
             .child(style.time(message.time))
@@ -10256,9 +10365,7 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when(style.alternate_rows && row % 2 == 1, |d| {
-                d.bg(style.combined_alt)
-            })
+            .when_some(style.combined_row_bg(row), |d, color| d.bg(color))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
             .child(style.time(message.time))
@@ -11227,6 +11334,18 @@ mod reveal_strength_tests {
         assert_eq!(reveal_background(row, log, highlight, 0.), row);
         let near = reveal_background(row, log, highlight, 0.001);
         assert!((near.b - row.b).abs() < 0.001);
+    }
+    #[test]
+    fn translucent_rows_paint_their_own_background() {
+        use super::row_background;
+        use gpui::rgba;
+        let alt = rgba(0x11223340);
+        let plain = rgba(0xffffff40);
+        // Every row paints once, so no row stacks on the pane background.
+        assert_eq!(row_background(true, alt, plain), Some(alt));
+        assert_eq!(row_background(false, alt, plain), Some(plain));
+        // An opaque pane paints its background under the rows instead.
+        assert_eq!(row_background(false, rgb(0x112233), rgb(0xffffff)), None);
     }
 }
 
