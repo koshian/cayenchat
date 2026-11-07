@@ -3401,7 +3401,7 @@ there is no network, bouncer or connection behind it.
 
 ## D076 — The channel menu's settings dialog is drawn in the chat window (#781)
 
-**Status:** Accepted
+**Status:** Accepted; the dialog became a window of its own in D087 (#950)
 
 2026-10-30. Refines D073's "Channel settings dialog".
 
@@ -3658,7 +3658,7 @@ the start of the session.
 
 - **Decision.** The channel settings dialog (D076) has a "channel log look"
   section: a font size, a background, an alternate row and a text color, a
-  wallpaper file and its strength in percent. An empty field follows the
+  wallpaper file and its filter settings (D087). An empty field follows the
   global appearance. The values are `Appearance::channel_looks`, a list
   keyed by server profile id and channel name (matched with the network's
   case mapping, as the encodings are), not part of the server profile:
@@ -3668,18 +3668,17 @@ the start of the session.
 - **Applies to** the channel log only, to its text size, background and
   alternate rows, and the default text color (time, nicknames, links and
   the other colored parts keep theirs). The colors are one set for both
-  themes. A wallpaper makes the alternate rows half transparent, so it
+  themes. A wallpaper gives the alternate rows the background's opacity, so it
   shows through them.
 - **Wallpaper.** `media::wallpaper` reads a local file (≤ 16 MiB, through
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
-  blurs it (sigma 8) and moves every pixel 60 % toward the log's
-  background color, so a high-contrast photo leaves the text readable in
-  the light and the dark theme. This happens once per file and tint, on a
-  background thread; the window keeps one result (the selected channel's),
-  keyed by file and tint, and drops a result that arrives for another key.
-  There is no strength setting for the filter: the wallpaper's strength
-  (default 40 %) fades the picture over the background color. It is drawn
-  stretched to cover the log (no tiling or position options). A file that
+  and blurs it, so fine detail is lost. This happens once per file, on a
+  background thread; the window keeps one result (the selected channel's)
+  and drops a result that arrives for another key. The picture is the
+  backmost layer and the log's background color lies over it with an
+  opacity, so a high-contrast photo leaves the text readable in the light
+  and the dark theme (D087 replaced the first version's baked-in tint and
+  strength by this). There are no tiling or position options. A file that
   cannot be read shows no wallpaper.
 - **Not done.** Other panes, a transparent background or window, and
   separate light/dark colors.
@@ -3704,6 +3703,103 @@ the start of the session.
 - **Simplified.** `Charset` no longer has `keep_kana`; the encoder keeps
   katakana whenever the encoding is ISO-2022-JP. Character references `Auto`
   count ISO-2022-JP only. A channel can no longer ask for the folding form.
+
+## D087 — Wallpaper filter settings per channel (#950)
+
+- **Decision.** D084's fixed filter (sigma 8, 60 % tint) hid photos. The
+  wallpaper is now the backmost layer, drawn as loaded, and the channel
+  log's background color lies over it with an opacity; contrast is adjusted
+  with that opacity, not by changing the picture. Layers, back to front:
+  wallpaper, background color (with opacity), alternate rows, text. The
+  channel log look gains three settings (`wallpaper_blur`,
+  `background_opacity`, `wallpaper_fit` of `ChannelLook`, no version
+  change; D084's `wallpaper_opacity` is gone and an old value is ignored):
+  - **Blur**: sigma in px of the kept (≤ 640 px) picture, 0.0 to 3.0 in
+    steps of 0.1 (stored as tenths, `wallpaper_blur_tenths`, 0 to 30; 0 is no
+    blur). The only filter applied to the image. Default 0.0. The maintainer
+    found the first range (0 to 20, default 3) too strong (2026-11-07); a
+    whole-pixel `wallpaper_blur` of that build is not read.
+  - **Background opacity**: percent of the log background color laid over
+    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 80. It
+    is the alpha of the channel's background color. The path is general, not
+    wallpaper's own (`channel_look::backdrop`: the picture, if any, and over
+    it the pane background with its alpha; `ResolvedLook::background`).
+    The maintainer decided (2026-11-06) that this issue builds it and #930
+    is redone on it, so #930 reuses `backdrop` for the other panes and
+    keeps this value as the channel's override. An alternate row replaces
+    the background instead of lying over it (so the opacity is not added
+    twice and the stripe keeps its strength): it paints the picture again
+    over its own area (`channel_look::alternate_row`, the picture placed as
+    the pane placed it) and its color, with the same alpha, over that. A row
+    that is flashing by a jump keeps the plain color meanwhile. Making the
+    window see through to the desktop belongs to #930.
+  - **Fit**: `cover` (default: proportions kept, the log covered), `stretch`,
+    `contain` or `center`,
+    laid out by `channel_look::fit_bounds` on the log's real box (GPUI's
+    image element forces the picture's own proportions on its box, so the
+    fits would not differ; a canvas paints the image instead; `center` is
+    centered here, while GPUI's `ObjectFit::None` keeps the origin). The box clips what overflows, and
+    `contain` leaves the background color at the margin. `center` is the
+    kept picture at its size, already reduced to 640 px, so not the file's
+    original size. A name this version does not know reads as unset.
+- **No inheritance.** There is no global counterpart of these three, so
+  each always holds a value: the default is shown and used until it is
+  changed, and a value equal to its default is stored as unset. The text
+  fields (size and the three colors) still follow the global appearance
+  when empty.
+- **Filtering.** Once per file and blur when loaded, on the background
+  thread. The window's one held picture is keyed by file and blur; changing
+  either loads again and drops a result for an older key. Color, opacity and
+  fit are not part of the key, so moving their controls never reprocesses the
+  image and shows at once. Values in the file above the range are capped on
+  load.
+- **Controls.** Blur and opacity are sliders (`slider.rs`: click or drag on
+  the track, arrow, Home, End and Page keys when focused). The fit is four
+  buttons. The defaults (blur 0.0, opacity 80 %, fit `cover`) are the
+  maintainer's choice after trying real photos (2026-11-07).
+- **Choosing the image and its range** (`channel_settings_dialog/
+  wallpaper_crop.rs`). The "Browse…" button and a file dropped on the
+  window both read the file in the background as an attachment
+  (`image_upload::read_in_background`, so a macOS file promise from Photos
+  is read before the platform deletes it, as for the avatar) and decode it
+  with the avatar editor's decoder (`media::avatar_edit::open`: preview
+  limits, EXIF orientation, at most 2048 px). A rectangle of any shape,
+  moved by its inside and resized by its corners or sides (`Region`; a
+  grab reaches 9 px beyond them, also in the margin around the picture, so
+  an edge of the image can be grabbed), selects the range; "Use This Range" cuts it out, shrinks it to at most 1280 px and
+  keeps it as a PNG named by its content in `wallpapers` of the data
+  directory (`storage::wallpaper_directory`; in a test build, of its test
+  directory). The field then holds that path, so the original may be a
+  temporary file or be moved later. Nothing deletes these files: equal cuts
+  share one file (named by content), and a saved setting of another channel,
+  or one not yet saved, may still name it. A new cut leaves earlier files in
+  place; each is at most a 1280 px PNG, and a later cleanup would have to
+  check every channel's saved settings first. HEIC/AVIF cannot be decoded here and are
+  refused with the avatar editor's message (export as JPEG). A path typed
+  into the field is still used as it is, without the editor. Escape closes
+  the editor before the window.
+- **A window of its own.** The channel settings are no longer a modal dialog
+  (D076): "Channel Settings…" and the auto-join list's "Settings…" open one
+  window per channel (`ChatWindow::channel_settings_windows`; a second
+  request raises it), placed beside the chat window like the settings
+  window. The chat window shows each edit at once (`preview_channel_look`,
+  in memory only); the file is written 250 ms after the last edit, and when
+  the window closes by any means, through
+  `ChatWindow::apply_channel_settings` (file first, then
+  `apply_settings_change`; it never sends JOIN or PART). Only the fields
+  the window changed since it opened or last saved are written, over the
+  file's current values, so a `/charset` made meanwhile is not rewound; the
+  window itself keeps showing what it opened with for the fields it did not
+  edit. A value that cannot be saved is
+  reported in the window and the last saved state stays. When the
+  application quits (`cx.on_app_quit` of the window), an edit still waiting
+  is written to the settings file alone, and only when it is valid: no
+  window is read or updated, the quit is never held back, and a window
+  without an edit writes nothing. An edit the write cannot take (at most the
+  last 250 ms of editing) is lost, which is accepted. Reset returns the
+  encodings, character references, look and sliders to the defaults but
+  keeps the auto-join choice. Escape closes an open list, then the window.
+  The settings window no longer hosts the dialog.
 
 ## D086 — History is appended in processing order, not placed by reserved sequences (#954)
 

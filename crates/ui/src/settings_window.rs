@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The settings window and the form it edits.
 
-use crate::channel_settings_dialog::{
-    CHAR_REF_CHOICES, ChannelSettingsEvent, ChannelSettingsView, Choices, apply_auto_join,
-    save_channel_choices,
-};
+use crate::channel_settings_dialog::CHAR_REF_CHOICES;
 use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, Disconnect, FocusNextField, FocusPreviousField, OpenSettings, Reconnect,
@@ -16,7 +13,7 @@ use crate::{
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
-use cayenchat_model::{display, names::CaseMapping};
+use cayenchat_model::display;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, Language,
     NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile, Settings,
@@ -1171,16 +1168,6 @@ pub(crate) struct AutoJoinRow {
     _subscription: Subscription,
 }
 
-/// The settings of one channel of the selected server (#680): joining it
-/// automatically, its encodings and its numeric character reference mode.
-/// Opened from the auto-join list; the chat window shows the same dialog from
-/// the channel menu. Nothing is written until Save, which does not join or
-/// part the channel either.
-pub(crate) struct ChannelSettingsDialog {
-    pub(crate) view: Entity<ChannelSettingsView>,
-    _subscription: Subscription,
-}
-
 /// The color picker open under one color row of the appearance settings.
 pub(crate) struct OpenColorPicker {
     /// The `#RRGGBB` field the picker edits.
@@ -1255,8 +1242,6 @@ pub(crate) struct SettingsWindow {
     pub(crate) avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// The auto-join list being edited in its own dialog.
     pub(crate) auto_join: Option<AutoJoinDialog>,
-    /// The settings of one channel being edited in a dialog (#680).
-    pub(crate) channel_settings: Option<ChannelSettingsDialog>,
     /// An avatar image is being decoded or encoded.
     pub(crate) avatar_opening: bool,
     /// The quick icon section at the top of the Connection tab is expanded.
@@ -1507,7 +1492,6 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             auto_join: None,
-            channel_settings: None,
             avatar_opening: false,
             avatar_quick_open: false,
             avatar_toggle_focus: cx.focus_handle().tab_stop(true),
@@ -1766,7 +1750,6 @@ impl SettingsWindow {
         self.font_picker = None;
         self.color_picker = None;
         self.auto_join = None;
-        self.channel_settings = None;
         self.shortcut_recording = None;
         self.refresh_upload_account(cx);
         cx.notify();
@@ -2342,10 +2325,7 @@ impl SettingsWindow {
             return;
         }
         cx.stop_propagation();
-        if let Some(dialog) = &self.channel_settings {
-            // An open list closes first; then the dialog, as Cancel.
-            dialog.view.update(cx, |view, cx| view.escape(cx));
-        } else if self.auto_join.is_some() {
+        if self.auto_join.is_some() {
             self.close_auto_join(window, cx);
         } else if self.avatar_editor.is_some() {
             self.avatar_editor = None;
@@ -3239,8 +3219,8 @@ impl SettingsWindow {
                                 !cayenchat_storage::valid_charset_channel(row.name.read(cx).text()),
                                 |d| d.opacity(0.4),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_auto_join_channel_settings(index, window, cx);
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_auto_join_channel_settings(index, cx);
                             })),
                     )
                     .child(
@@ -3507,12 +3487,7 @@ impl SettingsWindow {
         self.sync_auto_join(cx);
     }
 
-    fn open_auto_join_channel_settings(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_auto_join_channel_settings(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(name) = self
             .auto_join
             .as_ref()
@@ -3526,13 +3501,18 @@ impl SettingsWindow {
             return;
         };
         let profile_id = profile.id.clone();
-        let (mapping, _) = self
-            .owner
-            .update(cx, |owner, _, _| {
-                owner.channel_settings_context(&profile_id)
-            })
-            .unwrap_or((CaseMapping::Ascii, false));
-        self.show_channel_settings(&name, mapping, window, cx);
+        // A server still being added is not known to the chat window.
+        if self.saved.profile(&profile_id).is_none() {
+            self.feedback = Some(self.i18n.text("channel_settings_server_unsaved"));
+            cx.notify();
+            return;
+        }
+        // The channel gets a window of its own, opened by the chat window
+        // (which also shows its changes). It saves by itself.
+        let _ = self.owner.update(cx, |owner, window, cx| {
+            let (mapping, _) = owner.channel_settings_context(&profile_id);
+            owner.open_channel_settings_window(&profile_id, &name, mapping, window, cx);
+        });
     }
 
     fn add_auto_join_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3540,161 +3520,6 @@ impl SettingsWindow {
         let input = row.name.clone();
         self.edit_auto_join(|rows| rows.push(row), cx);
         window.focus(&input.read(cx).focus_handle(cx));
-    }
-
-    /// Opens the dialog on what the shown server holds for `channel`. The
-    /// dialog writes to the shown server, which the form cannot leave while
-    /// the dialog is open.
-    fn show_channel_settings(
-        &mut self,
-        channel: &str,
-        mapping: CaseMapping,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // `/charset` and the chat window write the file while this window may
-        // stay open; take that over, keeping unrelated edits in the form.
-        self.follow_saved_server_order(cx);
-        let Some(profile) = self.settings.values.selected_profile() else {
-            return;
-        };
-        let choices = Choices::of(profile, channel, mapping);
-        let look = self
-            .settings
-            .values
-            .appearance
-            .channel_look(&profile.id, channel, |a, b| mapping.same(a, b))
-            .cloned();
-        let server = if profile.display_name.is_empty() {
-            profile.host.clone()
-        } else {
-            profile.display_name.clone()
-        };
-        let i18n = self.i18n.clone();
-        let view = cx.new(|cx| {
-            ChannelSettingsView::new(channel, mapping, server, choices, look.as_ref(), i18n, cx)
-        });
-        let subscription =
-            cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
-                ChannelSettingsEvent::Save => this.save_channel_settings(window, cx),
-                ChannelSettingsEvent::Cancel => this.cancel_channel_settings(window, cx),
-            });
-        self.channel_settings = Some(ChannelSettingsDialog {
-            view,
-            _subscription: subscription,
-        });
-        cx.notify();
-    }
-
-    /// Where the keyboard focus goes when the channel dialog closes: the
-    /// auto-join dialog it was opened from, or the settings categories.
-    fn leave_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.channel_settings = None;
-        match &self.auto_join {
-            Some(dialog) => window.focus(&dialog.focus),
-            None => window.focus(&self.nav_focus),
-        }
-        cx.notify();
-    }
-
-    /// Cancel: nothing changes.
-    pub(crate) fn cancel_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.leave_channel_settings(window, cx);
-    }
-
-    /// Save: writes the encodings, the reference mode and the auto-join
-    /// choice of the channel together, then saves the settings as the
-    /// auto-join dialog does. The connection is not touched: the chat window
-    /// applies the saved channel settings, and a JOIN or PART is never sent.
-    pub(crate) fn save_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dialog) = &self.channel_settings else {
-            return;
-        };
-        let view = dialog.view.clone();
-        let (channel, mapping, choices, look) = {
-            let view = view.read(cx);
-            (
-                view.channel().to_owned(),
-                view.mapping(),
-                view.choices,
-                view.look(cx),
-            )
-        };
-        let look = match look {
-            Ok(look) => look,
-            Err(error) => {
-                view.update(cx, |view, cx| view.set_error(Some(error), cx));
-                return;
-            }
-        };
-        let Some(profile_id) = self
-            .settings
-            .values
-            .selected_profile()
-            .map(|profile| profile.id.clone())
-        else {
-            return;
-        };
-        let utf8_only = self
-            .owner
-            .update(cx, |owner, _, _| {
-                owner.channel_settings_context(&profile_id).1
-            })
-            .unwrap_or(false);
-        // Start from what the file holds now, so `/charset` or the chat
-        // window's dialog is not written back.
-        self.follow_saved_server_order(cx);
-        let i18n = self.i18n.clone();
-        let profile = match save_channel_choices(
-            &mut self.settings.values,
-            &profile_id,
-            &channel,
-            mapping,
-            choices,
-            look,
-            utf8_only,
-            &i18n,
-        ) {
-            Ok(profile) => profile,
-            Err(error) => {
-                view.update(cx, |view, cx| view.set_error(Some(error), cx));
-                return;
-            }
-        };
-        if self.auto_join.is_some() {
-            // The list being edited is the source: its rows write the field.
-            self.set_channel_auto_join(&channel, mapping, choices.enabled, cx);
-        } else {
-            self.settings
-                .channels
-                .update(cx, |field, cx| field.set_text(&profile.channels, cx));
-        }
-        self.leave_channel_settings(window, cx);
-        self.autosave_now(None, cx);
-    }
-
-    /// Sets the auto-join choice of `channel` in the shown server's list.
-    fn set_channel_auto_join(
-        &mut self,
-        channel: &str,
-        mapping: CaseMapping,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(dialog) = &mut self.auto_join {
-            // The list being edited is the source: its rows write the field.
-            for row in &mut dialog.rows {
-                if mapping.same(row.name.read(cx).text(), channel) {
-                    row.enabled = enabled;
-                }
-            }
-            self.sync_auto_join(cx);
-        } else if let Some(profile) = self.settings.values.selected_profile_mut() {
-            let text = apply_auto_join(profile, channel, mapping, enabled);
-            self.settings
-                .channels
-                .update(cx, |field, cx| field.set_text(&text, cx));
-        }
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
@@ -3735,7 +3560,6 @@ impl SettingsWindow {
         self.avatar_setup_link = false;
         self.avatar_editor = None;
         self.auto_join = None;
-        self.channel_settings = None;
         match self.settings.switch_server(change, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
             Err(error) => self.feedback = Some(error),
@@ -5730,10 +5554,6 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
-        let channel_settings = self
-            .channel_settings
-            .as_ref()
-            .map(|dialog| dialog.view.clone());
         self.reveal_focused(window, cx);
         div()
             .id("settings-screen")
@@ -5781,7 +5601,6 @@ impl SettingsWindow {
                     )),
             )
             .children(auto_join)
-            .children(channel_settings.map(|view| view.into_any_element()))
             .on_action(cx.listener(Self::open_settings_action))
             .when(
                 self.owner
@@ -6362,11 +6181,10 @@ mod server_settings_tests {
 
 #[cfg(test)]
 mod escape_tests {
-    use super::{
-        ChannelSettingsView, Choices, KeyError, KeyFileError, SecretKey, SettingsWindow,
-        read_key_file,
-    };
+    use super::{KeyError, KeyFileError, SecretKey, SettingsWindow, read_key_file};
     use crate::channel_settings_dialog::channel_encodings_allowed;
+    use cayenchat_model::names::CaseMapping;
+    use cayenchat_storage::TextEncoding;
     use gpui::TestAppContext;
 
     #[gpui::test]
@@ -6653,246 +6471,30 @@ mod escape_tests {
         assert_eq!(app.clone().update(|app| app.windows().len()), 1);
     }
 
-    use cayenchat_model::names::CaseMapping;
-    use cayenchat_storage::{CharRefMode, TextEncoding};
-
-    fn open_channel(
-        form: &gpui::Entity<SettingsWindow>,
+    /// Saves `channel` of the first server the way the channel settings
+    /// window does, after `change` edited what the file holds for it.
+    fn save_channel(
+        owner: gpui::WindowHandle<crate::ChatWindow>,
         channel: &str,
         cx: &mut gpui::VisualTestContext,
+        change: impl FnOnce(&mut crate::channel_settings_dialog::Choices),
     ) {
-        let (profile, owner) = form.read_with(cx, |form, _| {
-            (
-                form.settings.values.selected_profile().unwrap().id.clone(),
-                form.owner,
-            )
-        });
-        let mapping = owner
-            .update(cx, |owner, _, _| owner.channel_settings_context(&profile).0)
-            .unwrap_or(CaseMapping::Ascii);
-        form.update_in(cx, |form, window, cx| {
-            form.show_channel_settings(channel, mapping, window, cx)
-        });
-    }
-
-    fn dialog_view(form: &SettingsWindow) -> gpui::Entity<ChannelSettingsView> {
-        form.channel_settings.as_ref().unwrap().view.clone()
-    }
-
-    fn dialog_choices(form: &SettingsWindow, cx: &gpui::App) -> Choices {
-        dialog_view(form).read(cx).choices
-    }
-
-    fn edit_choices(form: &SettingsWindow, cx: &mut gpui::App, change: impl FnOnce(&mut Choices)) {
-        dialog_view(form).update(cx, |view, _| change(&mut view.choices));
-    }
-
-    fn saved_profile(form: &gpui::Entity<SettingsWindow>, cx: &gpui::VisualTestContext) -> String {
-        form.read_with(cx, |form, _| {
-            let profile = form.settings.values.selected_profile().unwrap();
-            format!("{} {:?}", profile.channels, profile.channel_charsets)
-        })
-    }
-
-    #[gpui::test]
-    fn channel_settings_save_cancel_and_reset(cx: &mut TestAppContext) {
-        let settings = crate::settings_with_channels("#a,-#b");
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, _app) = open(cx, settings);
-        let same = |left: &str, right: &str| CaseMapping::default().same(left, right);
-
-        // A disabled entry opens unchecked; Cancel changes nothing.
-        open_channel(&form, "#B", cx);
-        form.read_with(cx, |form, cx| {
-            let dialog = dialog_choices(form, cx);
-            assert!(!dialog.enabled && dialog.decode.is_none() && dialog.char_refs.is_none());
-        });
-        let before = saved_profile(&form, cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| {
-                dialog.enabled = true;
-                dialog.decode = Some(TextEncoding::Gbk);
-            });
-            form.cancel_channel_settings(window, cx);
-        });
-        assert_eq!(saved_profile(&form, cx), before);
-        assert!(form.read_with(cx, |form, _| form.channel_settings.is_none()));
-
-        // Save writes the three settings and the auto-join state together,
-        // to the settings file as well.
-        open_channel(&form, "#b", cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| {
-                dialog.enabled = true;
-                dialog.decode = Some(TextEncoding::Gbk);
-                dialog.encode = Some(TextEncoding::Iso2022Jp);
-                dialog.char_refs = Some(CharRefMode::Iso2022Jp);
-            });
-            form.save_channel_settings(window, cx);
-        });
-        let on_file = crate::settings_file::load().unwrap().unwrap();
-        let profile = on_file.selected_profile().unwrap();
-        assert_eq!(profile.channels, "#a,#b");
-        let entry = profile.channel_charset("#b", same).unwrap();
-        assert_eq!(entry.decode, Some(TextEncoding::Gbk));
-        assert_eq!(entry.encode, Some(TextEncoding::Iso2022Jp));
-        assert_eq!(entry.char_refs, Some(CharRefMode::Iso2022Jp));
-
-        // Reset keeps the auto-join choice; saved, the channel follows the
-        // server again. Turning auto-join off keeps the other settings.
-        open_channel(&form, "#b", cx);
-        form.update_in(cx, |form, window, cx| {
-            assert!(dialog_choices(form, cx).enabled);
-            dialog_view(form).update(cx, |view, cx| view.reset(cx));
-            let dialog = dialog_choices(form, cx);
-            assert!(dialog.enabled && dialog.decode.is_none() && dialog.encode.is_none());
-            assert!(dialog.char_refs.is_none());
-            edit_choices(form, cx, |dialog| {
-                dialog.char_refs = Some(CharRefMode::Off);
-                dialog.enabled = false;
-            });
-            form.save_channel_settings(window, cx);
-        });
-        let on_file = crate::settings_file::load().unwrap().unwrap();
-        let profile = on_file.selected_profile().unwrap();
-        assert_eq!(profile.channels, "#a,-#b");
-        let entry = profile.channel_charset("#b", same).unwrap();
-        assert_eq!(entry.decode, None);
-        assert_eq!(entry.char_refs, Some(CharRefMode::Off));
-
-        // A channel nobody listed gets its settings without being added.
-        open_channel(&form, "#new", cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| {
-                dialog.char_refs = Some(CharRefMode::Auto)
-            });
-            form.save_channel_settings(window, cx);
-        });
-        let on_file = crate::settings_file::load().unwrap().unwrap();
-        let profile = on_file.selected_profile().unwrap();
-        assert_eq!(profile.channels, "#a,-#b");
-        assert_eq!(profile.channel_charsets.len(), 2);
-        drop(file);
-    }
-
-    #[gpui::test]
-    fn escape_closes_the_channel_settings_list_then_the_dialog(cx: &mut TestAppContext) {
-        let settings = crate::settings_with_channels("#a");
-        let (form, cx, _app) = open(cx, settings);
-        open_channel(&form, "#a", cx);
-        form.update(cx, |form, cx| {
-            edit_choices(form, cx, |dialog| dialog.decode = Some(TextEncoding::Big5));
-            dialog_view(form).update(cx, |view, _| {
-                view.open_list = Some(crate::channel_settings_dialog::EncodingSide::Decode)
-            });
-        });
-        // An open list closes first, then the dialog without saving.
-        cx.simulate_keystrokes("escape");
-        assert!(form.read_with(cx, |form, _| form.channel_settings.is_some()));
-        cx.simulate_keystrokes("escape");
-        assert!(form.read_with(cx, |form, _| form.channel_settings.is_none()));
-        assert!(form.read_with(cx, |form, _| {
-            form.settings
-                .values
-                .selected_profile()
-                .unwrap()
-                .channel_charsets
-                .is_empty()
-        }));
-    }
-
-    #[gpui::test]
-    fn channel_settings_from_the_auto_join_list_follow_its_rows(cx: &mut TestAppContext) {
-        let settings = crate::settings_with_channels("#a,#b");
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, _app) = open(cx, settings);
-        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
-        form.update_in(cx, |form, window, cx| {
-            form.open_auto_join_channel_settings(1, window, cx)
-        });
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| {
-                dialog.enabled = false;
-                dialog.char_refs = Some(CharRefMode::Iso2022Jp);
-            });
-            form.save_channel_settings(window, cx);
-            // The list stays open on the saved state.
-            assert!(form.auto_join.is_some());
-            assert!(!form.auto_join.as_ref().unwrap().rows[1].enabled);
-            assert!(form.auto_join.as_ref().unwrap().rows[0].enabled);
-        });
-        let on_file = crate::settings_file::load().unwrap().unwrap();
-        assert_eq!(on_file.selected_profile().unwrap().channels, "#a,-#b");
-        assert_eq!(
-            on_file.selected_profile().unwrap().channel_charsets[0].char_refs,
-            Some(CharRefMode::Iso2022Jp)
-        );
-        drop(file);
-    }
-
-    #[gpui::test]
-    fn channel_settings_open_refreshes_charset_changes_made_outside_the_form(
-        cx: &mut TestAppContext,
-    ) {
-        let settings = crate::settings_with_channels("#a[,#a{");
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, _app) = open(cx, settings);
-        let mut latest = crate::settings_file::load().unwrap().unwrap();
-        let profile = latest.selected_profile_mut().unwrap();
-        profile
-            .set_channel_charset(
-                "#a[",
-                Some(TextEncoding::Gbk),
-                None,
-                Some(CharRefMode::Auto),
-                |left, right| CaseMapping::Ascii.same(left, right),
-            )
+        let mapping = CaseMapping::default();
+        owner
+            .update(cx, |chat, window, cx| {
+                let profile = chat.saved.selected_profile().unwrap();
+                let mut choices =
+                    crate::channel_settings_dialog::Choices::of(profile, channel, mapping);
+                let base = (choices, cayenchat_storage::ChannelLook::default());
+                change(&mut choices);
+                let id = profile.id.clone();
+                let look = cayenchat_storage::ChannelLook::default();
+                chat.apply_channel_settings(
+                    &id, channel, mapping, &base, choices, look, window, cx,
+                )
+                .unwrap();
+            })
             .unwrap();
-        profile
-            .set_channel_charset(
-                "#a{",
-                Some(TextEncoding::Big5),
-                Some(TextEncoding::ShiftJis),
-                Some(CharRefMode::Off),
-                |left, right| CaseMapping::Ascii.same(left, right),
-            )
-            .unwrap();
-        crate::settings_file::save(&latest).unwrap();
-
-        // The displayed form is stale, as it is after `/charset` updates the
-        // shared settings file while this window remains open. Open through
-        // the auto-join row to cover its live CASEMAPPING lookup as well.
-        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
-        form.update_in(cx, |form, window, cx| {
-            form.open_auto_join_channel_settings(1, window, cx)
-        });
-        form.read_with(cx, |form, cx| {
-            let dialog = dialog_choices(form, cx);
-            assert_eq!(dialog.decode, Some(TextEncoding::Big5));
-            assert_eq!(dialog.encode, Some(TextEncoding::ShiftJis));
-            assert_eq!(dialog.char_refs, Some(CharRefMode::Off));
-        });
-        form.update_in(cx, |form, window, cx| {
-            form.cancel_channel_settings(window, cx)
-        });
-        form.update_in(cx, |form, window, cx| {
-            form.open_auto_join_channel_settings(0, window, cx)
-        });
-        form.read_with(cx, |form, cx| {
-            let dialog = dialog_choices(form, cx);
-            assert_eq!(dialog.decode, Some(TextEncoding::Gbk));
-            assert_eq!(dialog.char_refs, Some(CharRefMode::Auto));
-        });
-        form.update_in(cx, |form, window, cx| {
-            form.cancel_channel_settings(window, cx)
-        });
-        open_channel(&form, "#a[", cx);
-        form.read_with(cx, |form, cx| {
-            let dialog = dialog_choices(form, cx);
-            assert_eq!(dialog.decode, Some(TextEncoding::Gbk));
-            assert_eq!(dialog.char_refs, Some(CharRefMode::Auto));
-        });
-        drop(file);
     }
 
     /// Registers the chat window's connection to `NetworkId(1)` with
@@ -6928,20 +6530,6 @@ mod escape_tests {
             .unwrap();
     }
 
-    /// Runs `line` as the chat window's `/charset` command.
-    fn charset_command(
-        owner: gpui::WindowHandle<crate::ChatWindow>,
-        line: &str,
-        cx: &mut gpui::VisualTestContext,
-    ) {
-        owner
-            .update(cx, |chat, _, cx| {
-                let request = crate::charset_command::parse(line).unwrap().unwrap();
-                chat.run_charset(request, cx).unwrap();
-            })
-            .unwrap();
-    }
-
     fn file_profile() -> cayenchat_storage::ServerProfile {
         crate::settings_file::load()
             .unwrap()
@@ -6949,64 +6537,6 @@ mod escape_tests {
             .selected_profile()
             .unwrap()
             .clone()
-    }
-
-    #[gpui::test]
-    fn saving_from_the_settings_window_does_not_rewind_a_charset_command_change(
-        cx: &mut TestAppContext,
-    ) {
-        let settings = crate::settings_with_channels("#a,#b");
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, _app) = open(cx, settings);
-        let owner = form.read_with(cx, |form, _| form.owner);
-        register(owner, &["#a", "#b"], cx);
-        // `/charset` changes #a while the settings window stays open.
-        charset_command(owner, "/charset Big5", cx);
-
-        open_channel(&form, "#a", cx);
-        form.read_with(cx, |form, cx| {
-            assert_eq!(dialog_choices(form, cx).decode, Some(TextEncoding::Big5));
-        });
-        // Only auto-join is switched.
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| dialog.enabled = false);
-            form.save_channel_settings(window, cx);
-        });
-        let profile = file_profile();
-        assert_eq!(profile.channels, "-#a,#b");
-        assert_eq!(profile.channel_charsets.len(), 1);
-        assert_eq!(profile.channel_charsets[0].channel, "#a");
-        assert_eq!(profile.channel_charsets[0].decode, Some(TextEncoding::Big5));
-        drop(file);
-    }
-
-    #[gpui::test]
-    fn a_failed_settings_window_channel_save_keeps_the_dialog_open_with_the_reason(
-        cx: &mut TestAppContext,
-    ) {
-        let settings = crate::settings_with_channels("#a");
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, _app) = open(cx, settings);
-        // A name that cannot hold settings fails the validation.
-        open_channel(&form, "no-prefix", cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| dialog.decode = Some(TextEncoding::Gbk));
-            form.save_channel_settings(window, cx);
-        });
-        form.read_with(cx, |form, cx| {
-            let view = dialog_view(form);
-            assert!(view.read(cx).error.is_some());
-            assert!(
-                form.settings
-                    .values
-                    .selected_profile()
-                    .unwrap()
-                    .channel_charsets
-                    .is_empty()
-            );
-        });
-        assert!(file_profile().channel_charsets.is_empty());
-        drop(file);
     }
 
     #[gpui::test]
@@ -7068,29 +6598,12 @@ mod escape_tests {
             })
             .unwrap();
 
-        // The settings window's dialog turns auto-join on for #b ...
-        open_channel(&form, "#b", cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, |dialog| {
-                dialog.enabled = true;
-                dialog.decode = Some(TextEncoding::Gbk);
-            });
-            form.save_channel_settings(window, cx);
+        // Channel settings turn auto-join on for #b and off for #a.
+        save_channel(owner, "#b", cx, |choices| {
+            choices.enabled = true;
+            choices.decode = Some(TextEncoding::Gbk);
         });
-        // ... and the channel menu's dialog turns it off for #a.
-        owner
-            .update(cx, |chat, window, cx| {
-                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#a", window, cx);
-                let view = chat.channel_settings.as_ref().unwrap().view().clone();
-                view.update(cx, |view, cx| {
-                    view.choices.enabled = false;
-                    view.save(cx);
-                });
-            })
-            .unwrap();
-        owner
-            .read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()))
-            .unwrap();
+        save_channel(owner, "#a", cx, |choices| choices.enabled = false);
         assert_eq!(file_profile().channels, "-#a,#b");
 
         // Closing the connection ends the recording. Wait for the first line
@@ -7119,67 +6632,15 @@ mod escape_tests {
     }
 
     #[gpui::test]
-    fn both_hosts_record_the_same_save(cx: &mut TestAppContext) {
-        let settings = crate::settings_with_channels("#a,-#b");
-        let choices = |dialog: &mut Choices| {
-            dialog.enabled = true;
-            dialog.decode = Some(TextEncoding::Gbk);
-            dialog.encode = Some(TextEncoding::Iso2022Jp);
-            dialog.char_refs = Some(CharRefMode::Iso2022Jp);
-        };
-
-        // Through the channel menu.
-        let file = crate::settings_file::TestFile::with(&settings);
-        let (form, cx, app) = open(cx, settings.clone());
-        let owner = form.read_with(cx, |form, _| form.owner);
-        owner
-            .update(cx, |chat, window, cx| {
-                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#b", window, cx);
-                let view = chat.channel_settings.as_ref().unwrap().view().clone();
-                view.update(cx, |view, cx| {
-                    choices(&mut view.choices);
-                    view.save(cx);
-                });
-            })
-            .unwrap();
-        let from_menu = file_profile();
-        drop(file);
-
-        // Through the settings window, from the same starting file.
-        let file = crate::settings_file::TestFile::with(&settings);
-        let mut app = app;
-        let (form, cx, _app) = open(&mut app, settings);
-        open_channel(&form, "#b", cx);
-        form.update_in(cx, |form, window, cx| {
-            edit_choices(form, cx, choices);
-            form.save_channel_settings(window, cx);
-        });
-        let from_settings = file_profile();
-        drop(file);
-
-        assert_eq!(from_menu.channels, "#a,#b");
-        assert_eq!(from_menu.channels, from_settings.channels);
-        assert_eq!(from_menu.channel_charsets, from_settings.channel_charsets);
-        assert_eq!(from_menu.channel_charsets.len(), 1);
-    }
-
-    #[gpui::test]
     fn an_open_settings_window_does_not_write_back_the_channel_menus_save(cx: &mut TestAppContext) {
         let settings = crate::settings_with_channels("#a,-#b");
         let file = crate::settings_file::TestFile::with(&settings);
         let (form, cx, _app) = open(cx, settings);
         let owner = form.read_with(cx, |form, _| form.owner);
-        owner
-            .update(cx, |chat, window, cx| {
-                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#b", window, cx);
-                let view = chat.channel_settings.as_ref().unwrap().view().clone();
-                view.update(cx, |view, cx| {
-                    view.choices.enabled = true;
-                    view.choices.decode = Some(TextEncoding::Gbk);
-                    view.save(cx);
-                });
-            })
-            .unwrap();
+        save_channel(owner, "#b", cx, |choices| {
+            choices.enabled = true;
+            choices.decode = Some(TextEncoding::Gbk);
+        });
         // An unrelated edit of the window saves the form.
         let nickname = form.read_with(cx, |form, _| form.settings.nickname.clone());
         nickname.update(cx, |field, cx| field.set_text("someone-else", cx));
