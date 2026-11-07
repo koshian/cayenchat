@@ -1183,6 +1183,49 @@ Tests: transparent-edge and sharp-edge regressions in `decode`, sized
 defaults in `avatars`. Not compared: screenshots at 1×/2×/150% on
 Windows/macOS, which need a person.
 
+### Verifying what is drawn
+
+Rendering is checked at the level that fits what is being claimed, so that a
+person's eyes are spent only where nothing else can decide (#959; #951 found
+its wallpaper, fit-mode, preview-follow and quit-reentry problems only by
+full manual GUI runs, repeated for every review):
+
+- **Computable expectations are tests.** When the specification fixes the
+  pixels (a color, a size, a blend of background and opacity, "mode A draws
+  differently from mode B"), write a test that asserts them. Cut out only the
+  pane concerned, never the whole screen, and compare exact values or
+  mode-to-mode differences, not "looks right".
+  `scripts/e2e/pixel_check.py` is the base for this on Linux/Xvfb: a fixed
+  fixture (loopback IRC server, given settings) starts the real app through
+  `gui_session.py`, `FixtureSession.pane(Rect)` returns the settled pane's
+  pixels, and `expect_uniform`, `expect_present` and `expect_absent` assert
+  colors. Its pure parts are unit tested in `test_pixel_check.py` (including
+  that a wrong expectation fails). `scripts/e2e/log_colors_gui.py` is the
+  first user: the log's configured background and alternate-row colors, and
+  the alternate-row modes drawing differently; `--expect-background` shows it
+  failing. A new check must be seen to fail once with a deliberately wrong
+  expectation, and to pass twice in a row with the same build.
+- **What cannot be computed is judged once, then guarded.** A look that no
+  formula gives (glyph shapes, a photo's scaling, overall taste) is confirmed
+  by the maintainer in a test build. That image becomes the reference
+  (golden) and later runs only check for regressions against it. A golden is
+  replaced only together with a person's confirmation of the new look in a
+  test build, never by a script on its own. Where the references live and how
+  their freshness is checked is settled separately (#959, second part).
+- **Lifecycle goes through the real path.** Quit, save and re-entry (a window
+  closing while another is open, saving on exit) are tested through the same
+  path the user takes (an integration test that quits the way the user does,
+  such as `gui_session.py quit`), not by calling the internal function. #951's
+  test that called the save-on-exit function directly did not reproduce the
+  window stack's re-entry.
+- **Manual GUI checks are for first intent and the rest.** A person (or the
+  developer on Xvfb, "Visual checks under Xvfb") looks at a new look once to
+  confirm it is what was meant, and at what cannot be automated. A re-check
+  covers only the items the change touches, not the full set.
+
+Only Linux/Xvfb is covered; as everywhere, a platform that was not tested is
+not called verified.
+
 ### GUI end-to-end test (Linux)
 
 `scripts/e2e/history_gui.py` runs the real `cayenchat` binary on a virtual
