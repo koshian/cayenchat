@@ -1150,6 +1150,9 @@ struct LogMenu {
     channel: String,
     private: bool,
     sender: Option<String>,
+    /// The URL under the pointer when the menu was opened, which "Copy URL"
+    /// copies.
+    url: Option<String>,
     /// The selected conversation's input exists and is not composing. The
     /// clipboard is not read to open the menu.
     can_paste: bool,
@@ -1157,6 +1160,7 @@ struct LogMenu {
 
 #[derive(Clone, Copy)]
 enum LogMenuChoice {
+    CopyUrl,
     Copy,
     Paste,
     Mode,
@@ -3397,6 +3401,19 @@ impl ChatWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_log_menu_on(position, sender, None, window, cx);
+    }
+
+    /// `open_log_menu` for a click that may be on a link: `url` is offered by
+    /// "Copy URL".
+    fn open_log_menu_on(
+        &mut self,
+        position: Point<Pixels>,
+        sender: Option<&str>,
+        url: Option<String>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let (source, network, channel, private) = match self.state.selected_channel() {
             Some(conversation) => (
                 Selection::Channel(conversation.id),
@@ -3423,13 +3440,16 @@ impl ChatWindow {
         self.log_menu = Some(LogMenu {
             position: point(
                 position.x.min((viewport.width - px(230.)).max(px(0.))),
-                position.y.min((viewport.height - px(190.)).max(px(0.))),
+                position.y.min(
+                    (viewport.height - if url.is_some() { px(220.) } else { px(190.) }).max(px(0.)),
+                ),
             ),
             network,
             source,
             channel,
             private,
             sender,
+            url,
             can_paste: self.can_paste_into_input(cx),
         });
         cx.notify();
@@ -3478,6 +3498,11 @@ impl ChatWindow {
             return;
         }
         match choice {
+            LogMenuChoice::CopyUrl => {
+                if let Some(url) = menu.url {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                }
+            }
             LogMenuChoice::Copy => self.copy_selected_log(cx),
             LogMenuChoice::Paste if !self.can_paste_into_input(cx) => cx.notify(),
             LogMenuChoice::Paste => {
@@ -8322,7 +8347,15 @@ impl ChatWindow {
         let group_menu = self.render_group_menu(cx);
         let log_menu = self.log_menu.as_ref().map(|menu| {
             let registered = self.registered_connection(menu.network).is_ok();
-            let mut groups = vec![vec![
+            let mut groups = Vec::new();
+            if menu.url.is_some() {
+                groups.push(vec![(
+                    LogMenuChoice::CopyUrl,
+                    self.i18n.text("log_menu_copy_url"),
+                    true,
+                )]);
+            }
+            groups.push(vec![
                 (
                     LogMenuChoice::Copy,
                     self.i18n.text("log_menu_copy"),
@@ -8333,7 +8366,7 @@ impl ChatWindow {
                     self.i18n.text("log_menu_paste"),
                     menu.can_paste,
                 ),
-            ]];
+            ]);
             if !menu.private && matches!(menu.source, Selection::Channel(_)) {
                 groups.push(vec![
                     (
@@ -9485,7 +9518,9 @@ impl ChatWindow {
         });
         let down_layout = layout.clone();
         let move_layout = layout.clone();
+        let menu_layout = layout.clone();
         let click_layout = layout;
+        let menu_urls = urls.clone();
         let move_urls = urls.clone();
         let down_urls = urls.clone();
         let (down_compact, move_compact) = (compact.clone(), compact.clone());
@@ -9498,8 +9533,13 @@ impl ChatWindow {
                 self.i18n.text("copy_original_text"),
             )
         });
+        // While the log menu is open the hover bubbles are left out (a
+        // bubble shown already is dropped with them): they would overlap it.
+        let menu_open = self.log_menu.is_some();
         let styled = if full_urls.is_empty() && originals.is_empty() {
             styled.into_any_element()
+        } else if menu_open {
+            InteractiveText::new(("message-urls", index), styled).into_any_element()
         } else {
             // The full URL of any link shows on hover; clicking it
             // opens the URL. A decoded character reference shows its
@@ -9603,7 +9643,19 @@ impl ChatWindow {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.open_log_menu(event.position, speaker.as_deref(), window, cx);
+                    // On a link (not the nickname prefix) the menu offers
+                    // to copy it.
+                    let url = menu_layout
+                        .index_for_position(event.position)
+                        .ok()
+                        .and_then(|raw| raw.checked_sub(prefix_len))
+                        .and_then(|byte| {
+                            menu_urls
+                                .iter()
+                                .find(|(range, _)| range.contains(&byte))
+                                .map(|(_, url)| url.clone())
+                        });
+                    this.open_log_menu_on(event.position, speaker.as_deref(), url, window, cx);
                     cx.stop_propagation();
                 }),
             );

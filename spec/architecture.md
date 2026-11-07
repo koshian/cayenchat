@@ -640,7 +640,10 @@ clicked server, found from the menu's network, not the selection, which stays
 as it was (issue #421).
 The log of a channel or private conversation has its own context menu (issue
 #358), opened by a right click on a message row or on blank log space; the
-click never touches the text selection. Groups: Copy (enabled with a non-empty
+click never touches the text selection. Groups: Copy URL (only when the click
+is on a link of the message text, not its nickname prefix; copies that full
+URL, and the menu leaves the URL hover bubbles of the log out while it is
+open, closing one already shown; issue #952); Copy (enabled with a non-empty
 selection; reuses `copy_selected_log`) and Paste into message box (enabled
 when the clipboard has text and the draft is not composing, rechecked on
 use; focuses that conversation's draft and pastes
