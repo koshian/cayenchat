@@ -1086,16 +1086,174 @@ mod tests {
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
-            form.store_wait();
+            form.store_wait(cx);
             // Neither leaving nor showing or removing another server.
             assert!(!form.save_before_leaving(cx));
             form.select_server(b_id.clone(), cx);
             assert_eq!(form.settings.values.selected_server, a_id);
-            form.store_done();
+            form.store_done(cx);
             form.select_server(b_id.clone(), cx);
             assert_eq!(form.settings.values.selected_server, b_id);
             assert!(form.save_before_leaving(cx));
         });
+        drop(file);
+    }
+
+    /// A store that holds a write or a deletion until the test lets it go,
+    /// like a system store waiting for the user to allow it.
+    struct Gated {
+        inner: MemoryBackend,
+        gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        on_set: bool,
+    }
+
+    impl Gated {
+        /// Installs it with the store thread of a real run; `release` lets
+        /// one held call go.
+        fn install(on_set: bool, cx: &mut gpui::App) -> (std::sync::mpsc::Sender<()>, Arc<Self>) {
+            let (release, gate) = std::sync::mpsc::channel();
+            let backend = Arc::new(Self {
+                inner: MemoryBackend::new(CredentialBackendKind::System),
+                gate: std::sync::Mutex::new(gate),
+                on_set,
+            });
+            cx.set_global(secrets::Worker::start(CredentialStore::with_backend(
+                backend.clone(),
+            )));
+            (release, backend)
+        }
+
+        fn hold(&self) {
+            self.gate
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .expect("the test lets the call go");
+        }
+    }
+
+    impl cayenchat_storage::credentials::CredentialBackend for Gated {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn is_memory(&self) -> bool {
+            true
+        }
+
+        fn get(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+            self.inner.get(key)
+        }
+
+        fn set(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+            value: &Secret,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            if self.on_set {
+                self.hold();
+            }
+            self.inner.set(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            if !self.on_set {
+                self.hold();
+            }
+            self.inner.delete(key)
+        }
+    }
+
+    fn wait_for_store(form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext) {
+        cx.executor().allow_parking();
+        let started = std::time::Instant::now();
+        while form.read_with(cx, |form, _| form.store_busy()) {
+            assert!(started.elapsed().as_secs() < 20, "the store finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    fn a_store_that_waits_refuses_leaving_and_says_why(cx: &mut TestAppContext) {
+        let mut settings = upload_settings("imgbb", false);
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let release = cx.update(|cx| Gated::install(true, cx).0);
+        let (form, cx) = open(&settings, cx);
+        let waiting = form.read_with(cx, |form, _| form.i18n.text("credential_store_waiting"));
+
+        form.update(cx, |form, cx| {
+            form.upload_token
+                .update(cx, |field, cx| field.set_text("token", cx));
+            form.connect_upload_account(cx);
+            assert!(form.store_busy());
+            assert_eq!(form.status_message(), Some(waiting.clone()));
+            assert!(!form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
+            assert_eq!(form.status_message(), Some(waiting.clone()));
+        });
+
+        release.send(()).unwrap();
+        wait_for_store(&form, cx);
+        form.update(cx, |form, cx| {
+            assert_ne!(form.status_message(), Some(waiting.clone()));
+            assert!(form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, b_id);
+        });
+        drop(file);
+    }
+
+    /// The move records the new store in the file before the form learns of
+    /// it; a save in between would write the old one back (#965).
+    #[gpui::test]
+    fn an_edit_during_a_move_waits_instead_of_writing_the_old_store_back(cx: &mut TestAppContext) {
+        let settings = upload_settings("imgbb", true);
+        let file = TestFile::with(&settings);
+        let (release, backend) = cx.update(|cx| Gated::install(false, cx));
+        // A secret to move, so that the originals are deleted at the end.
+        cayenchat_storage::credentials::CredentialBackend::set(
+            &backend.inner,
+            &cayenchat_storage::SecretKey::uploader_token("imgbb"),
+            &Secret::new("token"),
+        )
+        .unwrap();
+        let (form, cx) = open(&settings, cx);
+        let private_messages = || {
+            super::load()
+                .unwrap()
+                .unwrap()
+                .notifications
+                .private_messages
+        };
+
+        form.update(cx, |form, cx| {
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            assert!(form.store_busy());
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_pause_elapsed(cx);
+            form.autosave_now(None, cx);
+        });
+        assert!(private_messages(), "nothing is saved while the move runs");
+
+        release.send(()).unwrap();
+        wait_for_store(&form, cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages, "saved afterwards");
+        assert_eq!(saved.credential_backend, CredentialBackendKind::LocalFile);
         drop(file);
     }
 

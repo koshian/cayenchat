@@ -584,6 +584,7 @@
   "credential_switch_confirm": "Use Local File",
   "credential_switched": "Credential storage changed; {count} saved item(s) moved.",
   "credential_switched_source_unavailable": "Credential storage changed. Items in the previous location could not be read, so they were not moved.",
+  "credential_store_waiting": "Waiting for the credential store to finish saving. If the operating system is asking for confirmation, please respond to it. Closing, switching servers and quitting are on hold until then.",
   "credential_in_use": "(in use)",
   "image_upload_tab": "Image Upload",
   "image_upload_intro": "Images you paste or drop into an IRC draft can be uploaded to an image hosting account you own. IRC itself only receives the resulting link as text.",

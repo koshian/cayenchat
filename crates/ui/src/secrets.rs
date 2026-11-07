@@ -17,13 +17,16 @@ use gpui::{App, Global};
 
 use crate::localization::Localizer;
 
+/// The store of an app without a worker (tests); production has a `Worker`.
 pub struct Credentials(pub CredentialStore);
 
 impl Global for Credentials {}
 
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
     let store = CredentialStore::open(kind);
-    cx.set_global(Credentials(store.clone()));
+    // The worker is the only owner of the store: a move of the secrets
+    // changes the store it holds, and a second copy in `Credentials` would
+    // go stale. `Credentials` is for tests without a worker.
     cx.set_global(Worker::start(store));
 }
 
