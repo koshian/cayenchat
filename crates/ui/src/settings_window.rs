@@ -524,7 +524,7 @@ impl SettingsForm {
     /// fields are not read (and not validated), so an unfinished connection
     /// entry does not stop other settings from being saved; the server list
     /// and selection are then the form's earlier values.
-    fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
+    pub(crate) fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
         let mut settings = self.values.clone();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         if with_servers {
@@ -586,7 +586,12 @@ impl SettingsForm {
                 link_background: value(&self.dark_link_background),
                 url_tooltip_link_color: value(&self.dark_url_tooltip_link_color),
                 url_tooltip_text_color: value(&self.dark_url_tooltip_text_color),
+                // Not text fields: changed by the wallpaper and theme buttons.
+                wallpapers: self.values.appearance.dark.wallpapers.clone(),
+                origin: self.values.appearance.dark.origin.clone(),
             },
+            wallpapers: self.values.appearance.wallpapers.clone(),
+            origin: self.values.appearance.origin.clone(),
             saved_colors: self.values.appearance.saved_colors.clone(),
             channel_looks: self.values.appearance.channel_looks.clone(),
         };
@@ -1203,6 +1208,8 @@ pub(crate) struct SettingsWindow {
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
+    /// Imported themes and the state of the theme actions (#962).
+    pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Where the log line height slider's track was last painted, to turn
     /// the pointer position into a value (#953).
     line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
@@ -1484,6 +1491,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
+            themes: crate::theme_settings::ThemeUi::new(),
             line_height_tracks: Default::default(),
             color_picker: None,
             shortcut_recording: None,
@@ -5112,6 +5120,7 @@ impl SettingsWindow {
                 |settings, mode| settings.theme = mode,
                 cx,
             ))
+            .child(self.render_theme_settings(cx))
             .child(
                 div()
                     .flex()
@@ -5227,6 +5236,7 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(self.render_wallpaper_settings(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
             .child(self.line_height_slider(0, cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))

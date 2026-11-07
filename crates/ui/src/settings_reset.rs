@@ -175,7 +175,7 @@ impl SettingsWindow {
     }
 
     /// Fills the appearance text fields from `appearance`.
-    fn show_appearance(&self, appearance: &Appearance, cx: &mut Context<Self>) {
+    pub(crate) fn show_appearance(&self, appearance: &Appearance, cx: &mut Context<Self>) {
         let form = &self.settings;
         let dark = &appearance.dark;
         for (field, value) in [
