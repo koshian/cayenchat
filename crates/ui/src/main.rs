@@ -329,24 +329,19 @@ struct Navigate {
 
 /// The passwords saved for the profile with Save in its settings or in the
 /// password dialog. The store is touched only for a password the profile
-/// notes as saved (D068); the SASL one also only while SASL is on.
+/// notes as saved (D068); the SASL one also only while SASL is on. Runs on
+/// the store thread (`secrets::run`).
 fn saved_connection_secrets(
     profile: &ServerProfile,
     store: &CredentialStore,
-    i18n: &Localizer,
-) -> Result<(Option<Secret>, Option<Secret>), String> {
-    let get = |key: SecretKey| {
-        store
-            .get(&key)
-            .map_err(|error| secrets::error_text(i18n, &error))
-    };
+) -> Result<(Option<Secret>, Option<Secret>), CredentialError> {
     let server = if profile.server_password_saved() {
-        get(profile.server_password_key())?
+        store.get(&profile.server_password_key())?
     } else {
         None
     };
     let sasl = if profile.sasl_enabled && profile.sasl_secret_saved() {
-        get(profile.sasl_secret_key())?
+        store.get(&profile.sasl_secret_key())?
     } else {
         None
     };
@@ -356,6 +351,91 @@ fn saved_connection_secrets(
         !profile.sasl_mechanism.uses_key() || cayenchat_irc_core::sasl_key_is_valid(secret.expose())
     });
     Ok((server, sasl))
+}
+
+/// What the credential store holds for a connection made from a profile:
+/// its saved passwords, and the saved keys of its auto-join channels.
+struct StoredConnection {
+    secrets: Result<(Option<Secret>, Option<Secret>), CredentialError>,
+    keys: std::collections::BTreeMap<String, String>,
+    /// The profile the secrets were read for. What was read fits the
+    /// mechanism, the saved marks and the channels of that profile only, so
+    /// a profile changed while the read was queued needs a new read (the
+    /// secret of a key mechanism must never be sent as a password).
+    read_for: Option<ServerProfile>,
+}
+
+impl StoredConnection {
+    /// Reads on the store thread; the store is touched only for what the
+    /// profile notes as saved.
+    fn read(profile: &ServerProfile, store: &CredentialStore) -> Self {
+        Self {
+            secrets: saved_connection_secrets(profile, store),
+            keys: channel_keys::stored_channel_keys(profile, store),
+            read_for: Some(profile.clone()),
+        }
+    }
+
+    /// A profile made just now has nothing saved: the store is not read.
+    fn nothing() -> Self {
+        Self {
+            secrets: Ok((None, None)),
+            keys: Default::default(),
+            read_for: None,
+        }
+    }
+
+    /// Nothing stored, as when the store could not be read.
+    fn unreadable() -> Self {
+        Self {
+            secrets: Err(secrets::stopped()),
+            keys: Default::default(),
+            read_for: None,
+        }
+    }
+
+    /// Whether this was read for `profile` as it is now.
+    fn fits(&self, profile: &ServerProfile) -> bool {
+        self.read_for.as_ref().is_none_or(|read| read == profile)
+    }
+}
+
+/// What `saved_connection_config` takes: the stored secrets read already,
+/// or (tests, which use an in-memory store) a store to read them from here.
+trait StoredSource {
+    fn stored(self, profile: &ServerProfile) -> StoredConnection;
+}
+
+impl StoredSource for StoredConnection {
+    fn stored(self, _: &ServerProfile) -> StoredConnection {
+        self
+    }
+}
+
+#[cfg(test)]
+impl StoredSource for &CredentialStore {
+    fn stored(self, profile: &ServerProfile) -> StoredConnection {
+        StoredConnection::read(profile, self)
+    }
+}
+
+/// Reads `StoredConnection` of each profile on the store thread, in order.
+fn read_stored_connections(
+    cx: &App,
+    profiles: Vec<ServerProfile>,
+) -> impl std::future::Future<Output = Vec<StoredConnection>> + use<> {
+    let count = profiles.len();
+    let reading = secrets::run(cx, move |store| {
+        profiles
+            .iter()
+            .map(|profile| StoredConnection::read(profile, store))
+            .collect::<Vec<_>>()
+    });
+    async move {
+        reading
+            .await
+            .unwrap_or_else(|| (0..count).map(|_| StoredConnection::unreadable()).collect())
+    }
 }
 
 #[cfg(test)]
@@ -525,9 +605,9 @@ type OpenConfig = Result<(ConnectionConfig, connect_auth::Missing), String>;
 fn saved_connection_config(
     profile: &ServerProfile,
     language: Language,
-    store: &CredentialStore,
+    stored: impl StoredSource,
 ) -> OpenConfig {
-    saved_connection_config_read(profile, language, store)
+    saved_connection_config_read(profile, language, stored)
         .map(|(config, missing, _)| (config, missing))
 }
 
@@ -537,12 +617,11 @@ fn saved_connection_config(
 fn saved_connection_config_read(
     profile: &ServerProfile,
     language: Language,
-    store: &CredentialStore,
+    stored: impl StoredSource,
 ) -> Result<(ConnectionConfig, connect_auth::Missing, bool), String> {
-    let i18n = Localizer::new(language);
-    let secrets = saved_connection_secrets(profile, store, &i18n);
-    let readable = secrets.is_ok();
-    let (server_password, sasl_password) = secrets.unwrap_or_default();
+    let stored = stored.stored(profile);
+    let readable = stored.secrets.is_ok();
+    let (server_password, sasl_password) = stored.secrets.unwrap_or_default();
     let mut config = connection_config_without_secrets(profile, language)?;
     let missing = connect_auth::fill(
         &mut config,
@@ -551,7 +630,7 @@ fn saved_connection_config_read(
         false,
     );
     connect_auth::while_incomplete(&mut config, |config| {
-        channel_keys::use_stored_keys(config, profile, store);
+        channel_keys::use_keys(config, stored.keys);
         config.validate()
     })?;
     Ok((config, missing, readable))
@@ -568,16 +647,11 @@ fn startup_connections(settings: &Settings) -> Vec<String> {
         .collect()
 }
 
-/// Deletes the saved passwords of profiles that no longer exist. New
+/// The keys of the secrets saved for profiles that no longer exist. New
 /// profiles have fresh IDs even if cleanup fails or a removal has not been
-/// saved yet. Every deletion is tried; the first failure is returned so the
-/// save stays pending and a later Save retries.
-fn forget_removed_profiles(
-    previous: &Settings,
-    next: &Settings,
-    store: &CredentialStore,
-) -> Result<(), CredentialError> {
-    let mut first_error = None;
+/// saved yet.
+fn removed_secret_keys(previous: &Settings, next: &Settings) -> Vec<SecretKey> {
+    let mut keys = Vec::new();
     for server in &previous.servers {
         let kept = next.servers.iter().find(|kept| kept.id == server.id);
         if kept.is_none() {
@@ -587,18 +661,40 @@ fn forget_removed_profiles(
                 (server.sasl_password_saved(), server.sasl_password_key()),
                 (server.sasl_key_saved, server.sasl_key_key()),
             ];
-            for key in noted
-                .into_iter()
-                .filter_map(|(saved, key)| saved.then_some(key))
-                .chain(server.channel_key_secret_keys())
-            {
-                if let Err(error) = store.delete(&key) {
-                    first_error.get_or_insert(error);
-                }
-            }
+            keys.extend(
+                noted
+                    .into_iter()
+                    .filter_map(|(saved, key)| saved.then_some(key))
+                    .chain(server.channel_key_secret_keys()),
+            );
         }
     }
-    first_error.map_or(Ok(()), Err)
+    keys
+}
+
+/// Deletes `keys`, every one tried; those that could not be deleted are
+/// returned with the reason, to be tried again by a later Save.
+fn delete_secrets(
+    keys: Vec<SecretKey>,
+    store: &CredentialStore,
+) -> Vec<(SecretKey, CredentialError)> {
+    keys.into_iter()
+        .filter_map(|key| store.delete(&key).err().map(|error| (key, error)))
+        .collect()
+}
+
+/// Deletes the saved passwords of profiles that no longer exist. Every
+/// deletion is tried; the first failure is returned.
+#[cfg(test)]
+fn forget_removed_profiles(
+    previous: &Settings,
+    next: &Settings,
+    store: &CredentialStore,
+) -> Result<(), CredentialError> {
+    delete_secrets(removed_secret_keys(previous, next), store)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(_, error)| Err(error))
 }
 
 /// Fills the account and real name a WHOIS reply lacks from what the
@@ -1686,9 +1782,12 @@ impl ChatWindow {
             request_quit_anywhere(cx);
             false
         });
-        cx.on_app_quit(|this, _| {
+        cx.on_app_quit(|this, cx| {
             this.save_layout_now();
             this.quit_connections();
+            // A secret written or deleted just now is still queued for the
+            // store thread; the process must not end before it is done.
+            secrets::flush(cx, Duration::from_secs(2));
             // What is queued is written before the process ends, if the disk
             // lets it.
             this.conversation_logs.finish(Duration::from_secs(2));
@@ -2763,10 +2862,9 @@ impl ChatWindow {
             return;
         };
         if session.active_config.is_none() {
-            let profile_id = session.profile_id.clone();
-            if let Err(error) = self.connect_saved(network, window, cx) {
-                self.raise_error(Some(network), error, notices::Origin::User, cx);
-                self.open_settings_for(Some(profile_id), window, cx);
+            // A start whose passwords are being read is not started again.
+            if !std::mem::replace(&mut session.reading_saved, true) {
+                self.connect_saved(network, window, cx);
             }
             return;
         }
@@ -2778,13 +2876,77 @@ impl ChatWindow {
     }
 
     /// Connects a server that has no connection in this run from its saved
-    /// settings. This is where the credential store is first read for it
-    /// (passwords and channel keys); the ones missing are asked for. `Err`:
-    /// the settings do not make a usable configuration. `Ok(true)`: the
-    /// connection could not start.
-    fn connect_saved(
+    /// settings, once the store thread has read what is saved for it
+    /// (`session.reading_saved` is set meanwhile). A server whose settings do not
+    /// make a usable configuration, or whose connection cannot start, gets
+    /// its settings opened with the error.
+    fn connect_saved(&mut self, network: NetworkId, window: &mut Window, cx: &mut Context<Self>) {
+        let profile = self
+            .sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .cloned();
+        let profiles = profile.into_iter().collect::<Vec<_>>();
+        let reading = read_stored_connections(cx, profiles);
+        cx.spawn_in(window, async move |this, cx| {
+            let stored = reading.await.pop();
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(session) = this.sessions.get_mut(&network) else {
+                    return;
+                };
+                session.reading_saved = false;
+                let profile_id = session.profile_id.clone();
+                // Connected or tried by hand in the meantime.
+                if session.used() {
+                    return;
+                }
+                if this.read_is_stale(network, stored.as_ref()) {
+                    this.read_again(network, window, cx);
+                    return;
+                }
+                let started = match stored {
+                    Some(stored) => this.connect_saved_with(network, stored, window, cx),
+                    None => Err(this.i18n.text("not_connected")),
+                };
+                if let Err(error) = started {
+                    this.raise_error(Some(network), error, notices::Origin::User, cx);
+                    this.open_settings_for(Some(profile_id), window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Whether `stored` was read for a profile that has changed since (its
+    /// authentication, saved marks or channels), so it does not fit the
+    /// profile as it is now.
+    fn read_is_stale(&self, network: NetworkId, stored: Option<&StoredConnection>) -> bool {
+        let profile = self
+            .sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id));
+        match (stored, profile) {
+            (Some(stored), Some(profile)) => !stored.fits(profile),
+            _ => false,
+        }
+    }
+
+    /// Reads again what is saved for a server whose profile changed while
+    /// the first read was queued.
+    fn read_again(&mut self, network: NetworkId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.reading_saved = true;
+        }
+        self.connect_saved(network, window, cx);
+    }
+
+    /// `connect_saved` with the stored secrets read. `Err`: the settings do
+    /// not make a usable configuration. `Ok(true)`: the connection could not
+    /// start.
+    fn connect_saved_with(
         &mut self,
         network: NetworkId,
+        stored: StoredConnection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
@@ -2799,7 +2961,7 @@ impl ChatWindow {
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         let sasl = profile.sasl_enabled;
         let (config, missing, readable) =
-            saved_connection_config_read(profile, self.saved.language, &secrets::store(cx))?;
+            saved_connection_config_read(profile, self.saved.language, stored)?;
         if readable {
             self.note_stored_passwords(
                 &profile_id,
@@ -2847,10 +3009,49 @@ impl ChatWindow {
         });
     }
 
-    /// The reading half of `connect_at_startup`.
+    /// The reading half of `connect_at_startup`: one read of the store
+    /// thread for all the servers, then each is connected in tree order.
     fn connect_startup_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted: Vec<(NetworkId, Option<ServerProfile>)> =
+            std::mem::take(&mut self.startup_connections)
+                .into_iter()
+                .map(|network| {
+                    let session = self.sessions.get(&network);
+                    // Connected or tried by hand in the meantime: not read for.
+                    let profile = session
+                        .filter(|session| !session.used())
+                        .and_then(|session| self.saved.profile(&session.profile_id).cloned());
+                    (network, profile)
+                })
+                .collect();
+        let profiles = wanted
+            .iter()
+            .filter_map(|(_, profile)| profile.clone())
+            .collect();
+        let reading = read_stored_connections(cx, profiles);
+        cx.spawn_in(window, async move |this, cx| {
+            let mut read = reading.await.into_iter();
+            let stored: Vec<(NetworkId, Option<StoredConnection>)> = wanted
+                .into_iter()
+                .map(|(network, profile)| (network, profile.and_then(|_| read.next())))
+                .collect();
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.connect_startup_read(stored, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Connects the startup servers with what the store thread read. A read
+    /// that fails is handled like any failure to connect.
+    fn connect_startup_read(
+        &mut self,
+        stored: Vec<(NetworkId, Option<StoredConnection>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut settings_for = None;
-        for network in std::mem::take(&mut self.startup_connections) {
+        for (network, stored) in stored {
             let Some(session) = self.sessions.get_mut(&network) else {
                 continue;
             };
@@ -2859,7 +3060,15 @@ impl ChatWindow {
             if session.used() {
                 continue;
             }
-            let failed = match self.connect_saved(network, window, cx) {
+            if self.read_is_stale(network, stored.as_ref()) {
+                self.read_again(network, window, cx);
+                continue;
+            }
+            let started = match stored {
+                Some(stored) => self.connect_saved_with(network, stored, window, cx),
+                None => Err(self.i18n.text("not_connected")),
+            };
+            let failed = match started {
                 Ok(failed) => failed,
                 Err(error) => {
                     let message = self.i18n.format("startup_invalid", &[("error", &error)]);
@@ -6678,6 +6887,16 @@ fn channel_log_text_size(
     pane_text_size(saved, None)
 }
 
+/// The line height a log pane sets, as a multiple of its font size: the
+/// saved percentage clamped to the allowed range, or None (GPUI's default
+/// line height) when it is the default one (#953).
+fn pane_line_height(saved: u16) -> Option<f32> {
+    match cayenchat_storage::clamp_line_height_percent(saved) {
+        cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT => None,
+        percent => Some(f32::from(percent) / 100.),
+    }
+}
+
 fn default_time_font() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -7849,6 +8068,10 @@ impl ChatWindow {
             .when_some(channel_log_text_size(&look, appearance), |d, size| {
                 d.text_size(size)
             })
+            .when_some(
+                pane_line_height(appearance.channel_log_line_height),
+                |d, ratio| d.line_height(relative(ratio)),
+            )
             .when_some(look.text, |d, color| d.text_color(color))
             .children(wallpaper)
             .child(self.input_to_draft(&self.log_focus, cx))
@@ -7869,6 +8092,10 @@ impl ChatWindow {
             .when_some(
                 pane_text_size(appearance.combined_log_font_size, None),
                 |d, size| d.text_size(size),
+            )
+            .when_some(
+                pane_line_height(appearance.combined_log_line_height),
+                |d, ratio| d.line_height(relative(ratio)),
             )
             .child(panes.combined_log.clone().cached(pane_style()));
 

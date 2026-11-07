@@ -483,8 +483,13 @@ mod tests {
             form.upload_token
                 .update(cx, |field, cx| field.set_text("token", cx));
             form.connect_upload_account(cx);
-            assert!(form.upload_connected);
+            // The window is held until the note is made.
+            assert!(form.store_busy());
+            assert!(!form.save_before_leaving(cx));
         });
+        cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         let store = cx.update(|_, cx| secrets::store(cx));
         assert!(
@@ -499,17 +504,19 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
-        form.update(cx, |form, cx| {
-            form.disconnect_upload_account(cx);
-            assert!(form.upload_connected);
-        });
+        form.update(cx, |form, cx| form.disconnect_upload_account(cx));
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
         assert!(noted());
         cx.update(|_, cx| cx.set_global(secrets::Credentials(store)));
 
         form.update(cx, |form, cx| {
             form.disconnect_upload_account(cx);
-            assert!(!form.upload_connected);
+            assert!(form.store_busy());
         });
+        cx.run_until_parked();
+        assert!(!form.read_with(cx, |form, _| form.store_busy()));
+        assert!(form.read_with(cx, |form, _| !form.upload_connected));
         assert!(!noted());
         drop(file);
     }
@@ -831,6 +838,7 @@ mod tests {
         form.update_in(cx, |form, window, cx| {
             form.connect_from_settings(window, cx)
         });
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
             assert!(
                 form.feedback
@@ -958,8 +966,9 @@ mod tests {
                 Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
             )));
         });
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.feedback.is_some());
             assert!(!form.saved.profile(&id).is_some());
             assert_eq!(
@@ -971,8 +980,9 @@ mod tests {
             );
         });
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
             assert!(form.saved.profile(&id).is_some());
             assert!(form.settings.credential_state(Credential::Sasl).0);
             assert!(
@@ -1064,6 +1074,28 @@ mod tests {
             );
         });
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_window_stays_on_its_server_while_the_store_is_written(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.store_wait();
+            // Neither leaving nor showing or removing another server.
+            assert!(!form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
+            form.store_done();
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, b_id);
+            assert!(form.save_before_leaving(cx));
+        });
         drop(file);
     }
 
@@ -1350,6 +1382,7 @@ mod tests {
         assert!(!store.contains(&new_key).unwrap());
         // Its own Save registers it and stores the checked password.
         form.update(cx, |form, cx| form.save_servers(cx));
+        cx.run_until_parked();
         assert_eq!(store.get(&new_key).unwrap().unwrap().expose(), "typed");
         form.update(cx, |form, _| assert!(form.settings.saved_server_password));
         drop(file);
@@ -1427,7 +1460,10 @@ mod tests {
 
         super::fail_saves(true);
         form.update(cx, |form, cx| {
-            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx)
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
             assert!(form.feedback.is_some());
             assert_eq!(
                 form.settings.values.credential_backend,
@@ -1448,6 +1484,7 @@ mod tests {
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
         });
+        cx.run_until_parked();
         cx.update(|_, cx| {
             let new = secrets::store(cx);
             assert_eq!(new.kind(), CredentialBackendKind::LocalFile);

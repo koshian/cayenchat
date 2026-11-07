@@ -249,6 +249,17 @@ pub(crate) struct CredentialPrompt {
     sasl_failed: bool,
     pub(crate) error: Option<String>,
     focus_pending: bool,
+    /// The channel keys are being read for the submission; a second one waits.
+    submitting: bool,
+}
+
+/// What `submit_credential_prompt` hands on once the channel keys are read.
+struct Submission {
+    config: ConnectionConfig,
+    keys: std::collections::BTreeMap<String, String>,
+    account: Option<String>,
+    saves: (Option<Secret>, Option<Secret>),
+    resume: Resume,
 }
 
 impl CredentialPrompt {
@@ -333,34 +344,48 @@ impl ChatWindow {
             self.raise_error(Some(network), text, crate::notices::Origin::Background, cx);
             return;
         }
-        let store = secrets::store(cx);
-        let read = match profile {
+        // The store is read only for what the profile notes as saved, on the
+        // store thread; the connection goes on when the passwords are in.
+        let server_refused = matches!(refused, Some(Refusal::Server { .. }));
+        let sasl_refused = refused == Some(Refusal::Sasl);
+        let wanted = profile.as_ref().map(|profile| {
+            (
+                (!server_refused && profile.server_password_saved())
+                    .then(|| profile.server_password_key()),
+                (profile.sasl_enabled && profile.sasl_secret_saved() && !sasl_refused)
+                    .then(|| profile.sasl_secret_key()),
+            )
+        });
+        let read = secrets::run(cx, move |store| match wanted {
             None => (Ok(None), Ok(None)),
-            Some(profile) => {
-                // The store is read only for what the profile notes as saved.
-                let server_refused = matches!(refused, Some(Refusal::Server { .. }));
-                let sasl_refused = refused == Some(Refusal::Sasl);
-                let server = if server_refused || !profile.server_password_saved() {
-                    Ok(None)
-                } else {
-                    store.get(&profile.server_password_key())
-                };
-                let sasl = if profile.sasl_enabled && profile.sasl_secret_saved() && !sasl_refused {
-                    store.get(&profile.sasl_secret_key())
-                } else {
-                    Ok(None)
-                };
-                let found =
-                    |result: &Result<Option<Secret>, _>| result.as_ref().ok().map(Option::is_some);
-                let noted = (
-                    found(&server).filter(|_| !server_refused),
-                    found(&sasl).filter(|_| profile.sasl_enabled && !sasl_refused),
-                );
-                self.note_stored_passwords(&profile.id, noted.0, noted.1);
-                (server, sasl)
-            }
-        };
-        self.stored_secrets_read(network, token, config, refused, announce, read, cx);
+            Some((server, sasl)) => (
+                server.map_or(Ok(None), |key| store.get(&key)),
+                sasl.map_or(Ok(None), |key| store.get(&key)),
+            ),
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(read) = read.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                let current = this
+                    .sessions
+                    .get(&network)
+                    .is_some_and(|session| session.retry_token == token);
+                if let Some(profile) = profile.as_ref().filter(|_| current) {
+                    let found = |result: &Result<Option<Secret>, _>| {
+                        result.as_ref().ok().map(Option::is_some)
+                    };
+                    let noted = (
+                        found(&read.0).filter(|_| !server_refused),
+                        found(&read.1).filter(|_| profile.sasl_enabled && !sasl_refused),
+                    );
+                    this.note_stored_passwords(&profile.id, noted.0, noted.1);
+                }
+                this.stored_secrets_read(network, token, config, refused, announce, read, cx);
+            });
+        })
+        .detach();
     }
 
     /// A read of the credential store showed which passwords of the profile
@@ -526,6 +551,7 @@ impl ChatWindow {
             sasl_failed: refused == Some(Refusal::Sasl),
             error: None,
             focus_pending: true,
+            submitting: false,
         });
         self.state
             .append_server_message(network, self.i18n.text("event_password_wanted"));
@@ -590,7 +616,7 @@ impl ChatWindow {
             return;
         };
         let prompt = &self.credential_prompts[index];
-        if prompt.inputs().any(|input| input.read(cx).is_composing()) {
+        if prompt.submitting || prompt.inputs().any(|input| input.read(cx).is_composing()) {
             return;
         }
         let typed = |field: &Option<PasswordField>| {
@@ -676,10 +702,50 @@ impl ChatWindow {
             cx.notify();
             return;
         }
-        // The channel keys are read from the store as a connection starts.
-        let store = secrets::store(cx);
+        // The channel keys are read from the store as a connection starts,
+        // on the store thread; the dialog stays as it is until they are in.
+        let reading = crate::channel_keys::read_stored_keys(cx, &profile);
+        self.credential_prompts[index].submitting = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let keys = reading.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let submission = Submission {
+                    config,
+                    keys,
+                    account,
+                    saves,
+                    resume,
+                };
+                this.finish_credential_prompt(network, submission, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The rest of `submit_credential_prompt` once the channel keys are read.
+    /// Nothing happens when the dialog was closed or replaced meanwhile.
+    fn finish_credential_prompt(
+        &mut self,
+        network: NetworkId,
+        submission: Submission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Submission {
+            mut config,
+            keys,
+            account,
+            saves,
+            resume,
+        } = submission;
+        let Some(index) = self.credential_prompt_index(network) else {
+            return;
+        };
+        if !std::mem::take(&mut self.credential_prompts[index].submitting) {
+            return;
+        }
         let validated = crate::connect_auth::while_incomplete(&mut config, |config| {
-            crate::channel_keys::use_stored_keys(config, &profile, &store);
+            crate::channel_keys::use_keys(config, keys);
             config.validate()
         });
         if let Err(error) = validated {
@@ -751,24 +817,46 @@ impl ChatWindow {
         else {
             return;
         };
-        let store = secrets::store(cx);
+        // The write is queued on the store thread; the note and the report
+        // follow when it is done. The connection does not wait for it.
+        let keys = saved_keys(&profile, server, sasl);
+        let server_key = profile.server_password_key();
+        let writing = secrets::run(cx, move |store| {
+            keys.into_iter()
+                .map(|(key, secret)| (key == server_key, store.set(&key, &secret)))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let written = writing
+                .await
+                .unwrap_or_else(|| vec![(true, Err(secrets::stopped()))]);
+            let _ = this.update(cx, |this, cx| {
+                this.prompted_secrets_saved(network, &profile.id, written, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The store thread wrote the passwords of `save_prompted_secrets`
+    /// (each tagged with whether it is the server password).
+    fn prompted_secrets_saved(
+        &mut self,
+        network: NetworkId,
+        profile_id: &str,
+        written: Vec<(bool, Result<(), cayenchat_storage::CredentialError>)>,
+        cx: &mut Context<Self>,
+    ) {
         let mut first = Ok(());
         let mut saved = (None, None);
-        for (key, secret) in saved_keys(&profile, server, sasl) {
-            let written = store.set(&key, &secret);
-            if written.is_ok() {
-                if key == profile.server_password_key() {
-                    saved.0 = Some(true);
-                } else {
-                    saved.1 = Some(true);
-                }
-            }
-            if let Err(error) = written {
-                first = first.and(Err(error));
+        for (is_server, result) in written {
+            match result {
+                Ok(()) if is_server => saved.0 = Some(true),
+                Ok(()) => saved.1 = Some(true),
+                Err(error) => first = first.and(Err(error)),
             }
         }
         // The store was written: the file notes it at once.
-        self.note_stored_passwords(&profile.id, saved.0, saved.1);
+        self.note_stored_passwords(profile_id, saved.0, saved.1);
         self.write_pending_notes();
         if let Err(error) = first {
             let text = self.i18n.format(

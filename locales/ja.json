@@ -482,6 +482,8 @@
   "font_system_placeholder": "システム標準",
   "font_size_placeholder": "サイズ",
   "font_size_invalid": "フォントサイズは空欄（標準）か 8～40 の整数で入力してください。",
+  "log_line_height": "行間",
+  "line_height_reset": "標準に戻す",
   "font_monospace_placeholder": "等幅フォント",
   "username": "ユーザー名 (USER)",
   "username_placeholder": "USER で送る ident",
