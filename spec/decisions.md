@@ -3729,12 +3729,23 @@ the start of the session.
   server's secrets carries the profile it was read for; if the profile has
   changed when the result arrives (another mechanism, saved marks, channels)
   the result is dropped and read again, so a key is never sent as a password.
-  A new server's Save and Connect keep the server they were clicked for (a
-  second click is ignored, another server shown drops the continuation), and
-  the settings window does not leave (`save_before_leaving`, the one exit of
-  the title bar, Escape, Back and quit) while a Save or a password write or
-  deletion waits for the store, so the result is never applied to a closed
-  window. A quit asked meanwhile is refused and can be asked again.
+  What finishes a write (a server's registration, the note that a password or
+  a SASL key is saved, the record of a new store) is bound to the settings
+  window and the server it shows. No mechanism outside the window completes
+  it; the window is kept still instead (next item).
+- **Restriction while the store is written (decided by the maintainer).**
+  The settings window counts what the store thread still owes it
+  (`store_waits`: password and SASL key writes and deletions, the marked
+  passwords of a new server's Save or Connect, and a move to another store).
+  While it is above zero the window refuses to leave (`save_before_leaving`,
+  the one exit of the title bar, Escape, Back and quit) and refuses to show
+  another server or remove one (`switch_server`, which also serves the main
+  window's "Server settings"), and a second Save, Connect or move is ignored.
+  Only this window waits: the main window's menus and tabs and other windows
+  keep working. The costs are accepted: a store that does not answer keeps the
+  settings window open and refuses an ordinary quit (a signal or the system's
+  shutdown still ends the app), and a refused attempt can be made again a
+  moment later.
 - **Switching the store.** Each job uses the store that is current at its
   place in the queue (`Worker::current`), not the one installed when it was
   queued. `Worker::current` is the only owner of which store is in use

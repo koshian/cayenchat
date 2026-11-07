@@ -1070,6 +1070,28 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_window_stays_on_its_server_while_the_store_is_written(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.store_wait();
+            // Neither leaving nor showing or removing another server.
+            assert!(!form.save_before_leaving(cx));
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
+            form.store_done();
+            form.select_server(b_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, b_id);
+            assert!(form.save_before_leaving(cx));
+        });
+        drop(file);
+    }
+
+    #[gpui::test]
     fn an_unfinished_change_is_dropped_when_the_server_is_left(cx: &mut TestAppContext) {
         let mut settings = connectable("#a");
         let profile = settings.selected_profile_mut().unwrap();

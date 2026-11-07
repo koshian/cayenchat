@@ -141,7 +141,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         // A second switch waits for the first.
-        if self.switching_backend {
+        if self.store_busy() {
             return;
         }
         let to = secrets::open(kind, cx);
@@ -153,7 +153,7 @@ impl SettingsWindow {
         // record the choice, and only then delete the originals, so a
         // failure before the choice is saved leaves every secret in the
         // backend still in use.
-        self.switching_backend = true;
+        self.store_wait();
         let moving = {
             let to = to.clone();
             secrets::run_switching(cx, move |from| {
@@ -168,7 +168,7 @@ impl SettingsWindow {
                 .await
                 .unwrap_or_else(|| Err(secrets::stopped().into()));
             let _ = this.update(cx, |this, cx| {
-                this.switching_backend = false;
+                this.store_done();
                 this.credential_backend_moved(kind, to, moved, cx)
             });
         })

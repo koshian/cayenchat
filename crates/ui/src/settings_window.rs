@@ -1201,16 +1201,11 @@ pub(crate) struct SettingsWindow {
     forget_pending: Vec<SecretKey>,
     /// Connect was pressed and the store thread is still reading.
     connecting: bool,
-    /// The passwords marked on a new server are being written by the store
-    /// thread, and the Save or Connect that follows is not done. Closing the
-    /// window waits, or the registration would be lost with it.
-    writing_marked: bool,
-    /// Writes and deletions of a registered server's password that the store
-    /// thread has not finished; each one notes the result in the settings
-    /// file when it is in. Leaving waits for them like for `writing_marked`.
-    credential_jobs: usize,
-    /// The secrets are being moved to another store by the store thread.
-    pub(crate) switching_backend: bool,
+    /// Credential writes, deletions and moves of the store thread that this
+    /// window waits for (passwords, SASL keys, a switch of the store). While
+    /// any is pending the window neither closes nor shows another server:
+    /// what finishes them is bound to this window and the server shown (D086).
+    store_waits: usize,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
     /// as it was, until the text is valid.
@@ -1474,9 +1469,7 @@ impl SettingsWindow {
             autosave_error: None,
             forget_pending: Vec::new(),
             connecting: false,
-            writing_marked: false,
-            credential_jobs: 0,
-            switching_backend: false,
+            store_waits: 0,
             field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
@@ -2012,17 +2005,31 @@ impl SettingsWindow {
     /// edits can be retried; nothing is discarded without a successful save.
     ///
     /// Every way out passes here (the title bar, Escape, Back, a quit): a
-    /// Save or a password change that waits for the store thread ends in
+    /// Save or a credential change that waits for the store thread ends in
     /// this window, so leaving before it is in would lose its result (a
-    /// server registration, the note that a password is saved). The attempt
-    /// is refused and can be made again a moment later.
+    /// server registration, the note that a password or key is saved). The
+    /// attempt is refused and can be made again a moment later.
     pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.writing_marked || self.credential_jobs > 0 {
+        if self.store_busy() {
             return false;
         }
         self.autosave = None;
         let _ = self.commit_shown_server(cx);
         self.autosave_committed(cx)
+    }
+
+    /// Whether the store thread still owes this window a result.
+    pub(crate) fn store_busy(&self) -> bool {
+        self.store_waits > 0
+    }
+
+    /// Starts waiting for a store job; `store_done` ends it.
+    pub(crate) fn store_wait(&mut self) {
+        self.store_waits += 1;
+    }
+
+    pub(crate) fn store_done(&mut self) {
+        self.store_waits = self.store_waits.saturating_sub(1);
     }
 
     fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2059,22 +2066,15 @@ impl SettingsWindow {
     /// a draft.
     pub(crate) fn save_servers(&mut self, cx: &mut Context<Self>) {
         // A second click waits for the first.
-        if self.writing_marked {
+        if self.store_busy() {
             return;
         }
         self.autosave = None;
         // The passwords marked on a draft are written first, on the store
-        // thread; the settings follow when they are in.
+        // thread; the settings follow when they are in. The shown server
+        // cannot change meanwhile (`switch_server`).
         let marked = self.marked_passwords(cx);
-        let clicked = self.settings.values.selected_server.clone();
         self.write_marked_passwords(marked, cx, move |this, written, cx| {
-            // Another server shown meanwhile: it is not saved in place of
-            // the one the click was for (its password is noted as saved, so
-            // the next Save does not write it again).
-            if written.is_ok() && this.settings.values.selected_server != clicked {
-                cx.notify();
-                return;
-            }
             match written.and_then(|()| this.save_settings(SaveMode::Explicit, cx)) {
                 Ok(()) => {
                     this.autosave_error = None;
@@ -2546,7 +2546,7 @@ impl SettingsWindow {
             return;
         }
         let shown = self.settings.values.selected_server.clone();
-        self.writing_marked = true;
+        self.store_wait();
         let keys: Vec<_> = marked.iter().map(|(which, _)| which.key(&shown)).collect();
         let writing = secrets::run(cx, move |store| {
             let mut written = Vec::new();
@@ -2563,7 +2563,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let written = writing.await;
             let _ = this.update(cx, |this, cx| {
-                this.writing_marked = false;
+                this.store_done();
                 let outcome = this.marked_passwords_written(&shown, written, cx);
                 then(this, outcome, cx);
             });
@@ -2611,11 +2611,11 @@ impl SettingsWindow {
         let key = which.key(profile);
         let writing = secrets::run(cx, move |store| store.set(&key, &secret));
         let profile = profile.to_owned();
-        self.credential_jobs += 1;
+        self.store_wait();
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.credential_jobs -= 1;
+                this.store_done();
                 this.credential_done(which, &profile, result, true, cx)
             });
         })
@@ -2705,11 +2705,11 @@ impl SettingsWindow {
         };
         let key = which.key(&id);
         let deleting = secrets::run(cx, move |store| store.delete(&key));
-        self.credential_jobs += 1;
+        self.store_wait();
         cx.spawn(async move |this, cx| {
             let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
-                this.credential_jobs -= 1;
+                this.store_done();
                 this.credential_done(which, &id, result, false, cx)
             });
         })
@@ -2898,9 +2898,11 @@ impl SettingsWindow {
         let writing = secrets::run(cx, move |store| store.set(&key, &secret_text));
         let public = cayenchat_irc_core::sasl_public_key(secret).ok();
         let profile = profile.to_owned();
+        self.store_wait();
         cx.spawn(async move |this, cx| {
             let result = writing.await.unwrap_or_else(|| Err(secrets::stopped()));
             let _ = this.update(cx, |this, cx| {
+                this.store_done();
                 if this.key_done(&profile, result, true, cx)
                     && this.settings.values.selected_server == profile
                 {
@@ -2929,7 +2931,8 @@ impl SettingsWindow {
             if answer.await == Ok(0) {
                 let key = SecretKey::sasl_key(&profile.id);
                 let deleting = this
-                    .update(cx, |_, cx| {
+                    .update(cx, |this, cx| {
+                        this.store_wait();
                         secrets::run(cx, move |store| store.delete(&key))
                     })
                     .ok();
@@ -2938,6 +2941,7 @@ impl SettingsWindow {
                 };
                 let result = deleting.await.unwrap_or_else(|| Err(secrets::stopped()));
                 let _ = this.update(cx, |this, cx| {
+                    this.store_done();
                     this.key_done(&profile.id, result, false, cx);
                     if this.settings.values.selected_server == profile.id {
                         this.settings.sasl_public_key = None;
@@ -3686,6 +3690,10 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        // What the store thread still owes belongs to the server shown.
+        if self.store_busy() {
+            return;
+        }
         // Leaving a registered server takes its typed text over first; text
         // that is not valid keeps the form where it is.
         if let Err(error) = self.commit_shown_server(cx) {
@@ -3708,6 +3716,9 @@ impl SettingsWindow {
     /// Removes the selected server. Saving the removal disconnects it and
     /// forgets its passwords, so a saved server asks first.
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store_busy() {
+            return;
+        }
         let id = self.settings.values.selected_server.clone();
         let Some(profile) = self.saved.profile(&id).filter(|p| !p.host.is_empty()) else {
             self.settings.values.remove_selected_server();
@@ -3729,7 +3740,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
-                    if this.settings.values.selected_server == id {
+                    if !this.store_busy() && this.settings.values.selected_server == id {
                         this.settings.values.remove_selected_server();
                         this.show_selected_server(cx);
                         // Confirmed, so it is saved at once like any
