@@ -185,11 +185,11 @@ Things to try:
   which makes it easy to see that the lines on screen stay put; scrolling
   more meanwhile still sends only one request (`sent`).
 - **Gap recovery**: `say A`, `cut 5`, `say B`, `say C`. The client
-  reconnects by itself after a few seconds; B and C appear right after A,
-  before the rejoin line, and `say D` then follows live. `sent` shows
+  reconnects by itself after a few seconds; the log reads A,
+  the disconnect line, the rejoin line, then B and C, and `say D` then follows live. `sent` shows
   `CHATHISTORY LATEST #demo msgid=… 50`.
 - **A gap too long to recover**: after `cut`, `fill 80` and then `up`: only
-  the latest 50 are recovered, preceded by "Some messages sent while
+  the latest 50 are recovered, followed by "Some messages sent while
   disconnected are not shown."
 - **History option off**: turn it off and reconnect; nothing is requested
   or recovered.

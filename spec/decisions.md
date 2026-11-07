@@ -3040,9 +3040,9 @@ target's latest message; timestamps only.
   servers stays separate.
 - **Quiet.** Discovery and its history use provenance `Requested`: no unread,
   highlight or notification.
-- **Placement.** Same reservation as channel history (D027, D031): the
-  block sits where the request was made. A known conversation that already
-  received a live line meanwhile shows the missed lines after it.
+- **Placement.** Same as channel history (D086): the block is appended in
+  processing order when the response is complete, after any live line that
+  arrived meanwhile.
 - **Not done.** Private conversations have no resume points (repeat
   `LATEST *` only); no account-aware identity; no live soju/Ergo check.
 
