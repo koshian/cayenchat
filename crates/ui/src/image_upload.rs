@@ -7,7 +7,7 @@
 //! (`ircv3_settings`). Nothing here sends an IRC message or publishes an
 //! avatar.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 use cayenchat_app::Selection;
 use cayenchat_app::attachments::{Completion, Offer, UploadFailure, UploadJob, UploaderReadiness};
@@ -33,35 +33,49 @@ pub(crate) fn configured_uploader(
     replacement: Option<&Arc<dyn ExternalUploader>>,
     i18n: &Localizer,
     cx: &App,
-) -> Result<(UploaderReadiness, Option<Arc<dyn ExternalUploader>>), String> {
-    if let Some(uploader) = replacement {
-        let provider = uploader.provider().name.to_owned();
-        return Ok((
-            UploaderReadiness::Ready { provider },
-            Some(uploader.clone()),
-        ));
-    }
-    let Some(info) = provider.and_then(cayenchat_upload::provider) else {
-        return Ok((UploaderReadiness::NotConfigured, None));
+) -> impl Future<Output = Result<ConfiguredUploader, String>> + use<> {
+    let i18n = i18n.clone();
+    let replacement = replacement.cloned();
+    let info = provider.and_then(cayenchat_upload::provider);
+    // The store is read on the store thread and only when there is a
+    // provider to hold a token for.
+    let reading = match (&replacement, info) {
+        (None, Some(info)) => Some(secrets::run(cx, move |store| {
+            store.get(&SecretKey::uploader_token(info.id))
+        })),
+        _ => None,
     };
-    let provider = info.name.to_owned();
-    // The store decides here; the settings' note of a saved token follows it
-    // (#642). A note that cannot be written is corrected at the next upload.
-    match secrets::store(cx).get(&SecretKey::uploader_token(info.id)) {
-        Ok(Some(token)) => {
-            let _ = settings_file::note_upload_token(info.id, true);
-            Ok((
-                UploaderReadiness::Ready { provider },
-                cayenchat_upload::connect(info.id, token),
-            ))
+    async move {
+        if let Some(uploader) = replacement {
+            let provider = uploader.provider().name.to_owned();
+            return Ok((UploaderReadiness::Ready { provider }, Some(uploader)));
         }
-        Ok(None) => {
-            let _ = settings_file::note_upload_token(info.id, false);
-            Ok((UploaderReadiness::NeedsAccount { provider }, None))
+        let (Some(info), Some(reading)) = (info, reading) else {
+            return Ok((UploaderReadiness::NotConfigured, None));
+        };
+        let provider = info.name.to_owned();
+        // The store decides here; the settings' note of a saved token follows
+        // it (#642). A note that cannot be written is corrected at the next
+        // upload.
+        match reading.await.unwrap_or_else(|| Err(secrets::stopped())) {
+            Ok(Some(token)) => {
+                let _ = settings_file::note_upload_token(info.id, true);
+                Ok((
+                    UploaderReadiness::Ready { provider },
+                    cayenchat_upload::connect(info.id, token),
+                ))
+            }
+            Ok(None) => {
+                let _ = settings_file::note_upload_token(info.id, false);
+                Ok((UploaderReadiness::NeedsAccount { provider }, None))
+            }
+            Err(error) => Err(secrets::error_text(&i18n, &error)),
         }
-        Err(error) => Err(secrets::error_text(i18n, &error)),
     }
 }
+
+/// What the upload service is ready for, and the uploader when it can be used.
+pub(crate) type ConfiguredUploader = (UploaderReadiness, Option<Arc<dyn ExternalUploader>>);
 
 /// What a file dialog offers when an image is wanted: the extensions of the
 /// formats the attachment check accepts. Where a dialog cannot filter, that
@@ -206,10 +220,12 @@ pub(crate) fn upload_failure_text(
 }
 
 impl ChatWindow {
+    /// The upload service's state, read on the store thread when it needs
+    /// the token.
     fn uploader(
         &self,
         cx: &App,
-    ) -> Result<(UploaderReadiness, Option<Arc<dyn ExternalUploader>>), String> {
+    ) -> impl Future<Output = Result<ConfiguredUploader, String>> + use<> {
         configured_uploader(
             self.image_provider.as_deref(),
             self.uploader_override.as_ref(),
@@ -263,8 +279,34 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let checked = acceptable_attachment(attachment, None, &self.i18n).and_then(|attachment| {
-            let (readiness, uploader) = self.uploader(cx)?;
+        let attachment = match acceptable_attachment(attachment, None, &self.i18n) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                self.show_upload_notice("upload_problem_title", &error, window, cx);
+                return;
+            }
+        };
+        let configured = self.uploader(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let configured = configured.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.offer_attachment(attachment, configured, target, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// The attachment is checked against the uploader the store thread
+    /// found, and offered.
+    fn offer_attachment(
+        &mut self,
+        attachment: Attachment,
+        configured: Result<ConfiguredUploader, String>,
+        target: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let checked = configured.and_then(|(readiness, uploader)| {
             let attachment = acceptable_attachment(Ok(attachment), uploader.as_ref(), &self.i18n)?;
             Ok((attachment, readiness, uploader))
         });
@@ -323,7 +365,24 @@ impl ChatWindow {
     /// upload service is ready; otherwise the user is told first, with the way
     /// to the settings. The chosen file then goes the way a dropped one does.
     pub(crate) fn toolbar_upload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.uploader(cx) {
+        let configured = self.uploader(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let configured = configured.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.toolbar_upload_ready(configured, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// The toolbar's upload button once the upload service's state is known.
+    fn toolbar_upload_ready(
+        &mut self,
+        configured: Result<ConfiguredUploader, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match configured {
             Err(error) => {
                 self.show_upload_notice("upload_problem_title", &error, window, cx);
                 return;

@@ -260,11 +260,9 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
         let session = &chat.sessions[&NET];
         let revision = session.channel_key_revision;
         assert_eq!(session.channel_key_writes_pending, 1);
-        let snapshot = store
-            .get(&SecretKey::channel_key(&profile.id, "#Secret"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(snapshot.expose(), "old-key");
+        // What a refresh read before the write: the store has been written
+        // already (the test store runs jobs at once), the snapshot is stale.
+        let snapshot = Secret::new("old-key");
         (
             profile.clone(),
             profile.channels_to_read_keys_for(),

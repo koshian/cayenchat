@@ -715,7 +715,28 @@ impl SettingsWindow {
             }
         };
         let provider = self.settings.values.image_upload.provider.clone();
-        match configured_uploader(provider.as_deref(), None, &self.i18n, cx) {
+        let configured = configured_uploader(provider.as_deref(), None, &self.i18n, cx);
+        cx.spawn(async move |this, cx| {
+            let configured = configured.await;
+            let _ = this.update(cx, |this, cx| {
+                // Only for the server the image was chosen for.
+                if this.selected_profile_id().as_ref() == Some(&profile) {
+                    this.open_checked_avatar(profile, attachment, configured, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The avatar image once the upload service's state is known.
+    fn open_checked_avatar(
+        &mut self,
+        profile: String,
+        attachment: Attachment,
+        configured: Result<crate::image_upload::ConfiguredUploader, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match configured {
             Ok((UploaderReadiness::Ready { .. }, Some(_))) => {
                 self.open_avatar_editor(profile, attachment.bytes.clone(), attachment.source, cx);
             }
@@ -775,9 +796,34 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let provider = self.settings.values.image_upload.provider.clone();
-        let checked = acceptable_attachment(attachment, None, &self.i18n).and_then(|attachment| {
-            let (readiness, uploader) =
-                configured_uploader(provider.as_deref(), None, &self.i18n, cx)?;
+        let attachment = match acceptable_attachment(attachment, None, &self.i18n) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                self.avatar_feedback = Some(error);
+                return;
+            }
+        };
+        let configured = configured_uploader(provider.as_deref(), None, &self.i18n, cx);
+        cx.spawn(async move |this, cx| {
+            let configured = configured.await;
+            let _ = this.update(cx, |this, cx| {
+                this.offer_avatar_upload(profile, attachment, configured, registers, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The avatar upload once the upload service's state is known.
+    fn offer_avatar_upload(
+        &mut self,
+        profile: String,
+        attachment: Attachment,
+        configured: Result<crate::image_upload::ConfiguredUploader, String>,
+        registers: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let checked = configured.and_then(|(readiness, uploader)| {
             let attachment = acceptable_attachment(Ok(attachment), uploader.as_ref(), &self.i18n)?;
             Ok((attachment, readiness, uploader))
         });

@@ -3682,7 +3682,7 @@ the start of the session.
   stretched to cover the log (no tiling or position options). A file that
   cannot be read shows no wallpaper.
 - **Not done.** A transparent background or window, and
-  separate light/dark colors. (Other panes and the standard wallpaper: D087.)
+  separate light/dark colors. (Other panes and the standard wallpaper: D088.)
 
 ## D085 — `7bit-jis` folded into `ISO-2022-JP` (#942)
 
@@ -3729,7 +3729,7 @@ the start of the session.
 - **Unchanged.** Older pages (scrolling back) still take reserved sequences
   below the log (D030); wire traffic and protocol are unchanged.
 
-## D087 — Appearance themes (`.cayentheme`) and standard wallpapers for four areas (#962)
+## D088 — Appearance themes (`.cayentheme`) and standard wallpapers for four areas (#962)
 
 - **A theme is a source, not the setting.** Applying one copies its values
   into `Appearance` (the light or the dark half, by the theme's `mode`);
@@ -3789,3 +3789,69 @@ the start of the session.
   rather than leave out a wallpaper that cannot be read or is too large.
 - **Not done.** Per-theme fonts, sharing other than through files, and
   behavior switches such as alternate rows in themes.
+
+## D087 — The credential store is used only on its own thread (#640)
+
+- **Decision.** All access to `CredentialStore` (reads, writes, deletions,
+  the system-store probe, copying to another backend) goes through
+  `ui::secrets::run`, which runs a job on one dedicated thread and returns the
+  result as a future. The UI thread no longer calls the store. Moving only some
+  entrances (as #638 tried) made the UI wait for the store's lock held by a
+  background write; one thread for all of them cannot.
+- **Why one queue.** Jobs are serialized in the order queued, so the order of
+  a write and the read after it, or of a backend switch and the removal of its
+  originals, needs no further coordination.
+- **Effects.** Connect, reconnect, startup, the credential dialog's submit,
+  an image upload and the settings' Connect and password buttons proceed when
+  the result is in, not at the click. While a read is pending a second Connect
+  for the same server, or a second submit of the same dialog, is ignored. A
+  failed deletion of a removed server's secrets no longer fails the save that
+  removed it: the file is written, the error is shown and the deletion is tried
+  again at the next save. Quitting waits at most two seconds for queued jobs.
+- **What a result is applied to.** A result is tied to what it was read or
+  written for, because the UI keeps changing while a job waits. A read of a
+  server's secrets carries the profile it was read for; if the profile has
+  changed when the result arrives (another mechanism, saved marks, channels)
+  the result is dropped and read again, so a key is never sent as a password.
+  What finishes a write (a server's registration, the note that a password or
+  a SASL key is saved, the record of a new store) is bound to the settings
+  window and the server it shows. No mechanism outside the window completes
+  it; the window is kept still instead (next item).
+- **Restriction while the store is written (decided by the maintainer).**
+  The settings window counts what the store thread still owes it
+  (`store_waits`: password, SASL key and upload token writes and deletions, the marked
+  passwords of a new server's Save or Connect, and a move to another store).
+  While it is above zero the window refuses to leave (`save_before_leaving`,
+  the one exit of the title bar, Escape, Back and quit) and refuses to show
+  another server or remove one (`switch_server`, which also serves the main
+  window's "Server settings"), and a second Save, Connect or move is ignored.
+  Only this window waits: the main window's menus and tabs and other windows
+  keep working. The costs are accepted: a store that does not answer keeps the
+  settings window open and refuses an ordinary quit (a signal or the system's
+  shutdown still ends the app), and a refused attempt can be made again a
+  moment later.
+  The reason is shown (#965): while `store_waits` is above zero
+  the note `credential_store_waiting` ("waiting for the credential store;
+  answer the operating system's prompt if there is one") is shown in a band
+  above the scrolling pane, so it is readable wherever the pane is scrolled,
+  and it goes when the wait ends. An autosave that falls due
+  meanwhile is not made but scheduled again (`autosave_committed`): a move
+  records the new store in the file before the window learns of it, and a save
+  in between would write the old one back. In production only `Worker` holds
+  the store; `Credentials` is the store of tests without a worker.
+- **Switching the store.** Each job uses the store that is current at its
+  place in the queue (`Worker::current`), not the one installed when it was
+  queued. `Worker::current` is the only owner of which store is in use
+  (`secrets::store` reads it); no window keeps a copy, so a window closed
+  during the move leaves nothing stale, and a move to the store already in
+  use does nothing. The move is a single job (`run_switching`: copy, record
+  the choice, delete the originals) that switches the store as it ends, so a
+  password saved or removed meanwhile is queued before it and copied, or
+  after it and goes to the new store.
+- **Accepted limitation.** The settings file is read after the copy and
+  written at once, so a setting saved by another window during the copy is
+  kept. Only the gap between that read and write remains, like every other
+  read-modify-write of the file; the file is not serialized with the store
+  queue.
+- **Not done.** Settings file reads and writes stay on the UI thread (the
+  move to another backend is the one place that does it on the store thread).

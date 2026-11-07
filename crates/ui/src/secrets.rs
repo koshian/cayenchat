@@ -7,7 +7,9 @@
 //! the global is missing: on macOS the Keychain asks for the login password
 //! the moment a test binary reads the user's "CayenChat" item.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 use cayenchat_storage::credentials::{MemoryBackend, SystemBackend};
 use cayenchat_storage::{CredentialBackendKind, CredentialError, CredentialStore};
@@ -15,12 +17,139 @@ use gpui::{App, Global};
 
 use crate::localization::Localizer;
 
+/// The store of an app without a worker (tests); production has a `Worker`.
 pub struct Credentials(pub CredentialStore);
 
 impl Global for Credentials {}
 
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
-    cx.set_global(Credentials(CredentialStore::open(kind)));
+    let store = CredentialStore::open(kind);
+    // The worker is the only owner of the store: a move of the secrets
+    // changes the store it holds, and a second copy in `Credentials` would
+    // go stale. `Credentials` is for tests without a worker.
+    cx.set_global(Worker::start(store));
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// The one thread that reads and writes the credential store (D087). The
+/// operating system's store may stop for a permission dialog or a D-Bus
+/// answer, and two threads taking turns at its lock would stop the UI
+/// thread too (#638), so the UI thread never calls the store: it queues a
+/// job here and gets the result as an event (`run`).
+#[derive(Clone)]
+pub struct Worker {
+    queue: mpsc::Sender<Job>,
+    /// The store the next job uses. Only the store thread changes it, at the
+    /// end of a job that switches the store, so every job sees the store
+    /// that is current at its place in the queue, not the one that was
+    /// installed when it was queued.
+    current: Arc<Mutex<CredentialStore>>,
+}
+
+impl Global for Worker {}
+
+impl Worker {
+    pub fn start(store: CredentialStore) -> Self {
+        let (queue, jobs) = mpsc::channel::<Job>();
+        #[cfg(test)]
+        let test_file = crate::settings_file::share();
+        let spawned = std::thread::Builder::new()
+            .name("credential-store".into())
+            .spawn(move || {
+                #[cfg(test)]
+                crate::settings_file::adopt(test_file);
+                while let Ok(job) = jobs.recv() {
+                    job();
+                }
+            });
+        if let Err(error) = spawned {
+            // Jobs then wait in the queue for good and report nothing; the
+            // callers' receivers are dropped with it.
+            eprintln!("CayenChat: credential store thread: {error}");
+        }
+        Self {
+            queue,
+            current: Arc::new(Mutex::new(store)),
+        }
+    }
+}
+
+/// Runs `job` against the current store on the store thread and resolves
+/// with its result, `None` if the thread is gone. Jobs run one at a time in
+/// the order they were queued, and each uses the store that is current at
+/// its place in the queue: a switch of the store (`run_switching`) applies
+/// to the jobs queued after it and to none before it. Without a worker
+/// (tests with an in-memory store) the job runs at once against the
+/// installed store; the result is still delivered through the returned
+/// future.
+pub fn run<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
+where
+    T: Send + 'static,
+    F: FnOnce(&CredentialStore) -> T + Send + 'static,
+{
+    run_switching(cx, move |store| (job(store), None))
+}
+
+/// `run` for a job that may switch the store: the one it returns, if any,
+/// becomes the current store as the job ends, before the next job starts.
+/// This keeps a move of the secrets to another store whole: what is queued
+/// while it runs lands in the new store, not in the old one it deletes.
+pub fn run_switching<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
+where
+    T: Send + 'static,
+    F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
+{
+    let installed = store(cx);
+    let (done, result) = futures_channel::oneshot::channel();
+    match cx.try_global::<Worker>() {
+        Some(worker) => {
+            let current = worker.current.clone();
+            let queued: Job = Box::new(move || {
+                let store = lock(&current).clone();
+                let (value, switched) = job(&store);
+                if let Some(switched) = switched {
+                    *lock(&current) = switched;
+                }
+                let _ = done.send(value);
+            });
+            let _ = worker.queue.send(queued);
+        }
+        None => {
+            let (value, _) = job(&installed);
+            let _ = done.send(value);
+        }
+    }
+    async move { result.await.ok() }
+}
+
+fn lock(current: &Mutex<CredentialStore>) -> std::sync::MutexGuard<'_, CredentialStore> {
+    current
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The error for a job that never ran because the store thread is gone.
+pub fn stopped() -> CredentialError {
+    CredentialError::Access("the credential store thread stopped".into())
+}
+
+/// Waits, up to `limit`, for the jobs queued so far, so that a write made
+/// just before quitting is not lost with the process.
+pub fn flush(cx: &App, limit: Duration) {
+    let Some(worker) = cx.try_global::<Worker>() else {
+        return;
+    };
+    let (done, finished) = mpsc::channel();
+    if worker
+        .queue
+        .send(Box::new(move || {
+            let _ = done.send(());
+        }))
+        .is_ok()
+    {
+        let _ = finished.recv_timeout(limit);
+    }
 }
 
 /// Installs an empty in-memory store and returns it. Tests call this before
@@ -35,6 +164,13 @@ pub fn install_memory(cx: &mut App) -> CredentialStore {
 /// The installed store. A missing global is a bug, never a reason to open
 /// the system store.
 pub fn store(cx: &App) -> CredentialStore {
+    // With the worker, the store it uses is the only one: a switch is made
+    // there, by the job that moves the secrets, so no window has to carry
+    // the outcome over (a window closed meanwhile would leave a second,
+    // stale answer behind).
+    if let Some(worker) = cx.try_global::<Worker>() {
+        return lock(&worker.current).clone();
+    }
     match cx.try_global::<Credentials>() {
         Some(credentials) => credentials.0.clone(),
         None => panic!("no credential store is installed"),
@@ -52,18 +188,19 @@ pub fn open(kind: CredentialBackendKind, cx: &App) -> CredentialStore {
     }
 }
 
-/// A check of whether the operating system's store works, to run on any
-/// thread. While the installed store is in memory it always succeeds without
-/// asking the operating system.
-pub fn system_probe(cx: &App) -> impl FnOnce() -> Result<(), CredentialError> + Send + 'static {
+/// A check of whether the operating system's store works, run on the store
+/// thread like every other use of a store. While the installed store is in
+/// memory it always succeeds without asking the operating system.
+pub fn probe_system(cx: &App) -> impl Future<Output = Result<(), CredentialError>> + use<> {
     let in_memory = store(cx).is_memory();
-    move || {
+    let probing = run(cx, move |_| {
         if in_memory {
             Ok(())
         } else {
             SystemBackend::probe()
         }
-    }
+    });
+    async move { probing.await.unwrap_or_else(|| Err(stopped())) }
 }
 
 fn memory_store(kind: CredentialBackendKind) -> CredentialStore {
@@ -224,7 +361,11 @@ mod tests {
                 assert_eq!(switched.kind(), kind);
                 assert_eq!(switched.get(&key).unwrap(), None);
             }
-            assert_eq!(system_probe(cx)(), Ok(()));
+            // No worker is installed, so the job has already run.
+            assert_eq!(
+                futures_util::FutureExt::now_or_never(probe_system(cx)),
+                Some(Ok(()))
+            );
         });
     }
 }

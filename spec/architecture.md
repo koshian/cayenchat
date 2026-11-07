@@ -475,7 +475,7 @@ and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
 or repeated entries are dropped on load). The light and dark halves of `Appearance` also hold standard
 wallpapers for four areas and the origin of their values (a theme name and a
 fingerprint); `storage::theme_file` reads and writes `.cayentheme` files and
-keeps the library of imported themes (D087). The UI keeps the
+keeps the library of imported themes (D088). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -2079,6 +2079,33 @@ store (`server_saved`, `sasl_saved`, and `sasl_key_saved` for the SASL key;
 the old `remember_passwords` counts as both passwords). Settings shows the saved state from the note, so opening it, picking or
 adding a server never reads the store (D068); a connection reads the store and
 corrects the note.
+
+**Threads (D087, #640).** The UI thread never calls the store. Every read,
+write, deletion, probe and backend copy is a job for `ui::secrets::run`, which
+queues it for the one `credential-store` thread and hands the result back as an
+event: the caller does `cx.spawn(async { let r = run(..).await; this.update(..) })`
+and goes on there. One thread means one queue and no lock contention: a slow
+read (a Keychain prompt, a D-Bus answer) holds up only the jobs behind it,
+never the UI, and two threads cannot take turns at the backend's lock to stop
+it (#638). A job uses the store that is current at its place in the queue, and
+jobs run in the order queued; the move to another backend is one job that
+switches the store as it ends (`run_switching`), so what is queued during it
+lands in the new store. A result read for a profile that has changed is read
+again (D087). A flow that needs a result
+before it can go on (connect, reconnect, the credential dialog's channel
+keys, the upload service's token, Connect and the draft's Save in settings)
+is split at the read: the part before it is synchronous, the rest runs in the
+continuation, which re-checks that its connection, server or dialog is still
+the one asked about (retry token, shown server, `reading_saved`, a dialog's
+`submitting`). Startup reads all its servers in one job. Tests install an
+in-memory store without a thread (the job runs at once, its result still
+arrives through the future, so a test calls `run_until_parked`); a test of a
+slow store installs `secrets::Worker::start()` with a gated backend. The
+settings file stays small synchronous I/O on the UI thread. Deleting the
+secrets of removed servers is queued after the settings are written; one that
+fails is kept in the window (`forget_pending`) and tried again by the next
+save, and its error is shown as the autosave error. Quitting waits up to two
+seconds for the queue (`secrets::flush`).
 
 The store is touched only when the settings file notes that a secret is saved,
 or when the user acts on it, because reading any entry can ask for the login

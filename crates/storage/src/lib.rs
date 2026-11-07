@@ -685,6 +685,13 @@ pub struct Appearance {
     pub channel_tree_font_size: u16,
     pub input_font_size: u16,
     pub time_font_size: u16,
+    /// Line heights of the channel log and the combined log as a percentage
+    /// of the font size (#953). Added after version 15 without a version
+    /// change; files without them read as [`DEFAULT_LINE_HEIGHT_PERCENT`].
+    /// Clamped to [`MIN_LINE_HEIGHT_PERCENT`]..=[`MAX_LINE_HEIGHT_PERCENT`]
+    /// on load.
+    pub channel_log_line_height: u16,
+    pub combined_log_line_height: u16,
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
@@ -730,6 +737,19 @@ pub fn clamp_font_size(size: u16) -> u16 {
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
+}
+
+/// Range of a log line height in percent of the font size. Below 100 % the
+/// glyphs of a font could be clipped.
+pub const MIN_LINE_HEIGHT_PERCENT: u16 = 100;
+pub const MAX_LINE_HEIGHT_PERCENT: u16 = 200;
+/// GPUI's default line height is the golden ratio (1.618) of the font size;
+/// this is the default the settings start with and reset to.
+pub const DEFAULT_LINE_HEIGHT_PERCENT: u16 = 162;
+
+/// Clamps a saved line height percentage.
+pub fn clamp_line_height_percent(percent: u16) -> u16 {
+    percent.clamp(MIN_LINE_HEIGHT_PERCENT, MAX_LINE_HEIGHT_PERCENT)
 }
 
 /// Looks of one channel's log that differ from the global appearance (#928).
@@ -901,6 +921,8 @@ impl Default for Appearance {
             channel_tree_font_size: 0,
             input_font_size: 0,
             time_font_size: 0,
+            channel_log_line_height: DEFAULT_LINE_HEIGHT_PERCENT,
+            combined_log_line_height: DEFAULT_LINE_HEIGHT_PERCENT,
             dark: DarkColors::default(),
             wallpapers: RegionWallpapers::default(),
             origin: ThemeOrigin::default(),
@@ -1018,6 +1040,8 @@ impl Appearance {
         ] {
             *size = clamp_font_size(*size);
         }
+        self.channel_log_line_height = clamp_line_height_percent(self.channel_log_line_height);
+        self.combined_log_line_height = clamp_line_height_percent(self.combined_log_line_height);
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -3455,6 +3479,38 @@ mod tests {
         assert_eq!(appearance.input_font_size, MAX_FONT_SIZE);
         assert_eq!(appearance.time_font_size, 15);
         assert_eq!(appearance.combined_log_font_size, 0);
+    }
+
+    #[test]
+    fn line_height_is_default_when_absent_and_clamped_on_load() {
+        let mut saved = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = saved["appearance"].as_object_mut().unwrap();
+        assert!(appearance.remove("channel_log_line_height").is_some());
+        assert!(appearance.remove("combined_log_line_height").is_some());
+        let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(settings.normalize().appearance, Appearance::default());
+        assert_eq!(
+            Appearance::default().channel_log_line_height,
+            DEFAULT_LINE_HEIGHT_PERCENT
+        );
+
+        for (written, read) in [
+            (0, MIN_LINE_HEIGHT_PERCENT),
+            (50, MIN_LINE_HEIGHT_PERCENT),
+            (500, MAX_LINE_HEIGHT_PERCENT),
+            (150, 150),
+        ] {
+            let appearance = saved["appearance"].as_object_mut().unwrap();
+            appearance.insert("channel_log_line_height".into(), written.into());
+            appearance.insert("combined_log_line_height".into(), (written + 1).into());
+            let settings: Settings = serde_json::from_value(saved.clone()).unwrap();
+            let appearance = settings.normalize().appearance;
+            assert_eq!(appearance.channel_log_line_height, read);
+            assert_eq!(
+                appearance.combined_log_line_height,
+                clamp_line_height_percent(written + 1)
+            );
+        }
     }
 
     #[test]
