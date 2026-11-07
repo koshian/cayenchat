@@ -475,7 +475,7 @@ and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
 or repeated entries are dropped on load). The light and dark halves of `Appearance` also hold standard
 wallpapers for four areas and the origin of their values (a theme name and a
 fingerprint); `storage::theme_file` reads and writes `.cayentheme` files and
-keeps the library of imported themes (D088). The UI keeps the
+keeps the library of imported themes (D089). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows

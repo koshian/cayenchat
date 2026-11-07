@@ -46,6 +46,16 @@ pub struct Crop {
     pub side: f64,
 }
 
+/// A selected rectangle (a wallpaper's range, #950), in working-image
+/// pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Region {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// The image to upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedAvatar {
@@ -154,6 +164,28 @@ impl AvatarSource {
         }
     }
 
+    /// The part `region` of the image fitted into `max_side` pixels, for
+    /// showing a rectangle enlarged.
+    pub fn region_preview(&self, region: Region, max_side: u32) -> Thumbnail {
+        let region = self.clamp_region(region);
+        let width = (region.width.round().max(1.0) as u32).min(self.width());
+        let height = (region.height.round().max(1.0) as u32).min(self.height());
+        let x = (region.x.round() as u32).min(self.width() - width);
+        let y = (region.y.round() as u32).min(self.height() - height);
+        let (out_width, out_height) = crate::decode::fit(width, height, max_side, max_side);
+        let small = self
+            .image
+            .crop_imm(x, y, width, height)
+            .thumbnail_exact(out_width, out_height);
+        Thumbnail {
+            width: out_width,
+            height: out_height,
+            source_width: width,
+            source_height: height,
+            bgra: crate::decode::into_bgra(small),
+        }
+    }
+
     /// The square a drag from `anchor` to `to` (working pixels) outlines:
     /// its side is the larger of the two distances, it grows from the
     /// anchor in the drag's direction and stops at the image's edges.
@@ -227,6 +259,85 @@ impl AvatarSource {
 
     /// The selected square scaled to [`AVATAR_OUTPUT_SIDE`] (never
     /// enlarged beyond the selection), always as PNG.
+    /// The whole image as a region.
+    pub fn full_region(&self) -> Region {
+        Region {
+            x: 0.0,
+            y: 0.0,
+            width: f64::from(self.width()),
+            height: f64::from(self.height()),
+        }
+    }
+
+    /// `region` kept inside the image, each side at least the minimum
+    /// (or the image's own side when that is smaller).
+    pub fn clamp_region(&self, region: Region) -> Region {
+        let (full_width, full_height) = (f64::from(self.width()), f64::from(self.height()));
+        let width = region
+            .width
+            .clamp(MIN_CROP_SIDE.min(full_width), full_width);
+        let height = region
+            .height
+            .clamp(MIN_CROP_SIDE.min(full_height), full_height);
+        Region {
+            x: region.x.clamp(0.0, full_width - width),
+            y: region.y.clamp(0.0, full_height - height),
+            width,
+            height,
+        }
+    }
+
+    /// The rectangle a drag from the corner `anchor` to `to` outlines,
+    /// kept inside the image.
+    pub fn region_from_drag(&self, anchor: (f64, f64), to: (f64, f64)) -> Region {
+        let (width, height) = (f64::from(self.width()), f64::from(self.height()));
+        let (ax, ay) = (anchor.0.clamp(0.0, width), anchor.1.clamp(0.0, height));
+        let (bx, by) = (to.0.clamp(0.0, width), to.1.clamp(0.0, height));
+        Region {
+            x: ax.min(bx),
+            y: ay.min(by),
+            width: (ax - bx).abs(),
+            height: (ay - by).abs(),
+        }
+    }
+
+    /// Whether `region` is large enough to use.
+    pub fn region_usable(&self, region: Region) -> bool {
+        region.width >= MIN_CROP_SIDE.min(f64::from(self.width()))
+            && region.height >= MIN_CROP_SIDE.min(f64::from(self.height()))
+    }
+
+    /// `region` moved by (`dx`, `dy`), kept inside the image.
+    pub fn moved_region(&self, region: Region, dx: f64, dy: f64) -> Region {
+        self.clamp_region(Region {
+            x: region.x + dx,
+            y: region.y + dy,
+            ..region
+        })
+    }
+
+    /// `region` as a PNG, shrunk (keeping its proportions) to at most
+    /// `max_side` pixels a side.
+    pub fn encode_region(&self, region: Region, max_side: u32) -> Result<Vec<u8>, LoadError> {
+        let region = self.clamp_region(region);
+        let width = (region.width.round().max(1.0) as u32).min(self.width());
+        let height = (region.height.round().max(1.0) as u32).min(self.height());
+        let x = (region.x.round() as u32).min(self.width() - width);
+        let y = (region.y.round() as u32).min(self.height() - height);
+        let part = self.image.crop_imm(x, y, width, height);
+        let (out_width, out_height) = crate::decode::fit(width, height, max_side, max_side);
+        let part = if (out_width, out_height) == (width, height) {
+            part
+        } else {
+            part.resize_exact(out_width, out_height, FilterType::Lanczos3)
+        };
+        let mut bytes = Vec::new();
+        part.to_rgba8()
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .map_err(|_| LoadError::Malformed)?;
+        Ok(bytes)
+    }
+
     pub fn encode(&self, crop: Crop) -> Result<EncodedAvatar, LoadError> {
         let crop = self.clamp(crop);
         let side = crop.side.round().max(1.0) as u32;
@@ -342,6 +453,55 @@ mod tests {
         assert_eq!((preview.width, preview.height), (100, 100));
         let preview = source.square_preview(source.initial_crop(), 64);
         assert_eq!((preview.width, preview.height), (64, 64));
+    }
+
+    #[test]
+    fn a_region_is_any_rectangle_inside_the_image() {
+        let source = open(&encode(ImageFormat::Png, 400, 200)).unwrap();
+        assert_eq!(
+            source.full_region(),
+            Region {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0
+            }
+        );
+        // A drag in any direction outlines the same rectangle, cut at the edges.
+        let outlined = Region {
+            x: 50.0,
+            y: 20.0,
+            width: 100.0,
+            height: 60.0,
+        };
+        assert_eq!(
+            source.region_from_drag((50.0, 20.0), (150.0, 80.0)),
+            outlined
+        );
+        assert_eq!(
+            source.region_from_drag((150.0, 80.0), (50.0, 20.0)),
+            outlined
+        );
+        let cut = source.region_from_drag((350.0, 150.0), (900.0, -40.0));
+        assert_eq!(
+            cut,
+            Region {
+                x: 350.0,
+                y: 0.0,
+                width: 50.0,
+                height: 150.0
+            }
+        );
+        assert!(source.region_usable(cut));
+        assert!(!source.region_usable(source.region_from_drag((0.0, 0.0), (300.0, 10.0))));
+        let moved = source.moved_region(outlined, 1000.0, -1000.0);
+        assert_eq!((moved.x, moved.y), (300.0, 0.0));
+        let png = source.encode_region(outlined, 1280).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (100, 60));
+        let png = source.encode_region(source.full_region(), 100).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (100, 50));
     }
 
     #[test]

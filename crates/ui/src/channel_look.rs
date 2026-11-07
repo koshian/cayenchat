@@ -3,10 +3,13 @@
 //! and wallpaper over the global appearance, and the loading of the
 //! wallpapers of the four areas (#962).
 
-use std::{path::PathBuf, sync::Arc};
+use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 
 use cayenchat_media::{CancelFlag, wallpaper};
-use cayenchat_storage::{ChannelLook, RegionWallpaper, WallpaperRegion, color_value};
+use cayenchat_storage::{
+    ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR,
+    RegionWallpaper, WallpaperFit, WallpaperRegion, color_value,
+};
 use gpui::{prelude::*, *};
 
 use crate::{ChatWindow, theme::Theme};
@@ -19,20 +22,63 @@ pub(crate) struct ResolvedLook {
     pub(crate) text: Option<Rgba>,
     /// A font size in px of the channel's own, to be clamped by the caller.
     pub(crate) font_size: u16,
+    pub(crate) wallpaper: Option<WallpaperRequest>,
+    /// The pane background with the channel's opacity as its alpha, drawn
+    /// over the wallpaper by [`backdrop`]. Opaque without a wallpaper.
+    pub(crate) background: Rgba,
 }
 
-/// The wallpaper to show: the file, the log background it is tinted toward
-/// and how much of it shows.
+/// The wallpaper to show (#950): the file, its blur and how it fits the log.
+/// Only the file and the blur need a new load; the fit is applied when it is
+/// drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WallpaperRequest {
     pub(crate) path: String,
-    pub(crate) tint: u32,
-    pub(crate) opacity: f32,
+    /// Blur sigma in px of the kept (≤ 640 px) picture; 0 is none.
+    pub(crate) blur: u8,
+    pub(crate) fit: WallpaperFit,
 }
 
-/// `look` laid over `theme`, with `standard` the channel log's wallpaper
-/// for the theme. With a wallpaper the alternate rows are drawn half
-/// transparent, so the picture shows through them.
+/// The blur a look holds, capped to the range.
+pub(crate) fn blur_of(look: &ChannelLook) -> u8 {
+    look.wallpaper_blur
+        .unwrap_or(DEFAULT_WALLPAPER_BLUR)
+        .min(MAX_WALLPAPER_BLUR)
+}
+
+/// The percent of the log background's opacity a look holds, capped.
+pub(crate) fn background_opacity_of(look: &ChannelLook) -> u8 {
+    look.background_opacity
+        .unwrap_or(DEFAULT_BACKGROUND_OPACITY)
+        .min(100)
+}
+
+/// The wallpaper and the pane background over it for one area, from its
+/// standard wallpaper `standard`: its picture, the default blur and fit, and
+/// its opacity for the background color. Opaque without a picture.
+pub(crate) fn region_wallpaper(
+    standard: &RegionWallpaper,
+    background: Rgba,
+) -> (Option<WallpaperRequest>, Rgba) {
+    let Some(path) = &standard.path else {
+        return (None, background);
+    };
+    let request = WallpaperRequest {
+        path: path.clone(),
+        blur: DEFAULT_WALLPAPER_BLUR,
+        fit: WallpaperFit::default(),
+    };
+    let background = Rgba {
+        a: f32::from(standard.opacity_percent()) / 100.,
+        ..background
+    };
+    (Some(request), background)
+}
+
+/// `look` laid over `theme`, with `standard` the channel log's wallpaper for
+/// the theme. A channel shows its own picture, none when it switched the
+/// wallpaper off, or else the standard one (#962). With a wallpaper the
+/// background gets the opacity as its alpha, so the picture shows through.
 pub(crate) fn resolve(
     look: Option<&ChannelLook>,
     standard: &RegionWallpaper,
@@ -47,69 +93,42 @@ pub(crate) fn resolve(
             theme.panes.channel_alternate = alternate;
         }
     }
-    let has_wallpaper = match look {
-        Some(look) if look.no_wallpaper => false,
-        Some(look) if look.wallpaper.is_some() => true,
-        _ => standard.path.is_some(),
+    let (wallpaper, background) = match look {
+        Some(look) if look.no_wallpaper => (None, theme.panes.channel_log),
+        Some(look) if look.wallpaper.is_some() => {
+            let request = look.wallpaper.as_ref().map(|path| WallpaperRequest {
+                path: path.clone(),
+                blur: blur_of(look),
+                fit: look.wallpaper_fit.unwrap_or_default(),
+            });
+            let background = Rgba {
+                a: f32::from(background_opacity_of(look)) / 100.,
+                ..theme.panes.channel_log
+            };
+            (request, background)
+        }
+        _ => {
+            // The standard picture; the channel's own strength settings
+            // still apply to it.
+            let (mut request, mut background) = region_wallpaper(standard, theme.panes.channel_log);
+            if let (Some(look), Some(request)) = (look, request.as_mut()) {
+                if let Some(opacity) = look.background_opacity {
+                    background.a = f32::from(opacity.min(100)) / 100.;
+                }
+                if look.wallpaper_blur.is_some() {
+                    request.blur = blur_of(look);
+                }
+                request.fit = look.wallpaper_fit.unwrap_or(request.fit);
+            }
+            (request, background)
+        }
     };
-    if has_wallpaper {
-        theme.panes.channel_alternate.a = 0.5;
-    }
     ResolvedLook {
+        background,
+        wallpaper,
         text: look.and_then(|look| color(&look.text)),
         font_size: look.map_or(0, |look| look.font_size),
         theme,
-    }
-}
-
-/// The channel log's wallpaper to load: the channel's own picture, none when
-/// the channel switched it off, or else the standard one. The channel's
-/// strength setting applies to whichever shows. `background` is the log's
-/// background after the channel's colors, which the picture is tinted toward.
-pub(crate) fn channel_wallpaper(
-    look: Option<&ChannelLook>,
-    standard: &RegionWallpaper,
-    background: Rgba,
-) -> Option<WallpaperRequest> {
-    let Some(look) = look else {
-        return region_wallpaper(standard, background);
-    };
-    if look.no_wallpaper {
-        return None;
-    }
-    let (path, standard_opacity) = match &look.wallpaper {
-        Some(path) => (path, None),
-        None => (standard.path.as_ref()?, standard.opacity),
-    };
-    Some(request(
-        path,
-        look.wallpaper_opacity.or(standard_opacity),
-        background,
-    ))
-}
-
-/// The standard wallpaper of one of the other areas.
-pub(crate) fn region_wallpaper(
-    standard: &RegionWallpaper,
-    background: Rgba,
-) -> Option<WallpaperRequest> {
-    Some(request(
-        standard.path.as_ref()?,
-        standard.opacity,
-        background,
-    ))
-}
-
-fn request(path: &str, opacity: Option<u8>, background: Rgba) -> WallpaperRequest {
-    let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
-    WallpaperRequest {
-        path: path.to_owned(),
-        tint: channel(background.r) << 16 | channel(background.g) << 8 | channel(background.b),
-        opacity: f32::from(
-            opacity
-                .unwrap_or(cayenchat_storage::DEFAULT_WALLPAPER_OPACITY)
-                .min(100),
-        ) / 100.,
     }
 }
 
@@ -120,16 +139,108 @@ pub(crate) fn translucent_combined(theme: &mut Theme, standard: &RegionWallpaper
     }
 }
 
+/// Where a picture of `image` pixels lies in `bounds` for `fit`. Cover and
+/// center paint past `bounds`; the caller clips. The box is laid out by the
+/// caller, not by an image element, which would force the picture's shape on
+/// it.
+fn fit_bounds(
+    fit: WallpaperFit,
+    bounds: Bounds<Pixels>,
+    image: Size<DevicePixels>,
+) -> Bounds<Pixels> {
+    let object_fit = match fit {
+        WallpaperFit::Stretch => ObjectFit::Fill,
+        WallpaperFit::Cover => ObjectFit::Cover,
+        WallpaperFit::Contain => ObjectFit::Contain,
+        WallpaperFit::Center => {
+            let size = image.map(|side| Pixels::from(u32::from(side)));
+            return Bounds {
+                origin: point(
+                    bounds.origin.x + (bounds.size.width - size.width) / 2.,
+                    bounds.origin.y + (bounds.size.height - size.height) / 2.,
+                ),
+                size,
+            };
+        }
+    };
+    object_fit.get_bounds(bounds, image)
+}
+
+/// The layer behind a pane's content: the picture, if any, and over it the
+/// pane `background` (with its alpha). It is the first child of a relative
+/// pane.
+pub(crate) fn backdrop(picture: Option<Div>, background: Rgba) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .overflow_hidden()
+        .children(picture)
+        .child(div().absolute().top_0().left_0().size_full().bg(background))
+}
+
+/// The picture as an alternate row needs it. A row replaces the background
+/// (it is not laid over it, which would add the opacity twice): it paints the
+/// picture again over its own area, where it lay under the background, and
+/// its color over that.
+#[derive(Clone)]
+pub(crate) struct Slice {
+    image: Arc<RenderImage>,
+    /// Where the pane placed the picture, set while it paints.
+    placed: Rc<Cell<Bounds<Pixels>>>,
+    /// The opacity of the row color.
+    alpha: f32,
+}
+
+/// `row` with the alternate `color` as its background. With a `slice` it
+/// replaces the pane background, by the same opacity; without one (no
+/// wallpaper, or not loaded) the color is opaque.
+pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div {
+    let Some(slice) = slice else {
+        return row.bg(color);
+    };
+    let (image, placed) = (slice.image.clone(), slice.placed.clone());
+    let picture = canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                let _ = window.paint_image(placed.get(), Corners::default(), image, 0, false);
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let color = Rgba {
+        a: slice.alpha,
+        ..color
+    };
+    row.relative()
+        .child(picture)
+        .child(div().absolute().top_0().left_0().size_full().bg(color))
+}
+
 enum State {
     Loading,
     Ready(Arc<RenderImage>),
     Failed,
 }
 
-/// The wallpapers on show, one slot per area.
+/// What a loaded picture was made from. The fit and the background laid
+/// over it are not part of it: they only change how the held picture is
+/// drawn, so changing them never loads again.
+#[derive(Clone, PartialEq)]
+struct Key {
+    path: PathBuf,
+    blur: u8,
+}
+
+/// The wallpapers on show, one slot per area (#962).
 #[derive(Default)]
 pub(crate) struct Wallpapers {
-    channel_log: Wallpaper,
+    pub(crate) channel_log: Wallpaper,
     combined_log: Wallpaper,
     member_list: Wallpaper,
     channel_tree: Wallpaper,
@@ -145,27 +256,44 @@ impl Wallpapers {
         }
     }
 
-    /// The picture for `wanted` in `region`, as the first child of its pane.
+    /// The picture for `wanted` in `region` with `background` over it, as
+    /// the first child of its pane.
     pub(crate) fn element(
         &mut self,
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
+        background: Rgba,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
-        self.get_mut(region).element(region, wanted, window, cx)
+        self.get_mut(region)
+            .element(region, wanted, background, window, cx)
     }
 }
 
 /// The wallpaper of one area. Only the one on show is kept, keyed by the
-/// file and the color it was tinted toward, so a result that arrives after
-/// the channel or the colors changed is dropped.
+/// file and the blur, so a result that arrives after the channel or the blur
+/// changed is dropped.
 #[derive(Default)]
-struct Wallpaper {
-    slot: Option<(PathBuf, u32, State)>,
+pub(crate) struct Wallpaper {
+    slot: Option<(Key, State)>,
+    placed: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl Wallpaper {
+    /// The picture for alternate rows, with the row color's `alpha`, when it
+    /// is shown.
+    pub(crate) fn slice(&self, alpha: f32) -> Option<Slice> {
+        match self.slot.as_ref() {
+            Some((_, State::Ready(image))) => Some(Slice {
+                image: image.clone(),
+                placed: self.placed.clone(),
+                alpha,
+            }),
+            _ => None,
+        }
+    }
+
     /// The picture for `wanted`, as the first child of the log; starts its
     /// loading when it is not the one held. Nothing while it loads or when
     /// the file cannot be used.
@@ -173,6 +301,7 @@ impl Wallpaper {
         &mut self,
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
+        background: Rgba,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
@@ -180,27 +309,25 @@ impl Wallpaper {
             self.release(window);
             return None;
         };
-        let path = PathBuf::from(&wanted.path);
-        let held = self
-            .slot
-            .as_ref()
-            .is_some_and(|(held, tint, _)| *held == path && *tint == wanted.tint);
+        let key = Key {
+            path: PathBuf::from(&wanted.path),
+            blur: wanted.blur,
+        };
+        let held = self.slot.as_ref().is_some_and(|(held, _)| *held == key);
         if !held {
             self.release(window);
-            self.slot = Some((path.clone(), wanted.tint, State::Loading));
-            let tint = wanted.tint;
-            let loading = path.clone();
+            self.slot = Some((key.clone(), State::Loading));
+            let loading = key.clone();
             let loaded = cx.background_spawn(async move {
-                wallpaper::load(&loading, tint, &CancelFlag::default())
+                wallpaper::load(&loading.path, loading.blur, &CancelFlag::default())
             });
             cx.spawn(async move |this, cx| {
                 let result = loaded.await;
                 let _ = this.update(cx, |this, cx| {
-                    let slot = &mut this.wallpapers.get_mut(region).slot;
-                    let Some((held, held_tint, state)) = slot.as_mut() else {
+                    let Some((held, state)) = this.wallpapers.get_mut(region).slot.as_mut() else {
                         return;
                     };
-                    if *held != path || *held_tint != tint {
+                    if *held != key {
                         return;
                     }
                     *state = match result {
@@ -223,23 +350,30 @@ impl Wallpaper {
             .detach();
         }
         match self.slot.as_ref() {
-            // Cover fit paints past the box, so the box clips it.
-            Some((_, _, State::Ready(image))) => Some(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .overflow_hidden()
-                    .opacity(wanted.opacity)
-                    .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover)),
-            ),
+            // The picture is the backmost layer, the pane background (with
+            // its opacity) lies over it, and the rows over both.
+            Some((_, State::Ready(image))) => {
+                let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
+                let picture = div().absolute().top_0().left_0().size_full().child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, _| {
+                            let size = image.size(0);
+                            let placed = fit_bounds(fit, bounds, size);
+                            shared.set(placed);
+                            let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+                        },
+                    )
+                    .size_full(),
+                );
+                Some(backdrop(Some(picture), background))
+            }
             _ => None,
         }
     }
 
     fn release(&mut self, window: &mut Window) {
-        if let Some((_, _, State::Ready(image))) = self.slot.take() {
+        if let Some((_, State::Ready(image))) = self.slot.take() {
             let _ = window.drop_image(image);
         }
     }
@@ -249,10 +383,10 @@ impl Wallpaper {
 mod tests {
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        ChannelLook, RegionWallpaper, Theme, channel_wallpaper, region_wallpaper, resolve,
-        translucent_combined,
+        ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, RegionWallpaper, Theme,
+        WallpaperFit, region_wallpaper, resolve, translucent_combined,
     };
-    use cayenchat_storage::{Appearance, DEFAULT_WALLPAPER_OPACITY, ThemeMode};
+    use cayenchat_storage::{Appearance, ThemeMode};
     use gpui::{WindowAppearance, rgb};
 
     fn standard(path: Option<&str>, opacity: Option<u8>) -> RegionWallpaper {
@@ -283,7 +417,7 @@ mod tests {
             assert_eq!(resolved.theme, base);
             assert!(resolved.text.is_none());
             assert_eq!(resolved.font_size, 0);
-            assert!(channel_wallpaper(None, &none(), base.panes.channel_log).is_none());
+            assert!(resolved.wallpaper.is_none());
             // A look that sets nothing is the same.
             let empty = ChannelLook::default();
             assert_eq!(resolve(Some(&empty), &none(), base).theme, base);
@@ -300,20 +434,25 @@ mod tests {
                 alternate: Some("#405060".into()),
                 text: Some("#AABBCC".into()),
                 wallpaper: Some("/pic.png".into()),
-                wallpaper_opacity: Some(70),
+                background_opacity: Some(70),
                 ..ChannelLook::default()
             };
             let resolved = resolve(Some(&look), &none(), base);
             assert_eq!(resolved.theme.panes.channel_log, rgb(0x102030));
-            // The picture shows through the alternate rows.
-            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.5);
+            // The alternate color keeps its own alpha; a row applies the
+            // opacity itself where it replaces the background.
+            assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);
-
-            let wallpaper =
-                channel_wallpaper(Some(&look), &none(), resolved.theme.panes.channel_log).unwrap();
-            // Tinted toward the channel's own background.
-            assert_eq!((wallpaper.tint, wallpaper.opacity), (0x102030, 0.7));
+            let wallpaper = resolved.wallpaper.unwrap();
+            // The channel's own background lies over the picture, 70 % opaque.
+            let _ = wallpaper;
+            let cover = resolved.background;
+            assert_eq!((cover.r, cover.g, cover.b), {
+                let c = rgb(0x102030);
+                (c.r, c.g, c.b)
+            });
+            assert_eq!(cover.a, 0.7);
             // Nothing else of the theme moves.
             assert_eq!(resolved.theme.panes.combined_log, base.panes.combined_log);
             assert_eq!(resolved.theme.text, base.text);
@@ -321,108 +460,142 @@ mod tests {
     }
 
     #[test]
-    fn a_wallpaper_alone_tints_toward_the_themes_background_at_the_default_strength() {
-        for (dark, tint) in [(false, 0xFFFFFF), (true, 0x1F2124)] {
+    fn a_wallpaper_alone_gets_the_defaults() {
+        for dark in [false, true] {
+            let base = theme(dark);
             let look = ChannelLook {
                 wallpaper: Some("/pic.png".into()),
                 ..ChannelLook::default()
             };
-            let resolved = resolve(Some(&look), &none(), theme(dark));
-            let wallpaper =
-                channel_wallpaper(Some(&look), &none(), resolved.theme.panes.channel_log).unwrap();
-            assert_eq!(wallpaper.tint, tint);
+            let resolved = resolve(Some(&look), &none(), base);
+            let wallpaper = resolved.wallpaper.unwrap();
+            let log = base.panes.channel_log;
             assert_eq!(
-                wallpaper.opacity,
-                f32::from(DEFAULT_WALLPAPER_OPACITY) / 100.
+                (
+                    resolved.background.r,
+                    resolved.background.g,
+                    resolved.background.b
+                ),
+                (log.r, log.g, log.b)
             );
+            assert_eq!(
+                resolved.background.a,
+                f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
+            );
+            assert_eq!(wallpaper.blur, DEFAULT_WALLPAPER_BLUR);
+            assert_eq!(wallpaper.fit, WallpaperFit::default());
+            assert_eq!(wallpaper.fit, WallpaperFit::Cover);
+            assert_eq!(wallpaper.blur, 0);
         }
     }
 
     #[test]
     fn a_channel_inherits_the_standard_wallpaper_unless_it_sets_or_switches_off_its_own() {
         let base = theme(false);
-        let background = base.panes.channel_log;
         let standard = standard(Some("/standard.png"), Some(30));
-        let path = |look: Option<&ChannelLook>| {
-            channel_wallpaper(look, &standard, background).map(|w| (w.path, w.opacity))
+        let shown = |look: Option<&ChannelLook>| {
+            let resolved = resolve(look, &standard, base);
+            (resolved.wallpaper.map(|w| w.path), resolved.background.a)
         };
-
         // No look, or a look without a wallpaper choice, inherits.
-        let inherit = ("/standard.png".to_owned(), 0.3);
-        assert_eq!(path(None), Some(inherit.clone()));
+        let inherit = (Some("/standard.png".to_owned()), 0.3);
+        assert_eq!(shown(None), inherit);
         let recolored = ChannelLook {
             background: Some("#102030".into()),
             ..ChannelLook::default()
         };
-        assert_eq!(path(Some(&recolored)), Some(inherit));
-        assert_eq!(
-            resolve(Some(&recolored), &standard, base)
-                .theme
-                .panes
-                .channel_alternate
-                .a,
-            0.5
-        );
-        // The channel's own strength applies to the inherited picture.
+        assert_eq!(shown(Some(&recolored)), inherit);
+        // The channel's own opacity applies to the inherited picture.
         let stronger = ChannelLook {
-            wallpaper_opacity: Some(80),
+            background_opacity: Some(80),
             ..ChannelLook::default()
         };
         assert_eq!(
-            path(Some(&stronger)),
-            Some(("/standard.png".to_owned(), 0.8))
+            shown(Some(&stronger)),
+            (Some("/standard.png".to_owned()), 0.8)
         );
-        // Its own picture replaces the standard one.
+        // Its own picture replaces the standard one, at the default opacity.
         let own = ChannelLook {
             wallpaper: Some("/own.png".into()),
             ..ChannelLook::default()
         };
-        // At the default strength: the standard's setting is not its own.
-        assert_eq!(path(Some(&own)), Some(("/own.png".to_owned(), 0.4)));
-        // No wallpaper beats the standard one, and the rows turn opaque again.
+        assert_eq!(
+            shown(Some(&own)),
+            (
+                Some("/own.png".to_owned()),
+                f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
+            )
+        );
+        // No wallpaper beats the standard one, and the background is opaque.
         let off = ChannelLook {
             no_wallpaper: true,
             ..ChannelLook::default()
         };
-        assert_eq!(path(Some(&off)), None);
-        let resolved = resolve(Some(&off), &standard, base);
-
-        assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
-        assert_eq!(
-            resolve(None, &standard, base)
-                .theme
-                .panes
-                .channel_alternate
-                .a,
-            0.5
-        );
+        assert_eq!(shown(Some(&off)), (None, 1.));
     }
 
     #[test]
-    fn the_other_areas_use_their_standard_wallpaper_tinted_toward_their_own_background() {
+    fn the_other_areas_use_their_standard_wallpaper_under_their_own_background() {
         let base = theme(true);
-        assert!(region_wallpaper(&none(), base.panes.member_list).is_none());
-        let wallpaper = region_wallpaper(
+        let (request, background) = region_wallpaper(&none(), base.panes.member_list);
+        assert!(request.is_none());
+        assert_eq!(background, base.panes.member_list);
+        let (request, background) = region_wallpaper(
             &standard(Some("/members.png"), None),
             base.panes.member_list,
-        )
-        .unwrap();
-        assert_eq!(wallpaper.tint, 0x1F2124);
-        assert_eq!(
-            wallpaper.opacity,
-            f32::from(DEFAULT_WALLPAPER_OPACITY) / 100.
         );
-        let tree = region_wallpaper(
-            &standard(Some("/t.png"), Some(100)),
-            base.panes.channel_tree,
-        )
-        .unwrap();
-        assert_eq!((tree.tint, tree.opacity), (0x1D2630, 1.));
-
+        assert_eq!(request.unwrap().path, "/members.png");
+        assert_eq!(background.a, f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.);
         let mut combined = base;
         translucent_combined(&mut combined, &none());
         assert_eq!(combined, base);
         translucent_combined(&mut combined, &standard(Some("/c.png"), None));
         assert_eq!(combined.panes.combined_alternate.a, 0.5);
+    }
+
+    #[test]
+    fn zero_is_kept_and_only_the_blur_decides_what_is_loaded_again() {
+        let look = |blur, opacity, fit| ChannelLook {
+            wallpaper: Some("/pic.png".into()),
+            wallpaper_blur: Some(blur),
+            background_opacity: Some(opacity),
+            wallpaper_fit: Some(fit),
+            ..ChannelLook::default()
+        };
+        let base = theme(false);
+        let first_look = resolve(Some(&look(0, 0, WallpaperFit::Contain)), &none(), base);
+        let first = first_look.wallpaper.unwrap();
+        assert_eq!((first.blur, first_look.background.a), (0, 0.));
+        assert_eq!(first.fit, WallpaperFit::Contain);
+        // A color, an opacity and a fit differ without touching the blur.
+        let second_look = resolve(Some(&look(0, 100, WallpaperFit::Cover)), &none(), base);
+        let second = second_look.wallpaper.unwrap();
+        assert_eq!(second.blur, first.blur);
+        assert_ne!(second_look.background, first_look.background);
+        assert_ne!(second.fit, first.fit);
+    }
+
+    #[test]
+    fn each_fit_places_the_picture_in_the_log_box() {
+        use super::fit_bounds;
+        use gpui::{Bounds, DevicePixels, point, px, size};
+        let log = Bounds::new(point(px(10.), px(20.)), size(px(756.), px(351.)));
+        let picture = size(DevicePixels(600), DevicePixels(360));
+        assert_eq!(fit_bounds(WallpaperFit::Stretch, log, picture), log);
+        // Cover: the width fills the box, the height runs over it equally.
+        let cover = fit_bounds(WallpaperFit::Cover, log, picture);
+        assert_eq!(cover.size.width, px(756.));
+        assert!(cover.size.height > log.size.height);
+        assert_eq!(cover.origin.x, log.origin.x);
+        assert!(cover.origin.y < log.origin.y);
+        // Contain: the height fills the box, the sides are left over.
+        let contain = fit_bounds(WallpaperFit::Contain, log, picture);
+        assert_eq!(contain.size.height, px(351.));
+        assert!(contain.size.width < log.size.width);
+        assert!(contain.origin.x > log.origin.x);
+        // Center: the picture's own size, in the middle.
+        let center = fit_bounds(WallpaperFit::Center, log, picture);
+        assert_eq!(center.size, size(px(600.), px(360.)));
+        assert_eq!(center.origin, point(px(88.), px(15.5)));
     }
 }

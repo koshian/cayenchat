@@ -444,7 +444,9 @@ impl SettingsWindow {
             .appearance
             .wallpapers_mut(dark)
             .get_mut(region);
-        let next = (i16::from(wallpaper.opacity_percent()) + delta).clamp(0, 100);
+        // The stored opacity is the background's over the picture; the picture's
+        // strength shown to the user is the rest.
+        let next = (i16::from(wallpaper.opacity_percent()) - delta).clamp(0, 100);
         wallpaper.opacity = Some(next as u8);
         cx.notify();
     }
@@ -678,7 +680,7 @@ impl SettingsWindow {
                                         this.wallpaper_step_opacity(dark, region, -OPACITY_STEP, cx)
                                     })),
                             )
-                            .child(format!("{}%", wallpaper.opacity_percent()))
+                            .child(format!("{}%", 100 - wallpaper.opacity_percent()))
                             .child(
                                 settings_theme::button(("wallpaper-stronger", id), false, cx)
                                     .child("+")
@@ -859,17 +861,18 @@ mod tests {
                     .opacity_percent()
             })
         };
-        assert_eq!(strength(&form, cx), 40);
+        // The picture's strength is the rest of the background's opacity.
+        assert_eq!(100 - strength(&form, cx), 20);
         form.update(cx, |form, cx| {
             form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx)
         });
-        assert_eq!(strength(&form, cx), 45);
+        assert_eq!(100 - strength(&form, cx), 25);
         form.update(cx, |form, cx| {
             for _ in 0..30 {
                 form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx);
             }
         });
-        assert_eq!(strength(&form, cx), 100);
+        assert_eq!(100 - strength(&form, cx), 100);
         form.update(cx, |form, cx| {
             form.wallpaper_clear(false, WallpaperRegion::MemberList, cx)
         });

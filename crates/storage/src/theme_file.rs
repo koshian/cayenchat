@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{Appearance, DEFAULT_WALLPAPER_OPACITY, clamp_font_size, color_value, private_file};
+use crate::{Appearance, DEFAULT_BACKGROUND_OPACITY, clamp_font_size, color_value, private_file};
 
 /// The file name extension of a theme file, without the dot.
 pub const THEME_EXTENSION: &str = "cayentheme";
@@ -83,14 +83,14 @@ pub struct RegionWallpaper {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// How much of it shows over the background, in percent; unset is
-    /// [`DEFAULT_WALLPAPER_OPACITY`].
+    /// [`DEFAULT_BACKGROUND_OPACITY`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
 }
 
 impl RegionWallpaper {
     pub fn opacity_percent(&self) -> u8 {
-        self.opacity.unwrap_or(DEFAULT_WALLPAPER_OPACITY).min(100)
+        self.opacity.unwrap_or(DEFAULT_BACKGROUND_OPACITY).min(100)
     }
 }
 
