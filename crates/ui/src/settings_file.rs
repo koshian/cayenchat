@@ -24,50 +24,83 @@ pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
-thread_local! {
+#[derive(Default)]
+pub(crate) struct TestState {
     /// `None` while no test holds a file; then the file's content.
-    static FILE: std::cell::RefCell<Option<Settings>> = const { std::cell::RefCell::new(None) };
-    static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static UNREADABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    file: Option<Settings>,
+    enabled: bool,
+    failing: bool,
+    unreadable: bool,
+}
+
+/// What a test's file is made of. Each test thread has its own, so tests do
+/// not meet; the credential store thread of a test shares its starter's
+/// (`share`, `adopt`), as the real one shares the real file.
+#[cfg(test)]
+pub(crate) type SharedState = std::sync::Arc<std::sync::Mutex<TestState>>;
+
+#[cfg(test)]
+thread_local! {
+    static STATE: std::cell::RefCell<SharedState> = std::cell::RefCell::new(SharedState::default());
+}
+
+#[cfg(test)]
+fn with_state<T>(f: impl FnOnce(&mut TestState) -> T) -> T {
+    let state = STATE.with_borrow(Clone::clone);
+    let mut state = state.lock().unwrap();
+    f(&mut state)
+}
+
+/// The test file of this thread, to give to a thread it starts.
+#[cfg(test)]
+pub(crate) fn share() -> SharedState {
+    STATE.with_borrow(Clone::clone)
+}
+
+/// Makes this thread use the test file of the thread that started it.
+#[cfg(test)]
+pub(crate) fn adopt(state: SharedState) {
+    STATE.with_borrow_mut(|own| *own = state);
 }
 
 /// Makes saving fail (or work again) to test what a failed save leaves.
 #[cfg(test)]
 pub(crate) fn fail_saves(failing: bool) {
-    FAILING.set(failing);
+    with_state(|state| state.failing = failing);
 }
 
 /// Makes loading fail (or work again), as an unsupported or damaged file does.
 #[cfg(test)]
 pub(crate) fn fail_loads(failing: bool) {
-    UNREADABLE.set(failing);
+    with_state(|state| state.unreadable = failing);
 }
 
 #[cfg(test)]
 pub(crate) fn load() -> Result<Option<Settings>, String> {
-    if UNREADABLE.get() {
-        return Err("cannot read the settings file".into());
-    }
-    Ok(FILE.with_borrow(Clone::clone))
+    with_state(|state| {
+        if state.unreadable {
+            return Err("cannot read the settings file".into());
+        }
+        Ok(state.file.clone())
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn save(settings: &Settings) -> Result<(), String> {
-    if FAILING.get() {
-        return Err("cannot write the settings file".into());
-    }
-    if ENABLED.get() {
-        FILE.with_borrow_mut(|file| *file = Some(settings.clone()));
-    }
-    Ok(())
+    with_state(|state| {
+        if state.failing {
+            return Err("cannot write the settings file".into());
+        }
+        if state.enabled {
+            state.file = Some(settings.clone());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>, String> {
-    let backup = FILE
-        .with_borrow(Clone::clone)
-        .map(|_| "settings-backup.json".into());
+    let backup = with_state(|state| state.file.clone()).map(|_| "settings-backup.json".into());
     save(settings).map(|()| backup)
 }
 
@@ -94,7 +127,7 @@ pub(crate) struct TestFile;
 #[cfg(test)]
 impl TestFile {
     pub(crate) fn with(settings: &Settings) -> Self {
-        ENABLED.set(true);
+        with_state(|state| state.enabled = true);
         let _ = save(settings);
         Self
     }
@@ -103,10 +136,7 @@ impl TestFile {
 #[cfg(test)]
 impl Drop for TestFile {
     fn drop(&mut self) {
-        ENABLED.set(false);
-        FAILING.set(false);
-        UNREADABLE.set(false);
-        FILE.with_borrow_mut(|file| *file = None);
+        with_state(|state| *state = TestState::default());
     }
 }
 
@@ -1104,6 +1134,8 @@ mod tests {
     struct Gated {
         inner: MemoryBackend,
         gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Whether a call is being held now.
+        holding: std::sync::atomic::AtomicBool,
         on_set: bool,
     }
 
@@ -1115,6 +1147,7 @@ mod tests {
             let backend = Arc::new(Self {
                 inner: MemoryBackend::new(CredentialBackendKind::System),
                 gate: std::sync::Mutex::new(gate),
+                holding: std::sync::atomic::AtomicBool::new(false),
                 on_set,
             });
             cx.set_global(secrets::Worker::start(CredentialStore::with_backend(
@@ -1124,11 +1157,24 @@ mod tests {
         }
 
         fn hold(&self) {
-            self.gate
+            use std::sync::atomic::Ordering::SeqCst;
+            self.holding.store(true, SeqCst);
+            let released = self
+                .gate
                 .lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(20))
-                .expect("the test lets the call go");
+                .recv_timeout(std::time::Duration::from_secs(20));
+            self.holding.store(false, SeqCst);
+            released.expect("the test lets the call go");
+        }
+
+        /// Waits until a call is held.
+        fn wait_until_held(&self) {
+            let started = std::time::Instant::now();
+            while !self.holding.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(started.elapsed().as_secs() < 20, "a call is held");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
 
@@ -1189,24 +1235,22 @@ mod tests {
         let file = TestFile::with(&settings);
         let release = cx.update(|cx| Gated::install(true, cx).0);
         let (form, cx) = open(&settings, cx);
-        let waiting = form.read_with(cx, |form, _| form.i18n.text("credential_store_waiting"));
 
         form.update(cx, |form, cx| {
             form.upload_token
                 .update(cx, |field, cx| field.set_text("token", cx));
             form.connect_upload_account(cx);
             assert!(form.store_busy());
-            assert_eq!(form.status_message(), Some(waiting.clone()));
             assert!(!form.save_before_leaving(cx));
             form.select_server(b_id.clone(), cx);
             assert_eq!(form.settings.values.selected_server, a_id);
-            assert_eq!(form.status_message(), Some(waiting.clone()));
         });
+        // Quitting goes through the same check and is refused too.
+        assert!(cx.update(|_, cx| crate::settings_block_quit(cx)));
 
         release.send(()).unwrap();
         wait_for_store(&form, cx);
         form.update(cx, |form, cx| {
-            assert_ne!(form.status_message(), Some(waiting.clone()));
             assert!(form.save_before_leaving(cx));
             form.select_server(b_id.clone(), cx);
             assert_eq!(form.settings.values.selected_server, b_id);
@@ -1229,22 +1273,34 @@ mod tests {
         )
         .unwrap();
         let (form, cx) = open(&settings, cx);
-        let private_messages = || {
-            super::load()
-                .unwrap()
-                .unwrap()
-                .notifications
-                .private_messages
-        };
 
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
             assert!(form.store_busy());
+        });
+        // The move has recorded the new store in the file and is deleting
+        // the originals; the form still shows the old one.
+        backend.wait_until_held();
+        assert_eq!(
+            super::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        form.update(cx, |form, cx| {
+            assert_eq!(
+                form.settings.values.credential_backend,
+                CredentialBackendKind::System
+            );
             form.settings.values.notifications.private_messages = false;
             form.autosave_pause_elapsed(cx);
             form.autosave_now(None, cx);
         });
-        assert!(private_messages(), "nothing is saved while the move runs");
+        let saved = super::load().unwrap().unwrap();
+        assert!(saved.notifications.private_messages, "nothing is saved");
+        assert_eq!(
+            saved.credential_backend,
+            CredentialBackendKind::LocalFile,
+            "the old store is not written back"
+        );
 
         release.send(()).unwrap();
         wait_for_store(&form, cx);

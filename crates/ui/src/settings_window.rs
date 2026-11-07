@@ -1973,11 +1973,6 @@ impl SettingsWindow {
 
     /// The latest action's feedback, or why edits are not being saved.
     pub(crate) fn status_message(&self) -> Option<String> {
-        // While the store thread is working, leaving, switching servers and
-        // quitting are refused; this is the reason, and it goes with the wait.
-        if self.store_busy() {
-            return Some(self.i18n.text("credential_store_waiting"));
-        }
         self.feedback
             .clone()
             .or_else(|| self.field_error.clone())
@@ -5781,19 +5776,44 @@ impl SettingsWindow {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .flex()
+                    .flex_col()
+                    // Outside the scrolling pane, so the reason a refused
+                    // leave gives is readable wherever the pane is scrolled.
+                    .when(self.store_busy(), |d| {
+                        d.child(
+                            div()
+                                .id("credential-store-waiting")
+                                .flex_shrink_0()
+                                .w_full()
+                                .px_4()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .text_color(theme.warning)
+                                .child(self.i18n.text("credential_store_waiting")),
+                        )
+                    })
                     .child(
                         div()
-                            .id("settings-pane")
-                            .track_scroll(&self.pane_scroll)
-                            .size_full()
-                            .overflow_y_scroll()
-                            .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
-                    )
-                    .child(scrollbar::scrollbar(
-                        "scrollbar-settings-pane",
-                        &self.pane_scroll,
-                        theme.text_muted,
-                    )),
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .child(
+                                div()
+                                    .id("settings-pane")
+                                    .track_scroll(&self.pane_scroll)
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                            )
+                            .child(scrollbar::scrollbar(
+                                "scrollbar-settings-pane",
+                                &self.pane_scroll,
+                                theme.text_muted,
+                            )),
+                    ),
             )
             .children(auto_join)
             .children(channel_settings.map(|view| view.into_any_element()))

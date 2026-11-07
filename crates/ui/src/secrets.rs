@@ -52,9 +52,13 @@ impl Global for Worker {}
 impl Worker {
     pub fn start(store: CredentialStore) -> Self {
         let (queue, jobs) = mpsc::channel::<Job>();
+        #[cfg(test)]
+        let test_file = crate::settings_file::share();
         let spawned = std::thread::Builder::new()
             .name("credential-store".into())
             .spawn(move || {
+                #[cfg(test)]
+                crate::settings_file::adopt(test_file);
                 while let Ok(job) = jobs.recv() {
                     job();
                 }
