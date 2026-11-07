@@ -6665,6 +6665,19 @@ fn pane_text_size(saved: u16, standard: Option<f32>) -> Option<Pixels> {
     }
 }
 
+/// The text size of the channel log: the channel's own over the saved one.
+fn channel_log_text_size(
+    look: &channel_look::ResolvedLook,
+    appearance: &Appearance,
+) -> Option<Pixels> {
+    let saved = if look.font_size != 0 {
+        look.font_size
+    } else {
+        appearance.channel_log_font_size
+    };
+    pane_text_size(saved, None)
+}
+
 fn default_time_font() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -7833,17 +7846,9 @@ impl ChatWindow {
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
-            .when_some(
-                pane_text_size(
-                    if look.font_size != 0 {
-                        look.font_size
-                    } else {
-                        appearance.channel_log_font_size
-                    },
-                    None,
-                ),
-                |d, size| d.text_size(size),
-            )
+            .when_some(channel_log_text_size(&look, appearance), |d, size| {
+                d.text_size(size)
+            })
             .when_some(look.text, |d, color| d.text_color(color))
             .children(wallpaper)
             .child(self.input_to_draft(&self.log_focus, cx))
@@ -9238,10 +9243,10 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let look = self.channel_log_look(theme);
         let mut style = LogStyle::new(&self.appearance, look.theme);
-        // The time column grows with the channel's own size as it does with
-        // the time size.
+        // The time column grows with the log's text size as it does with the
+        // time size.
         if style.time_size.is_none() {
-            style.time_size = pane_text_size(look.font_size, None);
+            style.time_size = channel_log_text_size(&look, &self.appearance);
         }
         match self.channel_log_layout().row(row) {
             ChannelLogRow::Status => {
