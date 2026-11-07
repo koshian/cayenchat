@@ -20,12 +20,16 @@ fn saved_size_wins_and_is_clamped() {
 
 #[test]
 fn unset_line_height_is_the_default_one() {
-    assert_eq!(pane_line_height(0), None);
+    assert_eq!(
+        pane_line_height(cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT),
+        None
+    );
 }
 
 #[test]
 fn saved_line_height_is_a_ratio_and_is_clamped() {
     assert_eq!(pane_line_height(150), Some(1.5));
     assert_eq!(pane_line_height(50), Some(1.0));
+    assert_eq!(pane_line_height(0), Some(1.0));
     assert_eq!(pane_line_height(999), Some(2.0));
 }
