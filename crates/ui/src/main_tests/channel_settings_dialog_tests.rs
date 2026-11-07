@@ -513,7 +513,10 @@ fn quitting_the_application_saves_an_edit_still_waiting(cx: &mut TestAppContext)
     let (chat, app, cx, file) = new_chat(cx, "#a");
     let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
     view.update(wcx, |view, cx| view.set_opacity(51, cx));
-    assert!(view.update(wcx, |view, cx| view.flush_to_file(cx)));
+    // The quit is never held back by the window, and the shutdown that the
+    // platform runs after it (no window is being updated then) writes.
+    chat.update_in(cx, |chat, window, cx| chat.request_quit(window, cx));
+    app.update(|cx| cx.shutdown());
     let on_file = crate::settings_file::load().unwrap().unwrap();
     assert_eq!(
         on_file.appearance.channel_looks[0].background_opacity,

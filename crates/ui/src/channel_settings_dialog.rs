@@ -422,6 +422,9 @@ pub(crate) struct ChannelSettingsView {
     mapping: CaseMapping,
     /// The server's name as shown under the title.
     server: String,
+    /// Whether the server allows only UTF-8, read when the window opened so
+    /// that quitting needs no other window.
+    utf8_only: bool,
     pub(crate) choices: Choices,
     /// The encoding list that is open, with the option the keyboard is on
     /// (0 is "follow the server").
@@ -457,6 +460,7 @@ impl ChannelSettingsView {
         channel: &str,
         mapping: CaseMapping,
         server: String,
+        utf8_only: bool,
         choices: Choices,
         look: Option<&ChannelLook>,
         i18n: Localizer,
@@ -465,13 +469,17 @@ impl ChannelSettingsView {
     ) -> Self {
         let opened_look = look.cloned().unwrap_or_default();
         let look = LookFields::new(look, &i18n, cx);
-        let subscriptions = look
+        let mut subscriptions: Vec<Subscription> = look
             .fields()
             .into_iter()
             .map(|field| cx.observe(field, |this, _, cx| this.edited(cx)))
             .collect();
         let saved = look.read(&i18n, cx).ok().map(|look| (choices, look));
         let base = saved.clone().unwrap_or((choices, opened_look));
+        subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.write_on_quit(cx);
+            async {}
+        }));
         // Leaving saves an edit still waiting out its pause. This runs inside
         // the platform's close event, which holds the app: the windows are
         // updated only after it returns.
@@ -508,6 +516,7 @@ impl ChannelSettingsView {
             channel: channel.to_owned(),
             mapping,
             server,
+            utf8_only,
             choices,
             open_list: None,
             highlight: 0,
@@ -618,48 +627,26 @@ impl ChannelSettingsView {
         }))
     }
 
-    /// Writes an edit still waiting, to the settings file alone: the way out
-    /// of the application, where no window may be updated (the chat window
-    /// can be in the middle of the quit). Returns whether nothing is left
-    /// unsaved.
-    pub(crate) fn flush_to_file(&mut self, cx: &mut Context<Self>) -> bool {
+    /// The application is quitting: writes an edit still waiting out its
+    /// pause, to the settings file alone. No window is read or updated (the
+    /// chat window can be in the middle of the quit), and the quit is never
+    /// held back: an edit that cannot be written (at most the last pause's
+    /// worth) is lost. A window without an edit, or holding a value that
+    /// cannot be used, writes nothing.
+    fn write_on_quit(&mut self, cx: &App) {
         self.autosave = None;
-        let job = match self.job(cx) {
-            Ok(None) => return true,
-            Ok(Some(job)) => job,
-            Err(error) => {
-                self.error = Some(error);
-                cx.notify();
-                return false;
-            }
+        let Ok(Some(job)) = self.job(cx) else {
+            return;
         };
-        let current = (job.choices, job.look.clone());
-        let utf8_only = self
-            .owner
-            .read_with(cx, |chat, _| {
-                chat.channel_settings_context(&job.profile_id).1
-            })
-            .unwrap_or(false);
-        let written = match settings_file::load() {
-            Ok(Some(mut settings)) if settings.profile(&job.profile_id).is_some() => {
-                merge_into_settings(&mut settings, &job, utf8_only, &self.i18n)
-                    .and_then(|()| settings_file::save(&settings))
-            }
-            Ok(_) => Err(self
-                .i18n
-                .format("settings_open_failed", &[("error", "settings file")])),
-            Err(error) => Err(error),
+        let Ok(Some(mut settings)) = settings_file::load() else {
+            return;
         };
-        match written {
-            Ok(()) => {
-                self.base = current.clone();
-                self.saved = Some(current);
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error),
+        if settings.profile(&job.profile_id).is_none() {
+            return;
         }
-        cx.notify();
-        self.error.is_none()
+        if merge_into_settings(&mut settings, &job, self.utf8_only, &self.i18n).is_ok() {
+            let _ = settings_file::save(&settings);
+        }
     }
 
     /// Opens the file chooser for the wallpaper.
@@ -1293,6 +1280,7 @@ impl ChatWindow {
         settings_theme::refresh(cx);
         let owner = window.window_handle().downcast::<ChatWindow>().unwrap();
         let (profile_owned, channel_owned) = (profile_id.to_owned(), channel.to_owned());
+        let utf8_only = self.channel_settings_context(profile_id).1;
         let i18n = self.i18n.clone();
         let min_size = size(px(420.), px(360.));
         let wanted = crate::about::frame_size(size(px(520.), px(680.)));
@@ -1322,6 +1310,7 @@ impl ChatWindow {
                         &channel_owned,
                         mapping,
                         server,
+                        utf8_only,
                         choices,
                         look.as_ref(),
                         i18n,

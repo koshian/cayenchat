@@ -10179,28 +10179,6 @@ fn request_quit_anywhere(cx: &mut App) {
 /// be asked (never treated as saved). On failure the settings window is
 /// brought to the front with the form and the error intact.
 fn settings_block_quit(cx: &mut App) -> bool {
-    // Channel settings windows hold an edit for a moment before it is saved;
-    // it goes to the file only, as the chat window may be mid-update.
-    let mut blocked = false;
-    for channel in cx
-        .windows()
-        .into_iter()
-        .filter_map(|w| w.downcast::<channel_settings_dialog::ChannelSettingsView>())
-    {
-        let saved = channel
-            .update(cx, |view, window, cx| {
-                let saved = view.flush_to_file(cx);
-                if !saved {
-                    window.activate_window();
-                }
-                saved
-            })
-            .unwrap_or(false);
-        blocked |= !saved;
-    }
-    if blocked {
-        return true;
-    }
     let Some(settings) = cx
         .windows()
         .into_iter()

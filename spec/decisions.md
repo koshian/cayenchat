@@ -3766,7 +3766,12 @@ the start of the session.
   file's current values, so a `/charset` made meanwhile is not rewound; the
   window itself keeps showing what it opened with for the fields it did not
   edit. A value that cannot be saved is
-  reported in the window and the last saved state stays; Reset returns the
+  reported in the window and the last saved state stays. When the
+  application quits (`cx.on_app_quit` of the window), an edit still waiting
+  is written to the settings file alone, and only when it is valid: no
+  window is read or updated, the quit is never held back, and a window
+  without an edit writes nothing. An edit the write cannot take (at most the
+  last 250 ms of editing) is lost, which is accepted. Reset returns the
   encodings, character references, look and sliders to the defaults but
   keeps the auto-join choice. Escape closes an open list, then the window.
   The settings window no longer hosts the dialog.
