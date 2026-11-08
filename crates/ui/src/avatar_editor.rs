@@ -235,7 +235,7 @@ mod tests {
 #[cfg(test)]
 mod window_tests {
     use cayenchat_model::attachment::AttachmentSource;
-    use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
+    use gpui::{Modifiers, MouseButton, TestAppContext, point, px, size};
 
     use crate::ChatWindow;
 
@@ -257,6 +257,9 @@ mod window_tests {
             form
         });
 
+        // The form's height depends on the platform's fonts; leave room so
+        // the picture is never pushed below the window.
+        cx.simulate_resize(size(px(1920.0), px(6000.0)));
         let mut png = Vec::new();
         image::RgbImage::from_pixel(400, 200, image::Rgb([30, 120, 200]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -287,6 +290,12 @@ mod window_tests {
         // fixed display scale.
         let picture = cx.debug_bounds("image-crop-picture").expect("drawn");
         let scale = f32::from(picture.size.width) / 400.0;
+        // A press outside the window or its clipped area reaches nothing.
+        let window = cx.update(|window, _| window.viewport_size());
+        assert!(
+            picture.bottom() < window.height && picture.right() < window.width,
+            "{picture:?} is not inside {window:?}"
+        );
         let at = |x: f32, y: f32| {
             point(
                 picture.origin.x + px(x * scale),
