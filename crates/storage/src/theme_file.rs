@@ -184,7 +184,7 @@ pub struct ThemeFont {
     pub size: u16,
 }
 
-/// The fonts, which the light and dark appearance share.
+/// The fonts of one side, light or dark, whichever the theme is for.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeFonts {
@@ -338,7 +338,7 @@ impl ThemeFile {
             mode: ThemeKind::from_dark(dark),
             colors: color_map(&defaults.theme_colors(dark)),
             url_tooltip_opacity: Some(defaults.url_tooltip_opacity),
-            fonts: Some(defaults.theme_fonts()),
+            fonts: Some(defaults.theme_fonts(dark)),
             wallpapers: ThemeWallpapers::default(),
         }
     }
@@ -381,7 +381,7 @@ impl ThemeFile {
             mode: ThemeKind::from_dark(dark),
             colors: valid_colors(color_map(&appearance.theme_colors(dark))),
             url_tooltip_opacity: Some(appearance.url_tooltip_opacity),
-            fonts: Some(appearance.theme_fonts()),
+            fonts: Some(appearance.theme_fonts(dark)),
             wallpapers,
         })
     }
@@ -515,7 +515,7 @@ impl ThemeFile {
             appearance.url_tooltip_opacity = opacity;
         }
         if let Some(fonts) = &self.fonts {
-            appearance.set_theme_fonts(fonts);
+            appearance.set_theme_fonts(dark, fonts);
         }
         *appearance.wallpapers_mut(dark) = wallpapers;
         let builtin = self.name == builtin_name(dark) && self.is_builtin_values(dark);
@@ -749,34 +749,70 @@ impl Appearance {
         }
     }
 
-    pub fn theme_fonts(&self) -> ThemeFonts {
+    /// The fonts of the light or dark side, as a theme carries them.
+    pub fn theme_fonts(&self, dark: bool) -> ThemeFonts {
+        let set = self.fonts(dark);
         let font = |family: &String, size: u16| ThemeFont {
             family: family.clone(),
             size,
         };
         ThemeFonts {
-            channel_log: font(&self.channel_log_font, self.channel_log_font_size),
-            combined_log: font(&self.combined_log_font, self.combined_log_font_size),
-            member_list: font(&self.member_list_font, self.member_list_font_size),
-            channel_tree: font(&self.channel_tree_font, self.channel_tree_font_size),
-            input: font(&self.input_font, self.input_font_size),
-            time: font(&self.time_font, self.time_font_size),
+            channel_log: font(&set.channel_log_font, set.channel_log_font_size),
+            combined_log: font(&set.combined_log_font, set.combined_log_font_size),
+            member_list: font(&set.member_list_font, set.member_list_font_size),
+            channel_tree: font(&set.channel_tree_font, set.channel_tree_font_size),
+            input: font(&set.input_font, set.input_font_size),
+            time: font(&set.time_font, set.time_font_size),
         }
     }
 
-    pub fn set_theme_fonts(&mut self, fonts: &ThemeFonts) {
-        self.channel_log_font = fonts.channel_log.family.clone();
-        self.channel_log_font_size = fonts.channel_log.size;
-        self.combined_log_font = fonts.combined_log.family.clone();
-        self.combined_log_font_size = fonts.combined_log.size;
-        self.member_list_font = fonts.member_list.family.clone();
-        self.member_list_font_size = fonts.member_list.size;
-        self.channel_tree_font = fonts.channel_tree.family.clone();
-        self.channel_tree_font_size = fonts.channel_tree.size;
-        self.input_font = fonts.input.family.clone();
-        self.input_font_size = fonts.input.size;
-        self.time_font = fonts.time.family.clone();
-        self.time_font_size = fonts.time.size;
+    /// Sets the fonts of the light or dark side. While the fonts are shared
+    /// and `fonts` differ from them, the appearance moves to separate fonts
+    /// first, so the other side keeps its own.
+    pub fn set_theme_fonts(&mut self, dark: bool, fonts: &ThemeFonts) {
+        let mut set = self.fonts(dark).clone();
+        set.channel_log_font = fonts.channel_log.family.clone();
+        set.channel_log_font_size = fonts.channel_log.size;
+        set.combined_log_font = fonts.combined_log.family.clone();
+        set.combined_log_font_size = fonts.combined_log.size;
+        set.member_list_font = fonts.member_list.family.clone();
+        set.member_list_font_size = fonts.member_list.size;
+        set.channel_tree_font = fonts.channel_tree.family.clone();
+        set.channel_tree_font_size = fonts.channel_tree.size;
+        set.input_font = fonts.input.family.clone();
+        set.input_font_size = fonts.input.size;
+        set.time_font = fonts.time.family.clone();
+        set.time_font_size = fonts.time.size;
+        set.clamp_sizes();
+        if set == *self.fonts(dark) {
+            return;
+        }
+        self.set_split_fonts(true);
+        *self.fonts_mut(dark) = set;
+    }
+
+    /// Takes over what applying a theme sets for the light or dark side from
+    /// `applied`, an appearance the theme was applied to: the colors, the
+    /// popup opacity, the fonts, the wallpapers and the origin. Nothing of the
+    /// other side or of the rest of the settings is touched, so an edit made
+    /// since `applied` was taken stays.
+    pub fn take_theme_side(&mut self, dark: bool, applied: &Appearance) {
+        self.set_theme_colors(dark, applied.theme_colors(dark));
+        self.url_tooltip_opacity = applied.url_tooltip_opacity;
+        if applied.split_fonts || self.split_fonts {
+            if applied.split_fonts {
+                self.set_split_fonts(true);
+            }
+            *self.fonts_mut(dark) = applied.fonts(dark).clone();
+        } else {
+            self.fonts = applied.fonts.clone();
+        }
+        *self.wallpapers_mut(dark) = applied.wallpapers(dark).clone();
+        let mut origin = applied.origin(dark).clone();
+        if origin.name.is_some() {
+            origin.fingerprint = Some(self.fingerprint(dark));
+        }
+        *self.origin_mut(dark) = origin;
     }
 
     pub fn wallpapers(&self, dark: bool) -> &RegionWallpapers {
@@ -849,7 +885,7 @@ impl Appearance {
         let document = serde_json::json!({
             "colors": colors,
             "url_tooltip_opacity": self.url_tooltip_opacity,
-            "fonts": self.theme_fonts(),
+            "fonts": self.theme_fonts(dark),
             "wallpapers": wallpapers,
         });
         let digest = Sha256::digest(document.to_string().as_bytes());

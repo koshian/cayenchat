@@ -4,7 +4,7 @@ use std::io::Write;
 use flate2::{Compression, write::GzEncoder};
 
 use super::*;
-use crate::ChannelLook;
+use crate::{ChannelLook, FontSet};
 
 /// Stands in for the media crate: "images" start with `IMG`.
 fn check(bytes: &[u8]) -> Result<&'static str, String> {
@@ -25,8 +25,8 @@ fn sample() -> Appearance {
     let mut appearance = Appearance::default();
     appearance.dark.channel_log_background = "#102030".into();
     appearance.dark.member_list_background = "#0A0B0C".into();
-    appearance.channel_log_font = "Noto Serif".into();
-    appearance.channel_log_font_size = 18;
+    appearance.fonts.channel_log_font = "Noto Serif".into();
+    appearance.fonts.channel_log_font_size = 18;
     appearance.dark.wallpapers.channel_tree = RegionWallpaper {
         path: Some("/home/me/secret-name/tree.png".into()),
         opacity: Some(55),
@@ -61,8 +61,12 @@ fn export_import_apply_round_trips_the_dark_side() {
     imported.apply(&mut target, dir.path(), &check).unwrap();
     assert_eq!(target.dark.channel_log_background, "#102030");
     assert_eq!(target.dark.member_list_background, "#0A0B0C");
-    assert_eq!(target.channel_log_font, "Noto Serif");
-    assert_eq!(target.channel_log_font_size, 18);
+    // The theme's fonts went to the dark side only: the shared fonts moved
+    // to separate ones, and the light side keeps the old fonts.
+    assert!(target.split_fonts);
+    assert_eq!(target.fonts(true).channel_log_font, "Noto Serif");
+    assert_eq!(target.fonts(true).channel_log_font_size, 18);
+    assert_eq!(*target.fonts(false), FontSet::default());
     // The light side is untouched.
     assert_eq!(
         target.theme_colors(false),
@@ -74,11 +78,11 @@ fn export_import_apply_round_trips_the_dark_side() {
     assert!(path.starts_with(dir.path().to_str().unwrap()));
     assert_eq!(std::fs::read(&path).unwrap(), b"IMG-tree-bytes");
     assert_eq!(target.theme_status(true), ("My Dark".into(), false));
-    // The light half keeps its theme; the fonts are shared by both halves,
-    // so the dark theme's fonts count as an edit of the light one.
+    // The light half keeps its theme and is not modified by the dark one's
+    // fonts.
     assert_eq!(
         target.theme_status(false),
-        (DEFAULT_LIGHT_NAME.into(), true)
+        (DEFAULT_LIGHT_NAME.into(), false)
     );
 }
 
@@ -125,9 +129,9 @@ fn editing_after_applying_marks_the_theme_modified_and_undoing_clears_it() {
     appearance.dark.channel_log_background = applied.to_lowercase();
     assert_eq!(appearance.theme_status(true), ("Mine".into(), false));
     // Fonts and wallpapers count.
-    appearance.input_font = "Mono".into();
+    appearance.fonts_mut(true).input_font = "Mono".into();
     assert!(appearance.theme_status(true).1);
-    appearance.input_font.clear();
+    appearance.fonts_mut(true).input_font.clear();
     appearance.dark.wallpapers.channel_tree.path = None;
     assert!(appearance.theme_status(true).1);
 }
@@ -455,4 +459,26 @@ fn library_names_are_cleaned_and_empty_ones_dropped() {
     assert_eq!(list.len(), 1);
     assert!(!list[0].name.contains('\u{202E}'));
     assert!(list[0].name.chars().count() <= MAX_THEME_NAME_CHARS);
+}
+
+#[test]
+fn taking_a_theme_side_keeps_edits_made_to_the_other_side_meanwhile() {
+    let dir = tempfile::tempdir().unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Dark", read).unwrap();
+    // The theme is applied to a copy taken before the form changed.
+    let mut applied = Appearance::default();
+    theme.apply(&mut applied, dir.path(), &check).unwrap();
+    // Meanwhile the light side was edited on the live appearance.
+    let mut live = Appearance {
+        channel_log_background: "#ABCDEF".into(),
+        ..Appearance::default()
+    };
+    live.take_theme_side(true, &applied);
+    assert_eq!(live.channel_log_background, "#ABCDEF");
+    assert_eq!(live.dark.channel_log_background, "#102030");
+    assert_eq!(live.fonts(true).channel_log_font, "Noto Serif");
+    assert_eq!(live.fonts(false).channel_log_font, "");
+    // The dark side reads as unmodified from its theme.
+    assert_eq!(live.theme_status(true), ("Dark".into(), false));
+    assert!(live.theme_status(false).1);
 }

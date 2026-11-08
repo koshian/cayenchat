@@ -218,7 +218,6 @@ impl SettingsWindow {
         }
         self.themes.busy = true;
         let mut appearance = self.shown_appearance(cx);
-        let saved = self.saved.appearance.clone();
         let directories = (
             crate::settings_file::library_directory(),
             crate::settings_file::wallpaper_directory(),
@@ -227,16 +226,26 @@ impl SettingsWindow {
             let (library, wallpapers) = (directories.0?, directories.1?);
             let theme = theme_file::library_load(&library, &id, &check_image)?;
             theme.apply(&mut appearance, &wallpapers, &check_image)?;
-            // What neither the saved settings nor the new ones use is gone.
-            theme_file::prune_wallpapers(&wallpapers, &[&appearance, &saved]);
-            Ok::<_, String>((theme, appearance))
+            Ok::<_, String>((theme, appearance, wallpapers))
         });
         cx.spawn(async move |this, cx| {
             let result = applying.await;
             let _ = this.update(cx, |this, cx| {
                 this.themes.busy = false;
                 match result {
-                    Ok((theme, appearance)) => {
+                    Ok((theme, applied, wallpapers)) => {
+                        // Only the side of the theme is taken from the result:
+                        // the form may have been edited while it was read.
+                        let mut appearance = this.shown_appearance(cx);
+                        appearance.take_theme_side(theme.mode.is_dark(), &applied);
+                        // What neither the saved settings nor the shown ones
+                        // use is gone.
+                        let saved = this.saved.appearance.clone();
+                        let kept = appearance.clone();
+                        cx.background_spawn(async move {
+                            theme_file::prune_wallpapers(&wallpapers, &[&kept, &saved]);
+                        })
+                        .detach();
                         this.adopt_appearance(appearance, cx);
                         let message = this.i18n.format(
                             "theme_applied",

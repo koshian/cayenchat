@@ -255,22 +255,10 @@ impl SettingsWindow {
                 &form.dark_url_tooltip_text_color,
                 &dark.url_tooltip_text_color,
             ),
-            (&form.channel_log_font, &appearance.channel_log_font),
-            (&form.combined_log_font, &appearance.combined_log_font),
-            (&form.member_list_font, &appearance.member_list_font),
-            (&form.channel_tree_font, &appearance.channel_tree_font),
-            (&form.input_font, &appearance.input_font),
-            (&form.time_font, &appearance.time_font),
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
-        for (field, text) in form
-            .font_sizes
-            .iter()
-            .zip(crate::settings_window::font_size_texts(appearance))
-        {
-            field.update(cx, |field, cx| field.set_text(&text, cx));
-        }
+        form.show_fonts(appearance.fonts(form.font_side_dark), cx);
         form.url_tooltip_opacity.update(cx, |field, cx| {
             field.set_text(&appearance.url_tooltip_opacity.to_string(), cx)
         });

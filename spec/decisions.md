@@ -3844,16 +3844,38 @@ the start of the session.
   values differ from them; "use default" applies the built-in theme and
   clears the origin. Settings written before this read as the built-in name,
   modified when their colors differ.
-- **Fonts are shared** by light and dark in `Appearance`, so a theme's fonts
-  replace both halves' fonts and count in both halves' fingerprints: applying
-  a dark theme that sets fonts shows the light one as modified. Accepted;
-  per-theme fonts would change the settings model.
+- **Fonts: shared, or separate per theme.** `Appearance.fonts` (a `FontSet`:
+  name and size of the six areas, flattened so the saved keys are the old
+  ones) is used by both themes by default. The option `split_fonts` makes the
+  light and the dark theme use `light_fonts` / `dark_fonts` instead
+  (`Appearance::fonts(dark)`). The first time it is switched on both start as
+  a copy of the shared fonts; switching it off keeps both for the next time
+  and the shared ones are used again. A theme carries the fonts of its own
+  side only. Applying one while the fonts are shared moves to separate fonts
+  only if they differ from the shared ones, and never changes the other
+  side's, so the other side's "modified" mark stays as it was.
+  `url_tooltip_opacity` is still one value for both sides (a theme sets it for
+  both). The settings form shows one side's fonts at a time while they are
+  separate (a light / dark switch above the rows).
+- **Font sizes are real px values**, not 0 for standard: log, combined log,
+  input and time 13, channel tree and member list 12 (`FontSet::default`).
+  A saved 0 or a missing key reads as the area's standard size, other values
+  are clamped to 8–40, and "restore defaults" writes the numbers. The fields
+  show the number and have a − / + button (1 px; dimmed at 8 and 40) beside
+  them. A channel's own size keeps 0 for "follow the pane" (D084). Since the
+  time size is always set now, it no longer follows a larger channel log size.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
   `dark.wallpapers` for dark): a file path and a background opacity per area
   (percent of the area's background color laid over the picture; 100 hides
   it, as in D088) — channel log, combined log, member list, channel tree.
   They reuse `media::wallpaper` and the drawing of D088 (default blur and fit;
   one result per area, keyed by file and blur) with one slot per area. The
+  area's background over the picture has one effective opacity, as in D088 and
+  #930: the pane's own opacity times the wallpaper's (`region_wallpaper`,
+  `channel_look::resolve`). The channel log paints as D088 does for a
+  translucent pane; the other three areas always use the backdrop layer (the
+  picture, and over it the background at the effective opacity) and the
+  combined log's pane is opaque under it. The
   alternate rows of the channel log show the picture again under their own
   color (D088); those of the combined log are half transparent. The member
   list and tree draw the picture and their background over it on the pane;
@@ -3861,7 +3883,10 @@ the start of the session.
 - **Per-channel looks (D084) override the channel log's standard.**
   `ChannelLook::no_wallpaper` joins the path: *inherit* (neither), *none*
   (`no_wallpaper`), *own* (a path); the two never coexist. A channel's background
-  opacity applies to whichever picture shows. Files from before read as inheriting,
+  opacity applies to whichever picture shows; it is the channel's own once the
+  slider has been moved, also at 80 % (`ChannelLook::background_opacity` is
+  stored as `Some(80)`), and only an untouched one follows the standard
+  wallpaper's. Files from before read as inheriting,
   which is the former display while no standard wallpaper is set. Theme
   changes never touch `channel_looks`.
 - **File.** A `.cayentheme` is one JSON document, gzip-compressed on export
@@ -3889,8 +3914,14 @@ the start of the session.
   first (the origin's name is the default) and a file name and place from the
   OS save dialog; it changes no setting, origin or modified state, and fails
   rather than leave out a wallpaper that cannot be read or is too large.
-- **Not done.** Per-theme fonts, sharing other than through files, and
-  behavior switches such as alternate rows in themes.
+- **Applying is asynchronous.** The images are read and written off the UI
+  thread from a copy of the form, and only the theme's side of the result
+  (`Appearance::take_theme_side`: colors, popup opacity, fonts, wallpapers,
+  origin) is put into the form when it finishes, so an edit made meanwhile,
+  especially of the other side, is not undone. Unused images are removed after
+  that, judged against the form as it is then.
+- **Not done.** Sharing other than through files, and behavior switches such
+  as alternate rows in themes.
 
 ## D087 — The credential store is used only on its own thread (#640)
 
