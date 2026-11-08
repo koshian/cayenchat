@@ -23,8 +23,9 @@ pub(crate) struct ResolvedLook {
     /// A font size in px of the channel's own, to be clamped by the caller.
     pub(crate) font_size: u16,
     pub(crate) wallpaper: Option<WallpaperRequest>,
-    /// The pane background with the channel's opacity as its alpha, drawn
-    /// over the wallpaper by [`backdrop`]. Opaque without a wallpaper.
+    /// The pane background with the one effective opacity as its alpha (the
+    /// pane's times the wallpaper's), drawn over the wallpaper by [`backdrop`]
+    /// or by each row. The pane's own opacity is `theme.panes.channel_log.a`.
     pub(crate) background: Rgba,
 }
 
@@ -68,8 +69,9 @@ pub(crate) fn region_wallpaper(
         blur: DEFAULT_WALLPAPER_BLUR,
         fit: WallpaperFit::default(),
     };
+    // The pane's own opacity (#930) times the wallpaper's (#950).
     let background = Rgba {
-        a: f32::from(standard.opacity_percent()) / 100.,
+        a: background.a * f32::from(standard.opacity_percent()) / 100.,
         ..background
     };
     (Some(request), background)
@@ -86,11 +88,19 @@ pub(crate) fn resolve(
 ) -> ResolvedLook {
     let color = |value: &Option<String>| value.as_deref().and_then(color_value).map(rgb);
     if let Some(look) = look {
+        // A channel's color keeps the opacity of the log pane (#930), so the
+        // pane stays see-through with its own color.
         if let Some(background) = color(&look.background) {
-            theme.panes.channel_log = background;
+            theme.panes.channel_log = Rgba {
+                a: theme.panes.channel_log.a,
+                ..background
+            };
         }
         if let Some(alternate) = color(&look.alternate) {
-            theme.panes.channel_alternate = alternate;
+            theme.panes.channel_alternate = Rgba {
+                a: theme.panes.channel_alternate.a,
+                ..alternate
+            };
         }
     }
     let (wallpaper, background) = match look {
@@ -102,7 +112,7 @@ pub(crate) fn resolve(
                 fit: look.wallpaper_fit.unwrap_or_default(),
             });
             let background = Rgba {
-                a: f32::from(background_opacity_of(look)) / 100.,
+                a: theme.panes.channel_log.a * f32::from(background_opacity_of(look)) / 100.,
                 ..theme.panes.channel_log
             };
             (request, background)
@@ -113,7 +123,7 @@ pub(crate) fn resolve(
             let (mut request, mut background) = region_wallpaper(standard, theme.panes.channel_log);
             if let (Some(look), Some(request)) = (look, request.as_mut()) {
                 if let Some(opacity) = look.background_opacity {
-                    background.a = f32::from(opacity.min(100)) / 100.;
+                    background.a = theme.panes.channel_log.a * f32::from(opacity.min(100)) / 100.;
                 }
                 if look.wallpaper_blur.is_some() {
                     request.blur = blur_of(look);
@@ -132,9 +142,11 @@ pub(crate) fn resolve(
     }
 }
 
-/// Lets the picture show through the alternate rows of the combined log.
+/// Lets the picture show through the alternate rows of the combined log. The
+/// pane is opaque under the picture's backdrop, which carries its opacity.
 pub(crate) fn translucent_combined(theme: &mut Theme, standard: &RegionWallpaper) {
     if standard.path.is_some() {
+        theme.panes.combined_log.a = 1.;
         theme.panes.combined_alternate.a = 0.5;
     }
 }
@@ -180,10 +192,11 @@ pub(crate) fn backdrop(picture: Option<Div>, background: Rgba) -> Div {
         .child(div().absolute().top_0().left_0().size_full().bg(background))
 }
 
-/// The picture as an alternate row needs it. A row replaces the background
-/// (it is not laid over it, which would add the opacity twice): it paints the
-/// picture again over its own area, where it lay under the background, and
-/// its color over that.
+/// The picture as a row needs it on a translucent pane, which has no backdrop
+/// layer (it would add its opacity under the rows): each row, and the filler
+/// below a short log, paints the picture over its own area and its color over
+/// that, so the color's opacity is applied once, also where the picture does
+/// not reach.
 #[derive(Clone)]
 pub(crate) struct Slice {
     image: Arc<RenderImage>,
@@ -193,9 +206,9 @@ pub(crate) struct Slice {
     alpha: f32,
 }
 
-/// `row` with the alternate `color` as its background. With a `slice` it
-/// replaces the pane background, by the same opacity; without one (no
-/// wallpaper, or not loaded) the color is opaque.
+/// `row` with `color` as its background. With a `slice` it paints the picture
+/// and the color over it at the pane's opacity; without one (no wallpaper, or
+/// not loaded) the color is as `color` is.
 pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div {
     let Some(slice) = slice else {
         return row.bg(color);
@@ -217,9 +230,35 @@ pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div
         a: slice.alpha,
         ..color
     };
-    row.relative()
-        .child(picture)
+    row.child(picture)
         .child(div().absolute().top_0().left_0().size_full().bg(color))
+}
+
+/// The four strips of the padding around a translucent log's rows
+/// (`FRAME_X` left and right, `FRAME_Y` above and below). Each paints like a
+/// row does (`alternate_row`), so the frame shows the picture and the color
+/// at the same opacity as the rows. The side strips stop short of the top and
+/// bottom ones, so no pixel is painted twice.
+pub(crate) const FRAME_X: f32 = 8.;
+pub(crate) const FRAME_Y: f32 = 4.;
+
+pub(crate) fn frame(color: Rgba, slice: Option<&Slice>) -> [Div; 4] {
+    let strip = || div().absolute();
+    [
+        strip().top_0().left_0().right_0().h(px(FRAME_Y)),
+        strip().bottom_0().left_0().right_0().h(px(FRAME_Y)),
+        strip()
+            .top(px(FRAME_Y))
+            .bottom(px(FRAME_Y))
+            .left_0()
+            .w(px(FRAME_X)),
+        strip()
+            .top(px(FRAME_Y))
+            .bottom(px(FRAME_Y))
+            .right_0()
+            .w(px(FRAME_X)),
+    ]
+    .map(|strip| alternate_row(strip, color, slice))
 }
 
 enum State {
@@ -263,11 +302,12 @@ impl Wallpapers {
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
         background: Rgba,
+        translucent: bool,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
         self.get_mut(region)
-            .element(region, wanted, background, window, cx)
+            .element(region, wanted, background, translucent, window, cx)
     }
 }
 
@@ -281,14 +321,14 @@ pub(crate) struct Wallpaper {
 }
 
 impl Wallpaper {
-    /// The picture for alternate rows, with the row color's `alpha`, when it
-    /// is shown.
-    pub(crate) fn slice(&self, alpha: f32) -> Option<Slice> {
+    /// The picture for alternate rows, with the opacity of the pane
+    /// `background` as the row color's alpha, when it is shown.
+    pub(crate) fn slice(&self, background: Rgba) -> Option<Slice> {
         match self.slot.as_ref() {
             Some((_, State::Ready(image))) => Some(Slice {
                 image: image.clone(),
                 placed: self.placed.clone(),
-                alpha,
+                alpha: background.a,
             }),
             _ => None,
         }
@@ -302,6 +342,7 @@ impl Wallpaper {
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
         background: Rgba,
+        translucent: bool,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
@@ -350,8 +391,11 @@ impl Wallpaper {
             .detach();
         }
         match self.slot.as_ref() {
-            // The picture is the backmost layer, the pane background (with
-            // its opacity) lies over it, and the rows over both.
+            // On an opaque pane the picture is the backmost layer, the pane
+            // background lies over it, and the rows over both. On a
+            // translucent one there is no such layer: it would put its
+            // opacity under every row's. This only places the picture;
+            // rows and filler paint it (`Slice`).
             Some((_, State::Ready(image))) => {
                 let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
                 let picture = div().absolute().top_0().left_0().size_full().child(
@@ -361,12 +405,19 @@ impl Wallpaper {
                             let size = image.size(0);
                             let placed = fit_bounds(fit, bounds, size);
                             shared.set(placed);
-                            let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+                            if !translucent {
+                                let _ =
+                                    window.paint_image(placed, Corners::default(), image, 0, false);
+                            }
                         },
                     )
                     .size_full(),
                 );
-                Some(backdrop(Some(picture), background))
+                Some(if translucent {
+                    picture
+                } else {
+                    backdrop(Some(picture), background)
+                })
             }
             _ => None,
         }
@@ -425,6 +476,63 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_color_keeps_the_pane_opacity() {
+        let appearance = Appearance {
+            channel_log_opacity: 40,
+            ..Appearance::default()
+        };
+        let base = Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance);
+        let look = ChannelLook {
+            background: Some("#22aa44".into()),
+            alternate: Some("#aa2244".into()),
+            ..ChannelLook::default()
+        };
+        let resolved = resolve(Some(&look), &none(), base);
+        assert_eq!(resolved.theme.panes.channel_log.a, 0.4);
+        assert_eq!(resolved.theme.panes.channel_alternate.a, 0.4);
+        assert_eq!(resolved.theme.panes.channel_log.g, rgb(0x22aa44).g);
+        // Without a wallpaper the background is the pane color itself.
+        assert_eq!(resolved.background.a, 0.4);
+    }
+
+    #[test]
+    fn a_wallpaper_and_a_pane_opacity_resolve_to_one_opacity() {
+        let look = ChannelLook {
+            wallpaper: Some("/pic.png".into()),
+            background_opacity: Some(80),
+            ..ChannelLook::default()
+        };
+        for (pane, want) in [(100, 0.8), (50, 0.4)] {
+            let appearance = Appearance {
+                channel_log_opacity: pane,
+                ..Appearance::default()
+            };
+            let base = Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance);
+            let resolved = resolve(Some(&look), &none(), base);
+            let alpha = resolved.background.a;
+            assert!((alpha - want).abs() < 1e-6, "{pane} % gave {alpha}");
+            // The pane's own opacity stays what decides its base.
+            let own = f32::from(pane) / 100.;
+            assert!((resolved.theme.panes.channel_log.a - own).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn an_own_default_opacity_beats_a_weaker_standard_one() {
+        let base = theme(false);
+        let standard = standard(Some("/std.png"), Some(30));
+        let inherited = resolve(None, &standard, base);
+        assert!((inherited.background.a - 0.3).abs() < 1e-6);
+        let own = ChannelLook {
+            background_opacity: Some(DEFAULT_BACKGROUND_OPACITY),
+            ..ChannelLook::default()
+        };
+        let resolved = resolve(Some(&own), &standard, base);
+        let want = f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.;
+        assert!((resolved.background.a - want).abs() < 1e-6);
+    }
+
+    #[test]
     fn the_channel_look_wins_in_both_themes() {
         for dark in [false, true] {
             let base = theme(dark);
@@ -438,9 +546,14 @@ mod tests {
                 ..ChannelLook::default()
             };
             let resolved = resolve(Some(&look), &none(), base);
-            assert_eq!(resolved.theme.panes.channel_log, rgb(0x102030));
-            // The alternate color keeps its own alpha; a row applies the
-            // opacity itself where it replaces the background.
+            let log = resolved.theme.panes.channel_log;
+            assert_eq!((log.r, log.g, log.b), {
+                let c = rgb(0x102030);
+                (c.r, c.g, c.b)
+            });
+            // The theme keeps the pane's own opacity (100 %): the wallpaper's
+            // is in `background`.
+            assert_eq!(resolved.theme.panes.channel_log.a, 1.);
             assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);

@@ -242,6 +242,9 @@ struct LookFields {
     blur: u8,
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
+    /// Whether the opacity is the channel's own, also at the default value:
+    /// an inherited one follows the standard wallpaper's (#962).
+    opacity_own: bool,
     fit: WallpaperFit,
     blur_track: TrackBounds,
     opacity_track: TrackBounds,
@@ -301,6 +304,7 @@ impl LookFields {
             ),
             blur: blur_of(&look),
             opacity: background_opacity_of(&look),
+            opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit.unwrap_or_default(),
             background: field(color(look.background), cx),
             alternate: field(color(look.alternate), cx),
@@ -330,12 +334,14 @@ impl LookFields {
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
+        self.opacity_own = false;
         self.fit = WallpaperFit::default();
         self.wallpaper_choice = WallpaperChoice::Inherit;
     }
 
     /// The look the fields hold, or why it cannot be used. A value equal to
-    /// its default is stored as unset, so it follows the default later too.
+    /// its default is stored as unset, so it follows the default later too;
+    /// the opacity is the exception (`opacity_own`).
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -393,8 +399,7 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_blur: (self.blur != DEFAULT_WALLPAPER_BLUR).then_some(self.blur),
-            background_opacity: (self.opacity != DEFAULT_BACKGROUND_OPACITY)
-                .then_some(self.opacity),
+            background_opacity: self.opacity_own.then_some(self.opacity),
             wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
             no_wallpaper: choice == WallpaperChoice::Off,
             ..ChannelLook::default()
@@ -828,6 +833,7 @@ impl ChannelSettingsView {
 
     pub(crate) fn set_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
         self.look.opacity = opacity.min(100) as u8;
+        self.look.opacity_own = true;
         self.edited(cx);
     }
 

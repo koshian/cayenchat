@@ -1794,6 +1794,12 @@ impl Window {
         self.platform_window.window_decorations()
     }
 
+    /// Returns whether a transparent window shows what lies behind it, which
+    /// X11 without a compositor does not (CayenChat #930).
+    pub fn is_compositing(&self) -> bool {
+        self.platform_window.is_compositing()
+    }
+
     /// Returns which window controls are currently visible (Wayland)
     pub fn window_controls(&self) -> WindowControls {
         self.platform_window.window_controls()

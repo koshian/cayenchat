@@ -253,7 +253,9 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
                 look.background_opacity,
                 look.wallpaper_fit
             ),
-            (None, None, None)
+            // The opacity moved by hand is the channel's own, also at the
+            // default value: it must not fall back to a standard wallpaper's.
+            (None, Some(DEFAULT_BACKGROUND_OPACITY), None)
         );
         view.reset(cx);
         view.save_now(window, cx);
@@ -552,8 +554,8 @@ fn an_edit_taken_back_before_the_save_restores_the_chat_window(cx: &mut TestAppC
     view.update(wcx, |view, cx| {
         view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx)
     });
-    // Back at the opened value: the saved one (the default) is shown again.
-    assert_eq!(shown(&chat, cx), None);
+    // Moved by hand to the default value: it is the channel's own now.
+    assert_eq!(shown(&chat, cx), Some(DEFAULT_BACKGROUND_OPACITY));
     drop(file);
 }
 
