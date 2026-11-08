@@ -15,9 +15,9 @@ use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, Language,
-    NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile, Settings,
-    TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, FontSet,
+    Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
@@ -126,8 +126,11 @@ pub(crate) struct SettingsForm {
     pub(crate) input_font: Entity<TextInput>,
     pub(crate) time_font: Entity<TextInput>,
     /// Pixel sizes as typed, one per [`FontTarget`] in its order; empty is
-    /// the standard size.
+    /// the area's standard size.
     pub(crate) font_sizes: [Entity<TextInput>; 6],
+    /// The theme whose fonts the inputs above show while the light and dark
+    /// fonts are separate (`values.appearance.split_fonts`).
+    pub(crate) font_side_dark: bool,
     /// Comma-separated notification keywords.
     pub(crate) keywords: Entity<TextInput>,
     /// Comma-separated text that cancels the matches overlapping it.
@@ -373,42 +376,43 @@ impl SettingsForm {
             ),
             channel_log_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.channel_log_font,
+                &values.appearance.fonts(false).channel_log_font,
                 false,
                 cx,
             ),
             combined_log_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.combined_log_font,
+                &values.appearance.fonts(false).combined_log_font,
                 false,
                 cx,
             ),
             member_list_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.member_list_font,
+                &values.appearance.fonts(false).member_list_font,
                 false,
                 cx,
             ),
             channel_tree_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.channel_tree_font,
+                &values.appearance.fonts(false).channel_tree_font,
                 false,
                 cx,
             ),
             input_font: field(
                 &i18n.text("font_system_placeholder"),
-                &values.appearance.input_font,
+                &values.appearance.fonts(false).input_font,
                 false,
                 cx,
             ),
             time_font: field(
                 &i18n.text("font_monospace_placeholder"),
-                &values.appearance.time_font,
+                &values.appearance.fonts(false).time_font,
                 false,
                 cx,
             ),
-            font_sizes: font_size_texts(&values.appearance)
+            font_sizes: font_size_texts(values.appearance.fonts(false))
                 .map(|text| field(&i18n.text("font_size_placeholder"), &text, false, cx)),
+            font_side_dark: false,
             keywords: field(
                 &i18n.text("keywords_placeholder"),
                 &values.notifications.keywords.join(", "),
@@ -521,12 +525,13 @@ impl SettingsForm {
     /// fields are not read (and not validated), so an unfinished connection
     /// entry does not stop other settings from being saved; the server list
     /// and selection are then the form's earlier values.
-    fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
+    pub(crate) fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
         let mut settings = self.values.clone();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         if with_servers {
             self.read_server_text(&mut settings, cx)?;
         }
+        let (fonts, light_fonts, dark_fonts) = self.font_sets_with(self.typed_fonts(cx, true)?);
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
             channel_tree_background: value(&self.channel_tree_background),
@@ -558,18 +563,10 @@ impl SettingsForm {
             compact_urls: self.values.appearance.compact_urls,
             decode_char_refs: self.values.appearance.decode_char_refs,
             reiwa_mode: self.values.appearance.reiwa_mode,
-            channel_log_font: value(&self.channel_log_font),
-            combined_log_font: value(&self.combined_log_font),
-            member_list_font: value(&self.member_list_font),
-            channel_tree_font: value(&self.channel_tree_font),
-            input_font: value(&self.input_font),
-            time_font: value(&self.time_font),
-            channel_log_font_size: font_size_value(&self.font_sizes[0], settings.language, cx)?,
-            combined_log_font_size: font_size_value(&self.font_sizes[1], settings.language, cx)?,
-            member_list_font_size: font_size_value(&self.font_sizes[2], settings.language, cx)?,
-            channel_tree_font_size: font_size_value(&self.font_sizes[3], settings.language, cx)?,
-            input_font_size: font_size_value(&self.font_sizes[4], settings.language, cx)?,
-            time_font_size: font_size_value(&self.font_sizes[5], settings.language, cx)?,
+            fonts,
+            split_fonts: self.values.appearance.split_fonts,
+            light_fonts,
+            dark_fonts,
             channel_log_line_height: self.values.appearance.channel_log_line_height,
             combined_log_line_height: self.values.appearance.combined_log_line_height,
             dark: DarkColors {
@@ -587,7 +584,12 @@ impl SettingsForm {
                 link_background: value(&self.dark_link_background),
                 url_tooltip_link_color: value(&self.dark_url_tooltip_link_color),
                 url_tooltip_text_color: value(&self.dark_url_tooltip_text_color),
+                // Not text fields: changed by the wallpaper and theme buttons.
+                wallpapers: self.values.appearance.dark.wallpapers.clone(),
+                origin: self.values.appearance.dark.origin.clone(),
             },
+            wallpapers: self.values.appearance.wallpapers.clone(),
+            origin: self.values.appearance.origin.clone(),
             saved_colors: self.values.appearance.saved_colors.clone(),
             channel_looks: self.values.appearance.channel_looks.clone(),
         };
@@ -940,39 +942,148 @@ fn line_height_at(fraction: f32) -> u16 {
 /// Marks a drag as the line height slider's own.
 struct LineHeightDrag(EntityId, usize);
 
-/// The pane font sizes as shown in their fields, in [`FontTarget`] order;
-/// the standard size (0) is an empty field.
-pub(crate) fn font_size_texts(appearance: &Appearance) -> [String; 6] {
+/// The pane font sizes as shown in their fields, in [`FontTarget`] order.
+pub(crate) fn font_size_texts(fonts: &FontSet) -> [String; 6] {
     [
-        appearance.channel_log_font_size,
-        appearance.combined_log_font_size,
-        appearance.member_list_font_size,
-        appearance.channel_tree_font_size,
-        appearance.input_font_size,
-        appearance.time_font_size,
+        fonts.channel_log_font_size,
+        fonts.combined_log_font_size,
+        fonts.member_list_font_size,
+        fonts.channel_tree_font_size,
+        fonts.input_font_size,
+        fonts.time_font_size,
     ]
-    .map(|size| {
-        if size == 0 {
-            String::new()
-        } else {
-            size.to_string()
-        }
-    })
+    .map(|size| size.to_string())
 }
 
-/// Reads a font size field: empty is the standard size (0), otherwise a
-/// whole number of px within the allowed range.
-fn font_size_value(field: &Entity<TextInput>, language: Language, cx: &App) -> Result<u16, String> {
-    let text = field.read(cx).text().trim().to_owned();
-    if text.is_empty() {
-        return Ok(0);
-    }
-    text.parse()
-        .ok()
-        .filter(|size| {
-            (cayenchat_storage::MIN_FONT_SIZE..=cayenchat_storage::MAX_FONT_SIZE).contains(size)
+impl SettingsForm {
+    /// The fonts the inputs hold. An empty or invalid size is the standard
+    /// one, or an error when `strict`, which snapshots use; unfinished text
+    /// while switching sides is not worth refusing.
+    pub(crate) fn typed_fonts(&self, cx: &App, strict: bool) -> Result<FontSet, String> {
+        let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        let standard = FontSet::default();
+        let size = |index: usize, standard: u16| -> Result<u16, String> {
+            let text = value(&self.font_sizes[index]);
+            match font_size_text_value(&text) {
+                Some(size) => Ok(size),
+                None if text.is_empty() || !strict => Ok(standard),
+                None => Err(i18n_error(self.values.language, "font_size_invalid")),
+            }
+        };
+        Ok(FontSet {
+            channel_log_font: value(&self.channel_log_font),
+            combined_log_font: value(&self.combined_log_font),
+            member_list_font: value(&self.member_list_font),
+            channel_tree_font: value(&self.channel_tree_font),
+            input_font: value(&self.input_font),
+            time_font: value(&self.time_font),
+            channel_log_font_size: size(0, standard.channel_log_font_size)?,
+            combined_log_font_size: size(1, standard.combined_log_font_size)?,
+            member_list_font_size: size(2, standard.member_list_font_size)?,
+            channel_tree_font_size: size(3, standard.channel_tree_font_size)?,
+            input_font_size: size(4, standard.input_font_size)?,
+            time_font_size: size(5, standard.time_font_size)?,
         })
-        .ok_or_else(|| i18n_error(language, "font_size_invalid"))
+    }
+
+    /// The shared, light and dark font sets with `typed` in the place the
+    /// inputs show: the shared ones, or the shown theme's own when they are
+    /// separate.
+    pub(crate) fn font_sets_with(
+        &self,
+        typed: FontSet,
+    ) -> (FontSet, Option<FontSet>, Option<FontSet>) {
+        let appearance = &self.values.appearance;
+        let mut sets = (
+            appearance.fonts.clone(),
+            appearance.light_fonts.clone(),
+            appearance.dark_fonts.clone(),
+        );
+        if !appearance.split_fonts {
+            sets.0 = typed;
+        } else if self.font_side_dark {
+            sets.2 = Some(typed);
+        } else {
+            sets.1 = Some(typed);
+        }
+        sets
+    }
+
+    /// Puts the typed fonts into `values`, so what the inputs show next is
+    /// the stored state.
+    pub(crate) fn stash_fonts(&mut self, cx: &App) {
+        if let Ok(typed) = self.typed_fonts(cx, false) {
+            let (fonts, light, dark) = self.font_sets_with(typed);
+            let appearance = &mut self.values.appearance;
+            (
+                appearance.fonts,
+                appearance.light_fonts,
+                appearance.dark_fonts,
+            ) = (fonts, light, dark);
+        }
+    }
+
+    /// Shows `fonts` in the inputs.
+    pub(crate) fn show_fonts(&self, fonts: &FontSet, cx: &mut App) {
+        for (field, text) in [
+            (&self.channel_log_font, &fonts.channel_log_font),
+            (&self.combined_log_font, &fonts.combined_log_font),
+            (&self.member_list_font, &fonts.member_list_font),
+            (&self.channel_tree_font, &fonts.channel_tree_font),
+            (&self.input_font, &fonts.input_font),
+            (&self.time_font, &fonts.time_font),
+        ] {
+            field.update(cx, |field, cx| field.set_text(text, cx));
+        }
+        for (field, text) in self.font_sizes.iter().zip(font_size_texts(fonts)) {
+            field.update(cx, |field, cx| field.set_text(&text, cx));
+        }
+    }
+
+    /// Switches between shared and separate light and dark fonts. The first
+    /// time on, both start as the shared fonts; turning it off keeps the
+    /// separate ones for the next time.
+    pub(crate) fn set_split_fonts(&mut self, on: bool, cx: &mut App) {
+        self.stash_fonts(cx);
+        self.values.appearance.set_split_fonts(on);
+        let fonts = self.values.appearance.fonts(self.font_side_dark).clone();
+        self.show_fonts(&fonts, cx);
+    }
+
+    /// Shows the fonts of the light or dark theme.
+    pub(crate) fn select_font_side(&mut self, dark: bool, cx: &mut App) {
+        self.stash_fonts(cx);
+        self.font_side_dark = dark;
+        let fonts = self.values.appearance.fonts(dark).clone();
+        self.show_fonts(&fonts, cx);
+    }
+
+    /// Changes a size by `delta` px, within the allowed range.
+    pub(crate) fn step_font_size(&self, target: FontTarget, delta: i32, cx: &mut App) {
+        let field = &self.font_sizes[target as usize];
+        let standard = FontSet::default();
+        let current = font_size_text_value(field.read(cx).text()).unwrap_or(match target {
+            FontTarget::ChannelLog => standard.channel_log_font_size,
+            FontTarget::CombinedLog => standard.combined_log_font_size,
+            FontTarget::MemberList => standard.member_list_font_size,
+            FontTarget::ChannelTree => standard.channel_tree_font_size,
+            FontTarget::Input => standard.input_font_size,
+            FontTarget::Time => standard.time_font_size,
+        });
+        let next = (i32::from(current) + delta).clamp(
+            i32::from(cayenchat_storage::MIN_FONT_SIZE),
+            i32::from(cayenchat_storage::MAX_FONT_SIZE),
+        );
+        field.update(cx, |field, cx| field.set_text(&next.to_string(), cx));
+    }
+}
+
+/// A font size field's text as a size, when it is a whole number of px within
+/// the allowed range.
+fn font_size_text_value(text: &str) -> Option<u16> {
+    text.trim().parse().ok().filter(|size| {
+        (cayenchat_storage::MIN_FONT_SIZE..=cayenchat_storage::MAX_FONT_SIZE).contains(size)
+    })
 }
 
 /// Reads `path` as an unencrypted PKCS#8 or SEC1 PEM key. Only the first
@@ -1194,6 +1305,8 @@ pub(crate) struct SettingsWindow {
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
+    /// Imported themes and the state of the theme actions (#962).
+    pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Where the log line height slider's track was last painted, to turn
     /// the pointer position into a value (#953).
     line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
@@ -1477,6 +1590,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
+            themes: crate::theme_settings::ThemeUi::new(),
             line_height_tracks: Default::default(),
             opacity_tracks: Default::default(),
             opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
@@ -4882,6 +4996,110 @@ impl SettingsWindow {
             )
     }
 
+    /// The size input with a button on each side that steps it by 1 px; a
+    /// button is disabled (dimmed) at the end of the allowed range.
+    fn font_size_stepper(&self, target: FontTarget, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let field = self.settings.font_sizes[target as usize].clone();
+        let size = field
+            .read(cx)
+            .text()
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(cayenchat_storage::MIN_FONT_SIZE);
+        let button = |id: &'static str, label: &'static str, delta: i32, enabled: bool| {
+            let button = div()
+                .id((id, target as u32))
+                .w(px(24.))
+                .py_1()
+                .flex()
+                .justify_center()
+                .border_1()
+                .border_color(theme.border)
+                .child(label);
+            if enabled {
+                button
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings.step_font_size(target, delta, cx);
+                        cx.notify();
+                    }))
+            } else {
+                button.text_color(theme.text_secondary).opacity(0.4)
+            }
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0()
+            .child(button(
+                "font-size-down",
+                "\u{2212}",
+                -1,
+                size > cayenchat_storage::MIN_FONT_SIZE,
+            ))
+            .child(div().w(px(56.)).child(field))
+            .child(button(
+                "font-size-up",
+                "+",
+                1,
+                size < cayenchat_storage::MAX_FONT_SIZE,
+            ))
+    }
+
+    /// The switch for separate light and dark fonts and, while it is on,
+    /// the choice of the theme whose fonts the rows below show.
+    fn render_font_mode(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let split = self.settings.values.appearance.split_fonts;
+        let side = self.settings.font_side_dark;
+        let mut block = div().flex().flex_col().gap_1().child(
+            div()
+                .id("split-fonts")
+                .ml(settings_theme::LABEL_INDENT)
+                .flex()
+                .gap_2()
+                .cursor_pointer()
+                .child(settings_theme::checkbox(split, true, cx))
+                .child(self.i18n.text("split_fonts"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let on = !this.settings.values.appearance.split_fonts;
+                    this.settings.set_split_fonts(on, cx);
+                    this.font_picker = None;
+                    cx.notify();
+                })),
+        );
+        if split {
+            let tab = |id: &'static str, key: &str, dark: bool| {
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .when(side == dark, |d| d.bg(theme.hover))
+                    .child(self.i18n.text(key))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings.select_font_side(dark, cx);
+                        this.font_picker = None;
+                        cx.notify();
+                    }))
+            };
+            block = block.child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .gap_2()
+                    .child(tab("font-side-light", "theme_kind_light", false))
+                    .child(tab("font-side-dark", "theme_kind_dark", true)),
+            );
+        }
+        block
+    }
+
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
@@ -4892,12 +5110,7 @@ impl SettingsWindow {
                 .gap_2()
                 .child(settings_theme::label_column().child(label.to_owned()))
                 .child(div().flex_1().min_w_0().child(input.clone()))
-                .child(
-                    div()
-                        .w(px(56.))
-                        .flex_shrink_0()
-                        .child(self.settings.font_sizes[target as usize].clone()),
-                )
+                .child(self.font_size_stepper(target, cx))
                 .child(
                     div()
                         .id(("font-picker", target as u32))
@@ -5004,6 +5217,7 @@ impl SettingsWindow {
                 |settings, mode| settings.theme = mode,
                 cx,
             ))
+            .child(self.render_theme_settings(cx))
             .child(
                 div()
                     .flex()
@@ -5123,6 +5337,8 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(self.render_wallpaper_settings(cx))
+            .child(self.render_font_mode(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
             .child(self.line_height_slider(0, cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))

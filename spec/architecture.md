@@ -195,6 +195,7 @@ goes through its gate; a change that cannot should say why.
 | Dialogs, desktop notifications, window title | `model::display::os_title` / `os_body` (bidirectional and other controls, IRC formatting, length): every `Window::prompt` and `set_window_title` goes through `ui::os_text`, notifications through `Notifier::show`; Linux notification markup is also escaped there. Clippy enforces the gates: `clippy.toml` disallows `Window::prompt`, `Window::set_window_title` and `Notification::show`, and only `os_text.rs` and `notifier.rs` allow them | Done (#558) |
 | Settings import and result dialogs | Imported server values and result lines (including refusal errors) are sanitized and bounded when drawn (`settings_transfer`) | Done (#552, #691) |
 | Avatar settings status and feedback lines (server `FAIL METADATA`, upload service errors) | `ircv3_settings::feedback_line` (controls become spaces, bidirectional controls neutralized) on the failure text in `outcome_text` and where `avatar_feedback` is drawn; `upload::http::display_message` also neutralizes bidirectional controls | Done (#714) |
+| Theme names (`.cayentheme` files, the theme library index) drawn on the Appearance tab | `storage::theme_file::clean_theme_name` on import and in `library_list` (an empty name drops the entry); `model::display::neutralize_bidi` where the name is drawn (#962) | Done |
 | Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
 | Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
 | Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
@@ -471,7 +472,10 @@ absent, and so is the per-server `user_avatars` setting (D023; it was an
 Appearance setting, copied into each server on load), as are the
 peer avatar option and the per-server shared URL `peer_avatar_url` (D025),
 and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
-or repeated entries are dropped on load). The UI keeps the
+or repeated entries are dropped on load). The light and dark halves of `Appearance` also hold standard
+wallpapers for four areas and the origin of their values (a theme name and a
+fingerprint); `storage::theme_file` reads and writes `.cayentheme` files and
+keeps the library of imported themes (D089). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows

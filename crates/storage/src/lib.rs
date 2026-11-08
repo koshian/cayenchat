@@ -15,7 +15,12 @@ pub mod credentials;
 pub mod layout;
 pub mod order;
 mod private_file;
+pub mod theme_file;
 pub mod transfer;
+
+pub use theme_file::{
+    RegionWallpaper, RegionWallpapers, ThemeFile, ThemeKind, ThemeOrigin, WallpaperRegion,
+};
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -593,6 +598,89 @@ pub const MAX_KEYED_CHANNELS: usize = 256;
 /// The longest channel name an override is kept for, in bytes.
 const MAX_CHARSET_CHANNEL_BYTES: usize = 200;
 
+/// Standard font sizes in px: the logs, the input and the time use the
+/// first, the channel tree and member list (one step below, #927) the second.
+pub const DEFAULT_LOG_FONT_SIZE: u16 = 13;
+pub const DEFAULT_LIST_FONT_SIZE: u16 = 12;
+
+/// The font name and size of each of the six areas. An empty name is the
+/// default font. Sizes are real px values in
+/// [`MIN_FONT_SIZE`]..=[`MAX_FONT_SIZE`]; an older file's 0 (standard) reads
+/// as the area's standard size.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontSet {
+    #[serde(alias = "main_log_font")]
+    pub channel_log_font: String,
+    #[serde(alias = "sub_log_font")]
+    pub combined_log_font: String,
+    #[serde(alias = "member_font")]
+    pub member_list_font: String,
+    #[serde(alias = "channel_font")]
+    pub channel_tree_font: String,
+    pub input_font: String,
+    pub time_font: String,
+    pub channel_log_font_size: u16,
+    pub combined_log_font_size: u16,
+    pub member_list_font_size: u16,
+    pub channel_tree_font_size: u16,
+    pub input_font_size: u16,
+    pub time_font_size: u16,
+}
+
+impl Default for FontSet {
+    fn default() -> Self {
+        Self {
+            channel_log_font: String::new(),
+            combined_log_font: String::new(),
+            member_list_font: String::new(),
+            channel_tree_font: String::new(),
+            input_font: String::new(),
+            time_font: String::new(),
+            channel_log_font_size: DEFAULT_LOG_FONT_SIZE,
+            combined_log_font_size: DEFAULT_LOG_FONT_SIZE,
+            member_list_font_size: DEFAULT_LIST_FONT_SIZE,
+            channel_tree_font_size: DEFAULT_LIST_FONT_SIZE,
+            input_font_size: DEFAULT_LOG_FONT_SIZE,
+            time_font_size: DEFAULT_LOG_FONT_SIZE,
+        }
+    }
+}
+
+impl FontSet {
+    /// Replaces an unset (0) size by the area's standard one and clamps the
+    /// rest into the allowed range.
+    fn clamp_sizes(&mut self) {
+        let standard = Self::default();
+        for (size, standard) in [
+            (
+                &mut self.channel_log_font_size,
+                standard.channel_log_font_size,
+            ),
+            (
+                &mut self.combined_log_font_size,
+                standard.combined_log_font_size,
+            ),
+            (
+                &mut self.member_list_font_size,
+                standard.member_list_font_size,
+            ),
+            (
+                &mut self.channel_tree_font_size,
+                standard.channel_tree_font_size,
+            ),
+            (&mut self.input_font_size, standard.input_font_size),
+            (&mut self.time_font_size, standard.time_font_size),
+        ] {
+            *size = if *size == 0 {
+                standard
+            } else {
+                clamp_font_size(*size)
+            };
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -670,26 +758,20 @@ pub struct Appearance {
     /// version change; files without it read as off.
     #[serde(alias = "header_line_messages")]
     pub reiwa_mode: bool,
-    #[serde(alias = "main_log_font")]
-    pub channel_log_font: String,
-    #[serde(alias = "sub_log_font")]
-    pub combined_log_font: String,
-    #[serde(alias = "member_font")]
-    pub member_list_font: String,
-    #[serde(alias = "channel_font")]
-    pub channel_tree_font: String,
-    pub input_font: String,
-    pub time_font: String,
-    /// Font sizes in px for the same six areas; 0 is the standard size.
-    /// Added after version 15 without a version change; files without them
-    /// read as standard. Clamped to [`MIN_FONT_SIZE`]..=[`MAX_FONT_SIZE`] on
-    /// load.
-    pub channel_log_font_size: u16,
-    pub combined_log_font_size: u16,
-    pub member_list_font_size: u16,
-    pub channel_tree_font_size: u16,
-    pub input_font_size: u16,
-    pub time_font_size: u16,
+    /// The fonts and their sizes of the six areas. They serve both themes
+    /// unless `split_fonts` is on; the names are the same keys as before the
+    /// fonts were split (flattened).
+    #[serde(flatten)]
+    pub fonts: FontSet,
+    /// Use the fonts of `light_fonts` and `dark_fonts` for the light and dark
+    /// theme instead of the shared `fonts`. Added after version 15 without a
+    /// version change; files without it read as off.
+    pub split_fonts: bool,
+    /// The fonts of each theme while `split_fonts` is on. Kept when it is
+    /// turned off, so turning it on again restores them; `None` until first
+    /// switched on, when they start as a copy of the shared fonts.
+    pub light_fonts: Option<FontSet>,
+    pub dark_fonts: Option<FontSet>,
     /// Line heights of the channel log and the combined log as a percentage
     /// of the font size (#953). Added after version 15 without a version
     /// change; files without them read as [`DEFAULT_LINE_HEIGHT_PERCENT`].
@@ -700,6 +782,13 @@ pub struct Appearance {
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
+    /// Standard wallpapers of the four areas while the light theme is active
+    /// (#962); the dark theme's are in `dark`. Added after version 15
+    /// without a version change; files without it read as none.
+    pub wallpapers: RegionWallpapers,
+    /// The theme the light values came from (#962); unset is the built-in
+    /// default.
+    pub origin: ThemeOrigin,
     /// Colors the user saved to pick again, as `#RRGGBB` in the order added.
     /// At most [`MAX_SAVED_COLORS`], without repeats. Added after version 15
     /// without a version change; files without it read as empty.
@@ -789,6 +878,11 @@ pub struct ChannelLook {
     /// [`DEFAULT_BACKGROUND_OPACITY`]. Only a wallpaper makes it visible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_opacity: Option<u8>,
+    /// Show no wallpaper in this channel even where the standard has one
+    /// (#962). With neither this nor a path, the channel inherits the
+    /// standard wallpaper. Files without it read as inheriting.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_wallpaper: bool,
     /// How the wallpaper fits the log; unset is [`WallpaperFit::default`].
     /// A name this version does not know reads as unset.
     #[serde(
@@ -847,6 +941,7 @@ impl ChannelLook {
             || self.wallpaper_blur.is_some()
             || self.background_opacity.is_some()
             || self.wallpaper_fit.is_some()
+            || self.no_wallpaper
     }
 
     /// Makes every field usable: a size is clamped, a percentage capped, and
@@ -868,6 +963,10 @@ impl ChannelLook {
         }
         self.wallpaper_blur = self.wallpaper_blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
         self.background_opacity = self.background_opacity.map(|p| p.min(100));
+        // "No wallpaper" and a wallpaper path exclude each other.
+        if self.no_wallpaper {
+            self.wallpaper = None;
+        }
     }
 }
 
@@ -894,6 +993,11 @@ pub struct DarkColors {
     pub link_background: String,
     pub url_tooltip_link_color: String,
     pub url_tooltip_text_color: String,
+    /// Standard wallpapers of the four areas while the dark theme is active
+    /// (#962). Added after version 15 without a version change.
+    pub wallpapers: RegionWallpapers,
+    /// The theme the dark values came from (#962).
+    pub origin: ThemeOrigin,
 }
 
 impl Default for DarkColors {
@@ -913,6 +1017,8 @@ impl Default for DarkColors {
             link_background: String::new(),
             url_tooltip_link_color: HOVER_POPUP_LINK_COLOR.into(),
             url_tooltip_text_color: HOVER_POPUP_TEXT_COLOR.into(),
+            wallpapers: RegionWallpapers::default(),
+            origin: ThemeOrigin::default(),
         }
     }
 }
@@ -944,21 +1050,15 @@ impl Default for Appearance {
             compact_urls: false,
             decode_char_refs: true,
             reiwa_mode: false,
-            channel_log_font: String::new(),
-            combined_log_font: String::new(),
-            member_list_font: String::new(),
-            channel_tree_font: String::new(),
-            input_font: String::new(),
-            time_font: String::new(),
-            channel_log_font_size: 0,
-            combined_log_font_size: 0,
-            member_list_font_size: 0,
-            channel_tree_font_size: 0,
-            input_font_size: 0,
-            time_font_size: 0,
+            fonts: FontSet::default(),
+            split_fonts: false,
+            light_fonts: None,
+            dark_fonts: None,
             channel_log_line_height: DEFAULT_LINE_HEIGHT_PERCENT,
             combined_log_line_height: DEFAULT_LINE_HEIGHT_PERCENT,
             dark: DarkColors::default(),
+            wallpapers: RegionWallpapers::default(),
+            origin: ThemeOrigin::default(),
             saved_colors: Vec::new(),
             channel_looks: Vec::new(),
         }
@@ -966,6 +1066,44 @@ impl Default for Appearance {
 }
 
 impl Appearance {
+    /// The fonts in use for the light or dark theme.
+    pub fn fonts(&self, dark: bool) -> &FontSet {
+        let own = if !self.split_fonts {
+            None
+        } else if dark {
+            self.dark_fonts.as_ref()
+        } else {
+            self.light_fonts.as_ref()
+        };
+        own.unwrap_or(&self.fonts)
+    }
+
+    /// The fonts to edit for the light or dark theme: the shared ones, or
+    /// that theme's own while `split_fonts` is on.
+    pub fn fonts_mut(&mut self, dark: bool) -> &mut FontSet {
+        if !self.split_fonts {
+            return &mut self.fonts;
+        }
+        let shared = &self.fonts;
+        let own = if dark {
+            &mut self.dark_fonts
+        } else {
+            &mut self.light_fonts
+        };
+        own.get_or_insert_with(|| shared.clone())
+    }
+
+    /// Turns the separate light and dark fonts on or off. The first time on,
+    /// both start as the shared fonts; turning off keeps them for later.
+    pub fn set_split_fonts(&mut self, on: bool) {
+        if on {
+            let shared = self.fonts.clone();
+            self.light_fonts.get_or_insert_with(|| shared.clone());
+            self.dark_fonts.get_or_insert(shared);
+        }
+        self.split_fonts = on;
+    }
+
     /// The look kept for `channel` of server profile `server`; `same` tells
     /// whether two channel names are the same (the network's case mapping).
     pub fn channel_look(
@@ -1060,18 +1198,16 @@ impl Appearance {
         self.saved_colors = kept;
     }
 
-    /// Clamps every pane font size so a hand-edited file cannot ask for an
-    /// unusable one.
+    /// Makes every pane font size usable: an unset (0) one becomes the area's
+    /// standard size and the rest is clamped, so a hand-edited file cannot ask
+    /// for an unusable one.
     fn clamp_font_sizes(&mut self) {
-        for size in [
-            &mut self.channel_log_font_size,
-            &mut self.combined_log_font_size,
-            &mut self.member_list_font_size,
-            &mut self.channel_tree_font_size,
-            &mut self.input_font_size,
-            &mut self.time_font_size,
-        ] {
-            *size = clamp_font_size(*size);
+        self.fonts.clamp_sizes();
+        for set in [&mut self.light_fonts, &mut self.dark_fonts]
+            .into_iter()
+            .flatten()
+        {
+            set.clamp_sizes();
         }
         self.channel_log_line_height = clamp_line_height_percent(self.channel_log_line_height);
         self.combined_log_line_height = clamp_line_height_percent(self.combined_log_line_height);
@@ -2015,6 +2151,7 @@ impl Settings {
         self.appearance.clean_palette();
         self.appearance.clamp_font_sizes();
         self.appearance.clean_channel_looks();
+        self.appearance.clean_themes();
         let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
@@ -3573,10 +3710,86 @@ mod tests {
         appearance.insert("time_font_size".into(), 15.into());
         let settings: Settings = serde_json::from_value(saved).unwrap();
         let appearance = settings.normalize().appearance;
-        assert_eq!(appearance.channel_log_font_size, MIN_FONT_SIZE);
-        assert_eq!(appearance.input_font_size, MAX_FONT_SIZE);
-        assert_eq!(appearance.time_font_size, 15);
-        assert_eq!(appearance.combined_log_font_size, 0);
+        assert_eq!(appearance.fonts.channel_log_font_size, MIN_FONT_SIZE);
+        assert_eq!(appearance.fonts.input_font_size, MAX_FONT_SIZE);
+        assert_eq!(appearance.fonts.time_font_size, 15);
+        assert_eq!(
+            appearance.fonts.combined_log_font_size,
+            DEFAULT_LOG_FONT_SIZE
+        );
+    }
+
+    #[test]
+    fn an_older_zero_font_size_reads_as_the_standard_size() {
+        let mut saved = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = saved["appearance"].as_object_mut().unwrap();
+        for key in ["channel_log_font_size", "member_list_font_size"] {
+            appearance.insert(key.into(), 0.into());
+        }
+        appearance.insert("channel_tree_font_size".into(), 17.into());
+        let settings: Settings = serde_json::from_value(saved).unwrap();
+        let appearance = settings.normalize().appearance;
+        assert!(!appearance.split_fonts);
+        assert_eq!(appearance.fonts.channel_log_font_size, 13);
+        assert_eq!(appearance.fonts.member_list_font_size, 12);
+        assert_eq!(appearance.fonts.channel_tree_font_size, 17);
+    }
+
+    #[test]
+    fn separate_fonts_start_from_the_shared_ones_and_survive_turning_off() {
+        let mut appearance = Appearance::default();
+        appearance.fonts.input_font_size = 20;
+        appearance.set_split_fonts(true);
+        assert_eq!(appearance.fonts(false).input_font_size, 20);
+        assert_eq!(appearance.fonts(true).input_font_size, 20);
+        appearance.fonts_mut(true).input_font_size = 30;
+        assert_eq!(appearance.fonts(false).input_font_size, 20);
+        // Back to shared: both themes use the shared fonts, the dark ones
+        // are kept.
+        appearance.set_split_fonts(false);
+        assert_eq!(appearance.fonts(true).input_font_size, 20);
+        appearance.fonts_mut(true).input_font_size = 21;
+        assert_eq!(appearance.fonts(false).input_font_size, 21);
+        appearance.set_split_fonts(true);
+        assert_eq!(appearance.fonts(true).input_font_size, 30);
+        // They survive a save and a load.
+        let loaded: Appearance =
+            serde_json::from_str(&serde_json::to_string(&appearance).unwrap()).unwrap();
+        assert_eq!(loaded, appearance);
+    }
+
+    #[test]
+    fn a_theme_changes_only_its_side_of_the_fonts() {
+        // Applying a theme whose fonts equal the shared ones keeps them shared.
+        let mut appearance = Appearance::default();
+        let same = appearance.theme_fonts(true);
+        appearance.set_theme_fonts(true, &same);
+        assert!(!appearance.split_fonts);
+        let mut bigger = same.clone();
+        bigger.input.size = 24;
+        appearance.set_theme_fonts(true, &bigger);
+        assert!(appearance.split_fonts);
+        assert_eq!(appearance.fonts(true).input_font_size, 24);
+        assert_eq!(appearance.fonts(false).input_font_size, 13);
+        // The light side did not become modified.
+        assert_eq!(appearance.theme_fonts(false), same);
+    }
+
+    #[test]
+    fn a_theme_applied_after_going_back_to_shared_keeps_the_other_side() {
+        let mut appearance = Appearance::default();
+        appearance.fonts.input_font_size = 15;
+        appearance.set_split_fonts(true);
+        appearance.fonts_mut(false).input_font_size = 22;
+        appearance.fonts_mut(true).input_font_size = 26;
+        appearance.set_split_fonts(false);
+        assert_eq!(appearance.fonts(false).input_font_size, 15);
+        let mut dark = appearance.theme_fonts(true);
+        dark.input.size = 30;
+        appearance.set_theme_fonts(true, &dark);
+        assert!(appearance.split_fonts);
+        assert_eq!(appearance.fonts(true).input_font_size, 30);
+        assert_eq!(appearance.fonts(false).input_font_size, 15);
     }
 
     #[test]
@@ -3630,10 +3843,10 @@ mod tests {
         dark.remove("channel_log_alternate");
         dark.insert("main_log_alternate".into(), "#333333".into());
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert_eq!(loaded.channel_log_font, "A");
-        assert_eq!(loaded.combined_log_font, "B");
-        assert_eq!(loaded.member_list_font, "C");
-        assert_eq!(loaded.channel_tree_font, "D");
+        assert_eq!(loaded.fonts.channel_log_font, "A");
+        assert_eq!(loaded.fonts.combined_log_font, "B");
+        assert_eq!(loaded.fonts.member_list_font, "C");
+        assert_eq!(loaded.fonts.channel_tree_font, "D");
         assert_eq!(loaded.channel_log_background, "#111111");
         assert_eq!(loaded.combined_log_alternate, "#222222");
         assert_eq!(loaded.dark.channel_log_alternate, "#333333");
@@ -3678,7 +3891,7 @@ mod tests {
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.channel_log_background = "#123ABC".into();
-        settings.appearance.channel_log_font = "Menlo".into();
+        settings.appearance.fonts.channel_log_font = "Menlo".into();
         settings.appearance.validate().unwrap();
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));

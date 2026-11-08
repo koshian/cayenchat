@@ -72,6 +72,7 @@ mod signals;
 mod slider;
 mod splitter;
 mod theme;
+mod theme_settings;
 mod toolbar;
 mod tooltip;
 mod wake;
@@ -97,9 +98,9 @@ use cayenchat_model::{
 };
 use cayenchat_storage::chatlog::{Kind as LogKind, Scope};
 use cayenchat_storage::{
-    Appearance, ChannelNumberModifier, CredentialError, CredentialStore, Ircv3Preferences,
-    Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
-    TextKeyTheme, ThemeMode, UnreadLogPosition,
+    Appearance, ChannelLook, ChannelNumberModifier, CredentialError, CredentialStore,
+    Ircv3Preferences, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey,
+    ServerProfile, Settings, TextKeyTheme, ThemeMode, UnreadLogPosition, WallpaperRegion,
 };
 use channel_groups::{GroupEdit, GroupMenu, HeadingTarget};
 use futures_util::StreamExt;
@@ -936,8 +937,8 @@ struct ChatWindow {
     state: AppState,
     // Virtualized logs keep a separate scroll position per server or channel.
     channel_log_lists: HashMap<Selection, LogList>,
-    // The wallpaper of the selected channel's log (#928).
-    wallpaper: channel_look::Wallpaper,
+    // The wallpapers of the four areas (#928, #962).
+    wallpapers: channel_look::Wallpapers,
     combined_list: LogList,
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
@@ -1528,13 +1529,20 @@ impl ChatWindow {
     /// The selected channel's log look: its own settings over `theme`. A
     /// server's log and the other panes have none.
     fn channel_log_look(&self, theme: Theme) -> channel_look::ResolvedLook {
-        let own = self.state.selected_channel().and_then(|channel| {
-            let profile = &self.sessions.get(&channel.network)?.profile_id;
-            let mapping = self.state.casemapping(channel.network);
-            self.appearance
-                .channel_look(profile, &channel.name, |a, b| mapping.same(a, b))
-        });
-        channel_look::resolve(own, theme)
+        channel_look::resolve(
+            self.selected_channel_look(),
+            &self.appearance.wallpapers(theme.dark).channel_log,
+            theme,
+        )
+    }
+
+    /// The selected channel's own look settings, if it has any.
+    fn selected_channel_look(&self) -> Option<&ChannelLook> {
+        let channel = self.state.selected_channel()?;
+        let profile = &self.sessions.get(&channel.network)?.profile_id;
+        let mapping = self.state.casemapping(channel.network);
+        self.appearance
+            .channel_look(profile, &channel.name, |a, b| mapping.same(a, b))
     }
 
     fn selected_network_id(&self) -> Option<NetworkId> {
@@ -1608,7 +1616,7 @@ impl ChatWindow {
         let mut this = Self {
             state,
             channel_log_lists: HashMap::new(),
-            wallpaper: channel_look::Wallpaper::default(),
+            wallpapers: channel_look::Wallpapers::default(),
             combined_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
@@ -5268,8 +5276,9 @@ impl ChatWindow {
     }
 
     /// The draft row's height: the standard one, taller for a large input text.
-    fn draft_row_height(&self) -> f32 {
-        let size = pane_text_size(self.appearance.input_font_size, None).map_or(13., f32::from);
+    fn draft_row_height(&self, dark: bool) -> f32 {
+        let size = pane_text_size(self.appearance.fonts(dark).input_font_size, None)
+            .map_or(13., f32::from);
         DRAFT_ROW_HEIGHT + input::extra_line_height(size)
     }
 
@@ -5278,7 +5287,7 @@ impl ChatWindow {
         let Some(bounds) = self.left_column_bounds.get() else {
             return;
         };
-        let draft_row_height = self.draft_row_height();
+        let draft_row_height = self.draft_row_height(theme::current(cx).dark);
         let flexible = f32::from(bounds.size.height) - draft_row_height;
         if flexible <= 0. {
             return;
@@ -6888,12 +6897,12 @@ fn pane_text_size(saved: u16, standard: Option<f32>) -> Option<Pixels> {
 /// The text size of the channel log: the channel's own over the saved one.
 fn channel_log_text_size(
     look: &channel_look::ResolvedLook,
-    appearance: &Appearance,
+    fonts: &cayenchat_storage::FontSet,
 ) -> Option<Pixels> {
     let saved = if look.font_size != 0 {
         look.font_size
     } else {
-        appearance.channel_log_font_size
+        fonts.channel_log_font_size
     };
     pane_text_size(saved, None)
 }
@@ -7474,16 +7483,18 @@ impl ChatWindow {
             }
         }
         let appearance = &self.appearance;
+        let fonts = appearance.fonts(theme.dark);
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.panes.channel_tree)
-            .when(!appearance.channel_tree_font.is_empty(), |d| {
-                d.font_family(appearance.channel_tree_font.clone())
+            // The background is the pane's own (see `render_chat`), so the
+            // wallpaper behind this view shows.
+            .when(!fonts.channel_tree_font.is_empty(), |d| {
+                d.font_family(fonts.channel_tree_font.clone())
             })
             .when_some(
-                pane_text_size(appearance.channel_tree_font_size, Some(LIST_PANE_TEXT_SIZE)),
+                pane_text_size(fonts.channel_tree_font_size, Some(LIST_PANE_TEXT_SIZE)),
                 |d, size| d.text_size(size),
             )
             .border_t_1()
@@ -7909,6 +7920,23 @@ impl ChatWindow {
         })
     }
 
+    /// The combined log's own color: opaque with a standard wallpaper, whose
+    /// backdrop carries the pane's opacity over the picture (#962).
+    fn combined_log_base(&self, theme: Theme) -> Rgba {
+        let color = theme.panes.combined_log;
+        if self
+            .appearance
+            .wallpapers(theme.dark)
+            .combined_log
+            .path
+            .is_some()
+        {
+            Rgba { a: 1., ..color }
+        } else {
+            color
+        }
+    }
+
     /// Content of a cached pane; see [`ChatPane`].
     fn render_pane(
         &mut self,
@@ -7925,7 +7953,7 @@ impl ChatWindow {
             PaneKind::ChannelLog => {
                 let selection = self.state.selection();
                 let look = self.channel_log_look(theme);
-                let slice = self.wallpaper.slice(look.background);
+                let slice = self.wallpapers.channel_log.slice(look.background);
                 let main = self
                     .channel_log_lists
                     .get_mut(&selection)
@@ -7993,9 +8021,11 @@ impl ChatWindow {
                     .into_any_element()
             }
             PaneKind::CombinedLog => {
+                // Under a wallpaper the backdrop already paints the color
+                // below the rows; a filler would lay it over a second time.
                 let filler = Self::log_tail_filler(
                     self.combined_list.unfilled_from(),
-                    theme.panes.combined_log,
+                    self.combined_log_base(theme),
                     None,
                     |chat| Some(&chat.combined_list),
                     cx,
@@ -8106,24 +8136,59 @@ impl ChatWindow {
         };
         let border = theme.border;
         let look = self.channel_log_look(theme);
-        let wallpaper = self.wallpaper.element(
+        let standard = self.appearance.wallpapers(theme.dark).clone();
+        let wallpaper = self.wallpapers.element(
+            WallpaperRegion::ChannelLog,
             look.wallpaper.as_ref(),
             look.background,
             look.theme.panes.channel_log.a < 1.,
             window,
             cx,
         );
-        let frame_slice = self.wallpaper.slice(look.background);
+        let frame_slice = self.wallpapers.channel_log.slice(look.background);
+        let (request, background) =
+            channel_look::region_wallpaper(&standard.combined_log, theme.panes.combined_log);
+        let combined_wallpaper = self.wallpapers.element(
+            WallpaperRegion::CombinedLog,
+            request.as_ref(),
+            background,
+            false,
+            window,
+            cx,
+        );
+        let (request, background) =
+            channel_look::region_wallpaper(&standard.member_list, theme.panes.member_list);
+        let members_wallpaper = self.wallpapers.element(
+            WallpaperRegion::MemberList,
+            request.as_ref(),
+            background,
+            false,
+            window,
+            cx,
+        );
+        let (request, background) =
+            channel_look::region_wallpaper(&standard.channel_tree, theme.panes.channel_tree);
+        let tree_wallpaper = self.wallpapers.element(
+            WallpaperRegion::ChannelTree,
+            request.as_ref(),
+            background,
+            false,
+            window,
+            cx,
+        );
         let appearance = &self.appearance;
+        let fonts = appearance.fonts(theme.dark);
         let translucent = appearance.has_translucent_pane() && self.window_compositing;
-        let draft_row_height = self.draft_row_height();
-        let input_size = pane_text_size(appearance.input_font_size, None);
+        let draft_row_height = self.draft_row_height(theme.dark);
+        let input_size = pane_text_size(fonts.input_font_size, None);
         // The input draws its own text size, so the pane's size goes to it.
         self.inputs[&selection].update(cx, |input, _| {
             input.set_font_size(input_size.map(f32::from));
         });
         let channel_log_bg = look.theme.panes.channel_log;
-        let combined_bg = theme.panes.combined_log;
+        // With a wallpaper the backdrop carries the pane's opacity over the
+        // picture, so the pane itself is opaque under it (#962).
+        let combined_bg = self.combined_log_base(theme);
 
         // Panes that do not change while the draft is edited are separate cached
         // views: typing redraws this window, but they reuse their last layout
@@ -8159,10 +8224,10 @@ impl ChatWindow {
             .flex_1()
             .min_h_0()
             .map(|d| log_surface(d, channel_log_bg))
-            .when(!appearance.channel_log_font.is_empty(), |d| {
-                d.font_family(appearance.channel_log_font.clone())
+            .when(!fonts.channel_log_font.is_empty(), |d| {
+                d.font_family(fonts.channel_log_font.clone())
             })
-            .when_some(channel_log_text_size(&look, appearance), |d, size| {
+            .when_some(channel_log_text_size(&look, fonts), |d, size| {
                 d.text_size(size)
             })
             .when_some(
@@ -8184,13 +8249,14 @@ impl ChatWindow {
             .min_h_0()
             .map(|d| log_surface(d, combined_bg))
             .children(log_frame(combined_bg, None))
-            .when(!appearance.combined_log_font.is_empty(), |d| {
-                d.font_family(appearance.combined_log_font.clone())
+            .when(!fonts.combined_log_font.is_empty(), |d| {
+                d.font_family(fonts.combined_log_font.clone())
             })
             .when_some(
-                pane_text_size(appearance.combined_log_font_size, None),
+                pane_text_size(fonts.combined_log_font_size, None),
                 |d, size| d.text_size(size),
             )
+            .children(combined_wallpaper)
             .when_some(
                 pane_line_height(appearance.combined_log_line_height),
                 |d, ratio| d.line_height(relative(ratio)),
@@ -8206,19 +8272,22 @@ impl ChatWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, window, _| window.focus(&this.members_focus)),
             )
+            .relative()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .w_full()
             .bg(theme.panes.member_list)
-            .when(!appearance.member_list_font.is_empty(), |d| {
-                d.font_family(appearance.member_list_font.clone())
+            .when(!fonts.member_list_font.is_empty(), |d| {
+                d.font_family(fonts.member_list_font.clone())
             })
             .when_some(
-                pane_text_size(appearance.member_list_font_size, Some(LIST_PANE_TEXT_SIZE)),
+                pane_text_size(fonts.member_list_font_size, Some(LIST_PANE_TEXT_SIZE)),
                 |d, size| d.text_size(size),
             )
+            .children(members_wallpaper)
             .child(self.input_to_draft(&self.members_focus, cx))
             .child(panes.member_list.clone().cached(pane_style()));
 
@@ -8272,13 +8341,12 @@ impl ChatWindow {
             .border_b_1()
             .border_color(border)
             .bg(theme.surface)
-            .when(!appearance.input_font.is_empty(), |d| {
-                d.font_family(appearance.input_font.clone())
+            .when(!fonts.input_font.is_empty(), |d| {
+                d.font_family(fonts.input_font.clone())
             })
-            .when_some(
-                pane_text_size(appearance.input_font_size, None),
-                |d, size| d.text_size(size),
-            )
+            .when_some(pane_text_size(fonts.input_font_size, None), |d, size| {
+                d.text_size(size)
+            })
             .id("draft-row")
             // Dropped image files join the same attachment flow as pasted ones.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
@@ -8426,11 +8494,15 @@ impl ChatWindow {
                         MouseButton::Left,
                         cx.listener(|this, _, window, _| window.focus(&this.tree_focus)),
                     )
+                    .relative()
+                    .overflow_hidden()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .w_full()
+                    .bg(theme.panes.channel_tree)
+                    .children(tree_wallpaper)
                     .child(self.input_to_draft(&self.tree_focus, cx))
                     .child(panes.channel_tree.clone().cached(pane_style().w_full())),
             );
@@ -9436,6 +9508,7 @@ struct LogStyle {
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
+        let fonts = appearance.fonts(theme.dark);
         Self {
             theme,
             channel_alt: theme.panes.channel_alternate,
@@ -9446,12 +9519,12 @@ impl LogStyle {
             combined_alt: theme.panes.combined_alternate,
             // Built for every visible row on each redraw; the default font
             // name needs no allocation.
-            time_font: if appearance.time_font.is_empty() {
+            time_font: if fonts.time_font.is_empty() {
                 SharedString::new_static(default_time_font())
             } else {
-                appearance.time_font.clone().into()
+                fonts.time_font.clone().into()
             },
-            time_size: pane_text_size(appearance.time_font_size, None),
+            time_size: pane_text_size(fonts.time_font_size, None),
             alternate_rows: appearance.alternate_rows,
             slice: None,
             compact_urls: appearance.compact_urls,
@@ -9632,12 +9705,7 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let look = self.channel_log_look(theme);
         let mut style = LogStyle::new(&self.appearance, look.theme);
-        style.slice = self.wallpaper.slice(look.background);
-        // The time column grows with the log's text size as it does with the
-        // time size.
-        if style.time_size.is_none() {
-            style.time_size = channel_log_text_size(&look, &self.appearance);
-        }
+        style.slice = self.wallpapers.channel_log.slice(look.background);
         match self.channel_log_layout().row(row) {
             ChannelLogRow::Status => {
                 let text = match self.selected_network_id() {
@@ -10268,7 +10336,13 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
-        let style = LogStyle::new(&self.appearance, theme::current(cx));
+        // The picture shows through the alternate rows.
+        let mut styled = theme;
+        channel_look::translucent_combined(
+            &mut styled,
+            &self.appearance.wallpapers(theme.dark).combined_log,
+        );
+        let style = LogStyle::new(&self.appearance, styled);
         let (id, index) = match self.combined_rows.get(row) {
             Some(&CombinedRow::Line(id, index)) => (id, index),
             Some(&CombinedRow::System(index)) => {
@@ -11600,5 +11674,13 @@ mod send_key_tests;
 mod clipboard_data_regression_tests;
 
 #[cfg(test)]
+#[path = "main_tests/font_split_tests.rs"]
+mod font_split_tests;
+
+#[cfg(test)]
 #[path = "main_tests/pane_font_size_tests.rs"]
 mod pane_font_size_tests;
+
+#[cfg(test)]
+#[path = "main_tests/combined_log_base_tests.rs"]
+mod combined_log_base_tests;
