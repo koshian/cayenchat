@@ -282,3 +282,12 @@ patch an Opaque window gets an opaque layer cleared with alpha 1, and a
 Transparent one a non-opaque layer, so the window state and the layer agree
 when `set_background_appearance` switches back and forth. To re-apply: replace
 the stub body with `self.layer.set_opaque(!transparent);`.
+
+In `src/platform.rs`, `src/window.rs`, `src/platform/linux/x11/window.rs` and
+`src/platform/linux/x11/client.rs`, `Window::is_compositing` tells whether a
+transparent window shows what lies behind it (CayenChat #930). The new
+`PlatformWindow::is_compositing` defaults to `true`; X11 answers it with
+`check_compositor_present` (made `pub(super)`), because without a compositor the
+X server composes a window's see-through pixels over black. CayenChat uses it to
+keep the window opaque in that case. To re-apply: add the trait method, the
+`Window` wrapper and the X11 override.

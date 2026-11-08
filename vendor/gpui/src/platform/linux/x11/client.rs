@@ -1906,7 +1906,7 @@ fn fp3232_to_f32(value: xinput::Fp3232) -> f32 {
     value.integral as f32 + value.frac as f32 / u32::MAX as f32
 }
 
-fn check_compositor_present(xcb_connection: &XCBConnection, root: u32) -> bool {
+pub(super) fn check_compositor_present(xcb_connection: &XCBConnection, root: u32) -> bool {
     // Method 1: Check for _NET_WM_CM_S{root}
     let atom_name = format!("_NET_WM_CM_S{}", root);
     let atom1 = get_reply(

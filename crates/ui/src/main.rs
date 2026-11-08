@@ -1075,6 +1075,12 @@ struct ChatWindow {
     /// The native window was last made transparent because a pane background
     /// is see-through (set from `render`).
     window_transparent: bool,
+    /// Whether a pane was see-through when the window last asked the platform
+    /// whether it composites; asked again when this changes (#930).
+    translucent_seen: bool,
+    /// Whether a transparent window shows what is behind it. Without it the
+    /// window keeps its opaque base and the panes show over that.
+    window_compositing: bool,
     /// Keep every CayenChat window above ordinary windows (Windows only).
     /// Applied to the windows opened later; the native state is set by
     /// `apply_always_on_top`, never while building a window.
@@ -1684,6 +1690,8 @@ impl ChatWindow {
             window_display: None,
             shown_title: String::new(),
             window_transparent: false,
+            translucent_seen: false,
+            window_compositing: true,
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: saved.connection_diagnostics,
@@ -7130,9 +7138,15 @@ impl Render for ChatWindow {
             self.shown_title = title.clone();
         }
         // A see-through pane needs a window without an opaque base. Where the
-        // platform cannot show the desktop through (no compositing), the
-        // window keeps its base and the pane shows over it.
-        let transparent = self.appearance.has_translucent_pane();
+        // platform cannot show the desktop through (X11 without a
+        // compositor, which would compose it over black), the window keeps
+        // its base and the pane shows over it.
+        let translucent = self.appearance.has_translucent_pane();
+        if translucent != self.translucent_seen {
+            self.translucent_seen = translucent;
+            self.window_compositing = !translucent || window.is_compositing();
+        }
+        let transparent = translucent && self.window_compositing;
         if transparent != self.window_transparent {
             window.set_background_appearance(if transparent {
                 WindowBackgroundAppearance::Transparent
@@ -7910,7 +7924,7 @@ impl ChatWindow {
             PaneKind::ChannelLog => {
                 let selection = self.state.selection();
                 let look = self.channel_log_look(theme);
-                let picture = self.wallpaper.slice(1.).is_some();
+                let picture = self.wallpaper.slice(look.background).is_some();
                 let main = self
                     .channel_log_lists
                     .get_mut(&selection)
@@ -8097,7 +8111,7 @@ impl ChatWindow {
                 .element(look.wallpaper.as_ref(), look.background, window, cx);
         let picture = wallpaper.is_some();
         let appearance = &self.appearance;
-        let translucent = appearance.has_translucent_pane();
+        let translucent = appearance.has_translucent_pane() && self.window_compositing;
         let draft_row_height = self.draft_row_height();
         let input_size = pane_text_size(appearance.input_font_size, None);
         // The input draws its own text size, so the pane's size goes to it.
@@ -9604,7 +9618,7 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let look = self.channel_log_look(theme);
         let mut style = LogStyle::new(&self.appearance, look.theme);
-        style.slice = self.wallpaper.slice(look.background.a);
+        style.slice = self.wallpaper.slice(look.background);
         // The time column grows with the log's text size as it does with the
         // time size.
         if style.time_size.is_none() {

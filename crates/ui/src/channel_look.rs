@@ -148,6 +148,10 @@ pub(crate) struct Slice {
     image: Arc<RenderImage>,
     /// Where the pane placed the picture, set while it paints.
     placed: Rc<Cell<Bounds<Pixels>>>,
+    /// The pane background made opaque: what lies under the picture where
+    /// it does not reach (contain, center), so a row replaces the backdrop
+    /// there too instead of adding its opacity to it.
+    base: Rgba,
     /// The opacity of the row color.
     alpha: f32,
 }
@@ -159,11 +163,12 @@ pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div
     let Some(slice) = slice else {
         return row.bg(color);
     };
-    let (image, placed) = (slice.image.clone(), slice.placed.clone());
+    let (image, placed, base) = (slice.image.clone(), slice.placed.clone(), slice.base);
     let picture = canvas(
         |_, _, _| (),
         move |bounds, (), window, _| {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.paint_quad(fill(bounds, base));
                 let _ = window.paint_image(placed.get(), Corners::default(), image, 0, false);
             });
         },
@@ -206,14 +211,18 @@ pub(crate) struct Wallpaper {
 }
 
 impl Wallpaper {
-    /// The picture for alternate rows, with the row color's `alpha`, when it
-    /// is shown.
-    pub(crate) fn slice(&self, alpha: f32) -> Option<Slice> {
+    /// The picture for alternate rows, with the opacity of the pane
+    /// `background` as the row color's alpha, when it is shown.
+    pub(crate) fn slice(&self, background: Rgba) -> Option<Slice> {
         match self.slot.as_ref() {
             Some((_, State::Ready(image))) => Some(Slice {
                 image: image.clone(),
                 placed: self.placed.clone(),
-                alpha,
+                base: Rgba {
+                    a: 1.,
+                    ..background
+                },
+                alpha: background.a,
             }),
             _ => None,
         }
@@ -278,6 +287,12 @@ impl Wallpaper {
             // its opacity) lies over it, and the rows over both.
             Some((_, State::Ready(image))) => {
                 let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
+                // Opaque under the picture, so that where it does not reach
+                // the pane's opacity is applied once, by the background.
+                let base = Rgba {
+                    a: 1.,
+                    ..background
+                };
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
                         |_, _, _| (),
@@ -285,6 +300,7 @@ impl Wallpaper {
                             let size = image.size(0);
                             let placed = fit_bounds(fit, bounds, size);
                             shared.set(placed);
+                            window.paint_quad(fill(bounds, base));
                             let _ = window.paint_image(placed, Corners::default(), image, 0, false);
                         },
                     )

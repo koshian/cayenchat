@@ -1526,6 +1526,11 @@ impl PlatformWindow for X11Window {
         self.send_moveresize(edge.to_moveresize()).log_err();
     }
 
+    fn is_compositing(&self) -> bool {
+        let root = self.0.xcb.setup().roots[0].root;
+        super::client::check_compositor_present(&self.0.xcb, root)
+    }
+
     fn window_decorations(&self) -> crate::Decorations {
         let state = self.0.state.borrow();
 

@@ -3,21 +3,23 @@
 
     scripts/e2e/opacity_gui.py --app target/debug/cayenchat
 
-The log pane is set to 40 % opacity. Xvfb has no compositor, so the window's
-transparent pixels show black and each pixel is the pane color times 0.4,
+The log pane is set to 40 % opacity. Xvfb has no compositor, so the window
+stays opaque and the pane lies over the window's base color (white in the
+light theme); each pixel is the pane color times 0.4 plus the base times 0.6,
 which can be computed:
 
 - the empty top of the short log (above the oldest line) has the background
-  at 40 %, not the desktop (black) and not a doubled opacity;
+  at 40 %, not the bare base and not a doubled opacity;
 - the part right of the text holds exactly the background and the alternate
   color, both at 40 %, so no filler or row covers another and every row has
   the same opacity;
 - at 100 % the same part is the plain colors.
 """
-import argparse, os, sys
+import argparse, os, struct, sys, tempfile, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pixel_check import FixtureSession, PixelMismatch, hex_color, parse_color  # noqa: E402
+from pixel_check import (  # noqa: E402
+    FixtureSession, PixelMismatch, Rect, hex_color, parse_color)
 from log_colors_gui import (  # noqa: E402
     ALTERNATE, BACKGROUND, EMPTY_TOP, LINES, LOG_PANE, TEXT_FREE, row_colors)
 
@@ -25,8 +27,12 @@ OPACITY = 40
 TOLERANCE = 2
 
 
-def over_black(color, percent):
-    return tuple(round(channel * percent / 100) for channel in color)
+BASE = (255, 255, 255)
+
+
+def over_base(color, percent):
+    return tuple(round((c * percent + b * (100 - percent)) / 100)
+                 for c, b in zip(color, BASE))
 
 
 def near(a, b):
@@ -34,8 +40,8 @@ def near(a, b):
 
 
 def check(app, percent):
-    background = over_black(parse_color(BACKGROUND), percent)
-    alternate = over_black(parse_color(ALTERNATE), percent)
+    background = over_base(parse_color(BACKGROUND), percent)
+    alternate = over_base(parse_color(ALTERNATE), percent)
     settings = {"appearance": {"channel_log_background": BACKGROUND,
                                "channel_log_alternate": ALTERNATE,
                                "alternate_rows": True,
@@ -59,6 +65,52 @@ def check(app, percent):
         print(f"ok {percent} %")
 
 
+# Right of the picture a "contain" wallpaper leaves in the log (the square
+# picture is centered in the 855 px wide pane), where only the background lies.
+BESIDE_PICTURE = Rect(650, 0, 200, 342)
+
+
+def white_square(path, side=40):
+    """Writes a white PNG of `side` pixels."""
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+    rows = b"".join(b"\0" + b"\xff\xff\xff" * side for _ in range(side))
+    with open(path, "wb") as file:
+        file.write(b"\x89PNG\r\n\x1a\n"
+                   + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
+                   + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def check_wallpaper(app, percent):
+    """Where a "contain" wallpaper leaves the log bare, the pane is painted
+    once: the plain rows show the background and the alternate rows the
+    alternate color over it, not stacked over a second background."""
+    background = parse_color(BACKGROUND)
+    alternate = tuple(round((a * percent + b * (100 - percent)) / 100)
+                      for a, b in zip(parse_color(ALTERNATE), background))
+    with tempfile.TemporaryDirectory(prefix="opacity-picture-") as scratch:
+        picture = os.path.join(scratch, "square.png")
+        white_square(picture)
+        settings = {"appearance": {"channel_log_background": BACKGROUND,
+                                   "channel_log_alternate": ALTERNATE,
+                                   "alternate_rows": True,
+                                   "channel_log_opacity": percent,
+                                   "channel_looks": [
+                                       {"server": "local", "channel": "#demo",
+                                        "wallpaper": picture, "wallpaper_fit": "contain",
+                                        "background_opacity": percent}]}}
+        with FixtureSession(app, settings, lines=LINES) as session:
+            log = session.pane(LOG_PANE, f"wallpaper-{percent}")
+            bare = log.cut(BESIDE_PICTURE)
+            for color in bare.colors():
+                if not (near(color, background) or near(color, alternate)):
+                    raise PixelMismatch(
+                        f"beside the picture at {percent} %: {hex_color(color)} is neither "
+                        f"{hex_color(background)} nor {hex_color(alternate)}: {bare.summary(8)}")
+            print(f"ok wallpaper {percent} %: {bare.summary(4)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--app", required=True)
@@ -66,6 +118,7 @@ def main():
     try:
         check(args.app, OPACITY)
         check(args.app, 100)
+        check_wallpaper(args.app, OPACITY)
     except PixelMismatch as error:
         sys.exit(f"FAIL: {error}")
     print("all passed")
