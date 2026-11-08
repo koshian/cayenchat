@@ -462,23 +462,36 @@ fn library_names_are_cleaned_and_empty_ones_dropped() {
 }
 
 #[test]
-fn taking_a_theme_side_keeps_edits_made_to_the_other_side_meanwhile() {
+fn a_prepared_theme_lands_on_the_current_appearance_and_keeps_other_edits() {
     let dir = tempfile::tempdir().unwrap();
     let theme = ThemeFile::capture(&sample(), true, "Dark", read).unwrap();
-    // The theme is applied to a copy taken before the form changed.
-    let mut applied = Appearance::default();
-    theme.apply(&mut applied, dir.path(), &check).unwrap();
-    // Meanwhile the light side was edited on the live appearance.
+    let prepared = theme.prepare(dir.path(), &check).unwrap();
+    // Meanwhile the light side and the shared fonts were edited.
     let mut live = Appearance {
         channel_log_background: "#ABCDEF".into(),
         ..Appearance::default()
     };
-    live.take_theme_side(true, &applied);
+    live.fonts.input_font_size = 24;
+    prepared.apply_to(&mut live);
     assert_eq!(live.channel_log_background, "#ABCDEF");
     assert_eq!(live.dark.channel_log_background, "#102030");
     assert_eq!(live.fonts(true).channel_log_font, "Noto Serif");
     assert_eq!(live.fonts(false).channel_log_font, "");
-    // The dark side reads as unmodified from its theme.
+    assert_eq!(live.fonts(false).input_font_size, 24);
     assert_eq!(live.theme_status(true), ("Dark".into(), false));
     assert!(live.theme_status(false).1);
+}
+
+#[test]
+fn a_theme_without_fonts_leaves_edited_fonts_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut theme = ThemeFile::capture(&sample(), true, "Dark", read).unwrap();
+    theme.fonts = None;
+    let prepared = theme.prepare(dir.path(), &check).unwrap();
+    let mut live = Appearance::default();
+    live.fonts.input_font_size = 24;
+    prepared.apply_to(&mut live);
+    assert_eq!(live.fonts(false).input_font_size, 24);
+    assert_eq!(live.fonts(true).input_font_size, 24);
+    assert!(!live.split_fonts);
 }

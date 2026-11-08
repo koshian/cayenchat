@@ -7920,6 +7920,23 @@ impl ChatWindow {
         })
     }
 
+    /// The combined log's own color: opaque with a standard wallpaper, whose
+    /// backdrop carries the pane's opacity over the picture (#962).
+    fn combined_log_base(&self, theme: Theme) -> Rgba {
+        let color = theme.panes.combined_log;
+        if self
+            .appearance
+            .wallpapers(theme.dark)
+            .combined_log
+            .path
+            .is_some()
+        {
+            Rgba { a: 1., ..color }
+        } else {
+            color
+        }
+    }
+
     /// Content of a cached pane; see [`ChatPane`].
     fn render_pane(
         &mut self,
@@ -8004,9 +8021,11 @@ impl ChatWindow {
                     .into_any_element()
             }
             PaneKind::CombinedLog => {
+                // Under a wallpaper the backdrop already paints the color
+                // below the rows; a filler would lay it over a second time.
                 let filler = Self::log_tail_filler(
                     self.combined_list.unfilled_from(),
-                    theme.panes.combined_log,
+                    self.combined_log_base(theme),
                     None,
                     |chat| Some(&chat.combined_list),
                     cx,
@@ -8169,14 +8188,7 @@ impl ChatWindow {
         let channel_log_bg = look.theme.panes.channel_log;
         // With a wallpaper the backdrop carries the pane's opacity over the
         // picture, so the pane itself is opaque under it (#962).
-        let combined_bg = if standard.combined_log.path.is_some() {
-            Rgba {
-                a: 1.,
-                ..theme.panes.combined_log
-            }
-        } else {
-            theme.panes.combined_log
-        };
+        let combined_bg = self.combined_log_base(theme);
 
         // Panes that do not change while the draft is edited are separate cached
         // views: typing redraws this window, but they reuse their last layout
@@ -11668,3 +11680,7 @@ mod font_split_tests;
 #[cfg(test)]
 #[path = "main_tests/pane_font_size_tests.rs"]
 mod pane_font_size_tests;
+
+#[cfg(test)]
+#[path = "main_tests/combined_log_base_tests.rs"]
+mod combined_log_base_tests;

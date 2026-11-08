@@ -489,7 +489,20 @@ impl ThemeFile {
         wallpaper_dir: &Path,
         check_image: ImageCheck<'_>,
     ) -> Result<(), ThemeError> {
-        let dark = self.mode.is_dark();
+        self.prepare(wallpaper_dir, check_image)?
+            .apply_to(appearance);
+        Ok(())
+    }
+
+    /// The part of applying that reads and writes files: resolves the colors
+    /// and writes the images. [`PreparedTheme::apply_to`] then sets the values
+    /// on whatever appearance is current, so nothing is carried over from a
+    /// copy taken earlier.
+    pub fn prepare(
+        &self,
+        wallpaper_dir: &Path,
+        check_image: ImageCheck<'_>,
+    ) -> Result<PreparedTheme, ThemeError> {
         let colors = self.resolve_colors()?;
         let mut wallpapers = RegionWallpapers::default();
         for region in WallpaperRegion::ALL {
@@ -510,20 +523,16 @@ impl ThemeFile {
                 opacity: theme_wallpaper.opacity,
             };
         }
-        appearance.set_theme_colors(dark, colors);
-        if let Some(opacity) = self.url_tooltip_opacity {
-            appearance.url_tooltip_opacity = opacity;
-        }
-        if let Some(fonts) = &self.fonts {
-            appearance.set_theme_fonts(dark, fonts);
-        }
-        *appearance.wallpapers_mut(dark) = wallpapers;
-        let builtin = self.name == builtin_name(dark) && self.is_builtin_values(dark);
-        *appearance.origin_mut(dark) = ThemeOrigin {
-            name: (!builtin).then(|| self.name.clone()),
-            fingerprint: (!builtin).then(|| appearance.fingerprint(dark)),
-        };
-        Ok(())
+        let dark = self.mode.is_dark();
+        Ok(PreparedTheme {
+            dark,
+            name: self.name.clone(),
+            builtin: self.name == builtin_name(dark) && self.is_builtin_values(dark),
+            colors,
+            url_tooltip_opacity: self.url_tooltip_opacity,
+            fonts: self.fonts.clone(),
+            wallpapers,
+        })
     }
 
     /// Whether this is the built-in theme (as [`Self::builtin`] writes it),
@@ -535,6 +544,44 @@ impl ThemeFile {
             && self.url_tooltip_opacity == builtin.url_tooltip_opacity
             && self.fonts == builtin.fonts
             && self.wallpapers == builtin.wallpapers
+    }
+}
+
+/// A theme whose files are written and colors resolved, ready to be set on an
+/// appearance. Holds no part of any appearance.
+#[derive(Debug, Clone)]
+pub struct PreparedTheme {
+    dark: bool,
+    name: String,
+    builtin: bool,
+    colors: ThemeColors,
+    url_tooltip_opacity: Option<u8>,
+    fonts: Option<ThemeFonts>,
+    wallpapers: RegionWallpapers,
+}
+
+impl PreparedTheme {
+    pub fn is_dark(&self) -> bool {
+        self.dark
+    }
+
+    /// Sets the theme's values on its side of `appearance` and notes it as
+    /// the origin. Nothing of the other side is touched, and fonts the theme
+    /// does not carry stay as they are.
+    pub fn apply_to(&self, appearance: &mut Appearance) {
+        let dark = self.dark;
+        appearance.set_theme_colors(dark, self.colors.clone());
+        if let Some(opacity) = self.url_tooltip_opacity {
+            appearance.url_tooltip_opacity = opacity;
+        }
+        if let Some(fonts) = &self.fonts {
+            appearance.set_theme_fonts(dark, fonts);
+        }
+        *appearance.wallpapers_mut(dark) = self.wallpapers.clone();
+        *appearance.origin_mut(dark) = ThemeOrigin {
+            name: (!self.builtin).then(|| self.name.clone()),
+            fingerprint: (!self.builtin).then(|| appearance.fingerprint(dark)),
+        };
     }
 }
 
@@ -787,32 +834,18 @@ impl Appearance {
         if set == *self.fonts(dark) {
             return;
         }
-        self.set_split_fonts(true);
-        *self.fonts_mut(dark) = set;
-    }
-
-    /// Takes over what applying a theme sets for the light or dark side from
-    /// `applied`, an appearance the theme was applied to: the colors, the
-    /// popup opacity, the fonts, the wallpapers and the origin. Nothing of the
-    /// other side or of the rest of the settings is touched, so an edit made
-    /// since `applied` was taken stays.
-    pub fn take_theme_side(&mut self, dark: bool, applied: &Appearance) {
-        self.set_theme_colors(dark, applied.theme_colors(dark));
-        self.url_tooltip_opacity = applied.url_tooltip_opacity;
-        if applied.split_fonts || self.split_fonts {
-            if applied.split_fonts {
-                self.set_split_fonts(true);
+        if !self.split_fonts {
+            // Move to separate fonts without restoring older separate values:
+            // the other side keeps what it shows now.
+            let other = self.fonts(!dark).clone();
+            if dark {
+                self.light_fonts = Some(other);
+            } else {
+                self.dark_fonts = Some(other);
             }
-            *self.fonts_mut(dark) = applied.fonts(dark).clone();
-        } else {
-            self.fonts = applied.fonts.clone();
+            self.split_fonts = true;
         }
-        *self.wallpapers_mut(dark) = applied.wallpapers(dark).clone();
-        let mut origin = applied.origin(dark).clone();
-        if origin.name.is_some() {
-            origin.fingerprint = Some(self.fingerprint(dark));
-        }
-        *self.origin_mut(dark) = origin;
+        *self.fonts_mut(dark) = set;
     }
 
     pub fn wallpapers(&self, dark: bool) -> &RegionWallpapers {

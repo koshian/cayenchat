@@ -3776,6 +3776,23 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_applied_after_going_back_to_shared_keeps_the_other_side() {
+        let mut appearance = Appearance::default();
+        appearance.fonts.input_font_size = 15;
+        appearance.set_split_fonts(true);
+        appearance.fonts_mut(false).input_font_size = 22;
+        appearance.fonts_mut(true).input_font_size = 26;
+        appearance.set_split_fonts(false);
+        assert_eq!(appearance.fonts(false).input_font_size, 15);
+        let mut dark = appearance.theme_fonts(true);
+        dark.input.size = 30;
+        appearance.set_theme_fonts(true, &dark);
+        assert!(appearance.split_fonts);
+        assert_eq!(appearance.fonts(true).input_font_size, 30);
+        assert_eq!(appearance.fonts(false).input_font_size, 15);
+    }
+
+    #[test]
     fn line_height_is_default_when_absent_and_clamped_on_load() {
         let mut saved = serde_json::to_value(Settings::default()).unwrap();
         let appearance = saved["appearance"].as_object_mut().unwrap();

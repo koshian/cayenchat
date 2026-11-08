@@ -217,7 +217,6 @@ impl SettingsWindow {
             return;
         }
         self.themes.busy = true;
-        let mut appearance = self.shown_appearance(cx);
         let directories = (
             crate::settings_file::library_directory(),
             crate::settings_file::wallpaper_directory(),
@@ -225,19 +224,20 @@ impl SettingsWindow {
         let applying = cx.background_spawn(async move {
             let (library, wallpapers) = (directories.0?, directories.1?);
             let theme = theme_file::library_load(&library, &id, &check_image)?;
-            theme.apply(&mut appearance, &wallpapers, &check_image)?;
-            Ok::<_, String>((theme, appearance, wallpapers))
+            let prepared = theme.prepare(&wallpapers, &check_image)?;
+            Ok::<_, String>((theme, prepared, wallpapers))
         });
         cx.spawn(async move |this, cx| {
             let result = applying.await;
             let _ = this.update(cx, |this, cx| {
                 this.themes.busy = false;
                 match result {
-                    Ok((theme, applied, wallpapers)) => {
-                        // Only the side of the theme is taken from the result:
-                        // the form may have been edited while it was read.
+                    Ok((theme, prepared, wallpapers)) => {
+                        // Only the files were prepared off the thread; the
+                        // values go onto the form as it is now, which may
+                        // have been edited meanwhile.
                         let mut appearance = this.shown_appearance(cx);
-                        appearance.take_theme_side(theme.mode.is_dark(), &applied);
+                        prepared.apply_to(&mut appearance);
                         // What neither the saved settings nor the shown ones
                         // use is gone.
                         let saved = this.saved.appearance.clone();

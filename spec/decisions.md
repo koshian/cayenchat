@@ -3914,12 +3914,12 @@ the start of the session.
   first (the origin's name is the default) and a file name and place from the
   OS save dialog; it changes no setting, origin or modified state, and fails
   rather than leave out a wallpaper that cannot be read or is too large.
-- **Applying is asynchronous.** The images are read and written off the UI
-  thread from a copy of the form, and only the theme's side of the result
-  (`Appearance::take_theme_side`: colors, popup opacity, fonts, wallpapers,
-  origin) is put into the form when it finishes, so an edit made meanwhile,
-  especially of the other side, is not undone. Unused images are removed after
-  that, judged against the form as it is then.
+- **Applying is asynchronous.** Only the images are read and written off the
+  UI thread (`ThemeFile::prepare`); the prepared theme is then set on the form
+  as it is when that finishes (`PreparedTheme::apply_to`), so no copy of the
+  form is carried back and an edit made meanwhile is not undone. Unused images
+  are removed after that, judged against the form as it is then. Moving to
+  separate fonts for a theme keeps the other side's fonts as shown now.
 - **Not done.** Sharing other than through files, and behavior switches such
   as alternate rows in themes.
 
