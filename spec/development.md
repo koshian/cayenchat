@@ -1205,7 +1205,8 @@ full manual GUI runs, repeated for every review):
   the alternate-row modes drawing differently; `--expect-background` shows it
   failing. `scripts/e2e/opacity_gui.py` checks a log at 40 % opacity (every
   row, the part above a short log and the bare sides of a contain wallpaper at the same opacity, composed over the
-  window base an X server without a compositor leaves). A new check must be seen to fail once with a deliberately wrong
+  window base an X server without a compositor leaves; with a wallpaper, pane/wallpaper opacities of 100/80,
+  40/80 and 40/100, in the rows, the frame and over the picture). A new check must be seen to fail once with a deliberately wrong
   expectation, and to pass twice in a row with the same build.
 - **What cannot be computed is judged once, then guarded.** A look that no
   formula gives (glyph shapes, a photo's scaling, overall taste) is confirmed

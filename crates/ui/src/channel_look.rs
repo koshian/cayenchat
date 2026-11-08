@@ -85,10 +85,17 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
         blur: blur_of(look),
         fit: look.wallpaper_fit.unwrap_or_default(),
     });
-    let mut background = theme.panes.channel_log;
+    // The one effective opacity of the log background: the pane's (#930),
+    // times the wallpaper's own when there is a picture (#950). The
+    // background layer, plain and alternate rows, the filler and the frame
+    // all take it from here, so none of them decides it again.
+    let mut opacity = theme.panes.channel_log.a;
     if wallpaper.is_some() {
-        background.a = f32::from(background_opacity_of(look)) / 100.;
+        opacity *= f32::from(background_opacity_of(look)) / 100.;
     }
+    theme.panes.channel_log.a = opacity;
+    theme.panes.channel_alternate.a = opacity;
+    let background = theme.panes.channel_log;
     ResolvedLook {
         background,
         text: color(&look.text),
@@ -179,6 +186,33 @@ pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div
     };
     row.child(picture)
         .child(div().absolute().top_0().left_0().size_full().bg(color))
+}
+
+/// The four strips of the padding around a translucent log's rows
+/// (`FRAME_X` left and right, `FRAME_Y` above and below). Each paints like a
+/// row does (`alternate_row`), so the frame shows the picture and the color
+/// at the same opacity as the rows. The side strips stop short of the top and
+/// bottom ones, so no pixel is painted twice.
+pub(crate) const FRAME_X: f32 = 8.;
+pub(crate) const FRAME_Y: f32 = 4.;
+
+pub(crate) fn frame(color: Rgba, slice: Option<&Slice>) -> [Div; 4] {
+    let strip = || div().absolute();
+    [
+        strip().top_0().left_0().right_0().h(px(FRAME_Y)),
+        strip().bottom_0().left_0().right_0().h(px(FRAME_Y)),
+        strip()
+            .top(px(FRAME_Y))
+            .bottom(px(FRAME_Y))
+            .left_0()
+            .w(px(FRAME_X)),
+        strip()
+            .top(px(FRAME_Y))
+            .bottom(px(FRAME_Y))
+            .right_0()
+            .w(px(FRAME_X)),
+    ]
+    .map(|strip| alternate_row(strip, color, slice))
 }
 
 enum State {
@@ -368,6 +402,30 @@ mod tests {
     }
 
     #[test]
+    fn a_wallpaper_and_a_pane_opacity_resolve_to_one_opacity() {
+        let look = ChannelLook {
+            wallpaper: Some("/pic.png".into()),
+            background_opacity: Some(80),
+            ..ChannelLook::default()
+        };
+        for (pane, want) in [(100, 0.8), (50, 0.4)] {
+            let appearance = Appearance {
+                channel_log_opacity: pane,
+                ..Appearance::default()
+            };
+            let base = Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance);
+            let resolved = resolve(Some(&look), base);
+            for alpha in [
+                resolved.background.a,
+                resolved.theme.panes.channel_log.a,
+                resolved.theme.panes.channel_alternate.a,
+            ] {
+                assert!((alpha - want).abs() < 1e-6, "{pane} % gave {alpha}");
+            }
+        }
+    }
+
+    #[test]
     fn the_channel_look_wins_in_both_themes() {
         for dark in [false, true] {
             let base = theme(dark);
@@ -381,10 +439,14 @@ mod tests {
                 ..ChannelLook::default()
             };
             let resolved = resolve(Some(&look), base);
-            assert_eq!(resolved.theme.panes.channel_log, rgb(0x102030));
-            // The alternate color keeps its own alpha; a row applies the
-            // opacity itself where it replaces the background.
-            assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
+            let log = resolved.theme.panes.channel_log;
+            assert_eq!((log.r, log.g, log.b), {
+                let c = rgb(0x102030);
+                (c.r, c.g, c.b)
+            });
+            // Background and alternate color carry the one opacity.
+            assert_eq!(resolved.theme.panes.channel_log.a, 0.7);
+            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.7);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);
             let wallpaper = resolved.wallpaper.unwrap();

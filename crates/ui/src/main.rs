@@ -8109,6 +8109,7 @@ impl ChatWindow {
         let wallpaper =
             self.wallpaper
                 .element(look.wallpaper.as_ref(), look.background, window, cx);
+        let frame_slice = self.wallpaper.slice(look.background);
         let appearance = &self.appearance;
         let translucent = appearance.has_translucent_pane() && self.window_compositing;
         let draft_row_height = self.draft_row_height();
@@ -8166,16 +8167,19 @@ impl ChatWindow {
             )
             .when_some(look.text, |d, color| d.text_color(color))
             .children(wallpaper)
+            .children(log_frame(channel_log_bg, frame_slice.as_ref()))
             .child(self.input_to_draft(&self.log_focus, cx))
             .child(panes.channel_log.clone().cached(pane_style()));
 
         let combined_log = div()
             .id("combined-log")
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .map(|d| log_surface(d, combined_bg))
+            .children(log_frame(combined_bg, None))
             .when(!appearance.combined_log_font.is_empty(), |d| {
                 d.font_family(appearance.combined_log_font.clone())
             })
@@ -9370,22 +9374,24 @@ fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoEle
 }
 
 /// Padding and background of a log pane. An opaque background is painted under
-/// the rows. A translucent one is painted as the padding's border instead and
-/// each row paints its own color (`row_background`,
+/// the rows. A translucent one is painted by `log_frame` over the padding
+/// only, and each row paints its own color (`row_background`,
 /// `LogStyle::channel_plain_row`), so a row never stacks on the pane
-/// background and every row shows the same opacity. (That frame has no
-/// wallpaper picture in it.)
+/// background and every row shows the same opacity.
 fn log_surface<T: Styled>(d: T, bg: Rgba) -> T {
+    let d = d
+        .px(px(channel_look::FRAME_X))
+        .py(px(channel_look::FRAME_Y));
+    if bg.a >= 1. { d.bg(bg) } else { d }
+}
+
+/// The painted frame of a log pane drawn by [`log_surface`]: nothing on an
+/// opaque one, whose background is the pane's own.
+fn log_frame(bg: Rgba, slice: Option<&channel_look::Slice>) -> Vec<Div> {
     if bg.a >= 1. {
-        return d.px_2().py_1().bg(bg);
+        return Vec::new();
     }
-    let mut d = d.border_color(bg);
-    let widths = &mut d.style().border_widths;
-    widths.left = Some(px(8.).into());
-    widths.right = Some(px(8.).into());
-    widths.top = Some(px(4.).into());
-    widths.bottom = Some(px(4.).into());
-    d
+    channel_look::frame(bg, slice).into()
 }
 
 /// Background a log row paints itself: the alternate color on alternate rows;

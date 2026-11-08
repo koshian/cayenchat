@@ -70,45 +70,61 @@ def check(app, percent):
 BESIDE_PICTURE = Rect(650, 0, 200, 342)
 
 
-def white_square(path, side=40):
-    """Writes a white PNG of `side` pixels."""
+def black_square(path, side=40):
+    """Writes a black PNG of `side` pixels."""
     def chunk(kind, data):
         body = kind + data
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-    rows = b"".join(b"\0" + b"\xff\xff\xff" * side for _ in range(side))
+    rows = b"".join(b"\0" + b"\0\0\0" * side for _ in range(side))
     with open(path, "wb") as file:
         file.write(b"\x89PNG\r\n\x1a\n"
                    + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
                    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-def check_wallpaper(app, percent):
-    """Where a "contain" wallpaper leaves the log bare, every pixel is the
-    row color at the pane's opacity once (over the window base here): the
-    plain rows and the part above a short log the background, the alternate
-    rows the alternate color, none stacked on another layer, and none opaque."""
-    background = over_base(parse_color(BACKGROUND), percent)
-    alternate = over_base(parse_color(ALTERNATE), percent)
+# Inside the picture (rows, no text), and in the frame left of the log beside
+# the picture.
+IN_PICTURE = Rect(300, 100, 200, 100)
+FRAME_LEFT = Rect(0, 100, 6, 100)
+
+
+def check_wallpaper(app, pane, wallpaper):
+    """The log background has one opacity, the pane's times the wallpaper's:
+    where the "contain" picture leaves the log bare, and in the frame, every
+    pixel is a row color at it once over the window base; on the (black)
+    picture the same over black. At a pane of 100 % the wallpaper's own
+    opacity shows alone, as before the pane had one."""
+    percent = pane * wallpaper // 100
+    background = parse_color(BACKGROUND)
+    alternate = parse_color(ALTERNATE)
+    on_base = (over_base(background, percent), over_base(alternate, percent))
+    on_picture = tuple(tuple(round(c * percent / 100) for c in color)
+                       for color in (background, alternate))
+    wanted = {"beside the picture": (BESIDE_PICTURE, on_base),
+              "in the frame": (FRAME_LEFT, on_base),
+              "on the picture": (IN_PICTURE, on_picture)}
     with tempfile.TemporaryDirectory(prefix="opacity-picture-") as scratch:
         picture = os.path.join(scratch, "square.png")
-        white_square(picture)
+        black_square(picture)
         settings = {"appearance": {"channel_log_background": BACKGROUND,
                                    "channel_log_alternate": ALTERNATE,
                                    "alternate_rows": True,
-                                   "channel_log_opacity": percent,
+                                   "channel_log_opacity": pane,
                                    "channel_looks": [
                                        {"server": "local", "channel": "#demo",
                                         "wallpaper": picture, "wallpaper_fit": "contain",
-                                        "background_opacity": percent}]}}
+                                        "background_opacity": wallpaper}]}}
         with FixtureSession(app, settings, lines=LINES) as session:
-            log = session.pane(LOG_PANE, f"wallpaper-{percent}")
-            bare = log.cut(BESIDE_PICTURE)
-            for color in bare.colors():
-                if not (near(color, background) or near(color, alternate)):
-                    raise PixelMismatch(
-                        f"beside the picture at {percent} %: {hex_color(color)} is neither "
-                        f"{hex_color(background)} nor {hex_color(alternate)}: {bare.summary(8)}")
-            print(f"ok wallpaper {percent} %: {bare.summary(4)}")
+            log = session.pane(LOG_PANE, f"wallpaper-{pane}-{wallpaper}")
+            for where, (rect, allowed) in wanted.items():
+                cut = log.cut(rect)
+                for color in cut.colors():
+                    if not any(near(color, want) for want in allowed):
+                        raise PixelMismatch(
+                            f"{where} at pane {pane} %, wallpaper {wallpaper} %: "
+                            f"{hex_color(color)} is none of "
+                            f"{[hex_color(want) for want in allowed]}: {cut.summary(8)}")
+            print(f"ok wallpaper pane {pane} %, wallpaper {wallpaper} %")
 
 
 def main():
@@ -118,7 +134,8 @@ def main():
     try:
         check(args.app, OPACITY)
         check(args.app, 100)
-        check_wallpaper(args.app, OPACITY)
+        for pane, wallpaper in ((100, 80), (40, 80), (40, 100)):
+            check_wallpaper(args.app, pane, wallpaper)
     except PixelMismatch as error:
         sys.exit(f"FAIL: {error}")
     print("all passed")
