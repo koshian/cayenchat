@@ -22,8 +22,9 @@ pub(crate) struct ResolvedLook {
     /// A font size in px of the channel's own, to be clamped by the caller.
     pub(crate) font_size: u16,
     pub(crate) wallpaper: Option<WallpaperRequest>,
-    /// The pane background with the channel's opacity as its alpha, drawn
-    /// over the wallpaper by [`backdrop`]. Opaque without a wallpaper.
+    /// The pane background with the one effective opacity as its alpha (the
+    /// pane's times the wallpaper's), drawn over the wallpaper by [`backdrop`]
+    /// or by each row. The pane's own opacity is `theme.panes.channel_log.a`.
     pub(crate) background: Rgba,
 }
 
@@ -87,15 +88,14 @@ pub(crate) fn resolve(look: Option<&ChannelLook>, mut theme: Theme) -> ResolvedL
     });
     // The one effective opacity of the log background: the pane's (#930),
     // times the wallpaper's own when there is a picture (#950). The
-    // background layer, plain and alternate rows, the filler and the frame
-    // all take it from here, so none of them decides it again.
-    let mut opacity = theme.panes.channel_log.a;
+    // background layer, rows, filler and frame take it from `background`
+    // (through `Slice`). The theme keeps the pane's own opacity: it alone
+    // decides whether the pane paints an opaque base (100 %, as before #930)
+    // or its rows paint themselves.
+    let mut background = theme.panes.channel_log;
     if wallpaper.is_some() {
-        opacity *= f32::from(background_opacity_of(look)) / 100.;
+        background.a *= f32::from(background_opacity_of(look)) / 100.;
     }
-    theme.panes.channel_log.a = opacity;
-    theme.panes.channel_alternate.a = opacity;
-    let background = theme.panes.channel_log;
     ResolvedLook {
         background,
         text: color(&look.text),
@@ -260,6 +260,7 @@ impl Wallpaper {
         &mut self,
         wanted: Option<&WallpaperRequest>,
         background: Rgba,
+        translucent: bool,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
@@ -315,7 +316,6 @@ impl Wallpaper {
             // rows and filler paint it (`Slice`).
             Some((_, State::Ready(image))) => {
                 let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
-                let translucent = background.a < 1.;
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
                         |_, _, _| (),
@@ -415,13 +415,11 @@ mod tests {
             };
             let base = Theme::new(ThemeMode::Dark, WindowAppearance::Light, &appearance);
             let resolved = resolve(Some(&look), base);
-            for alpha in [
-                resolved.background.a,
-                resolved.theme.panes.channel_log.a,
-                resolved.theme.panes.channel_alternate.a,
-            ] {
-                assert!((alpha - want).abs() < 1e-6, "{pane} % gave {alpha}");
-            }
+            let alpha = resolved.background.a;
+            assert!((alpha - want).abs() < 1e-6, "{pane} % gave {alpha}");
+            // The pane's own opacity stays what decides its base.
+            let own = f32::from(pane) / 100.;
+            assert!((resolved.theme.panes.channel_log.a - own).abs() < 1e-6);
         }
     }
 
@@ -444,9 +442,10 @@ mod tests {
                 let c = rgb(0x102030);
                 (c.r, c.g, c.b)
             });
-            // Background and alternate color carry the one opacity.
-            assert_eq!(resolved.theme.panes.channel_log.a, 0.7);
-            assert_eq!(resolved.theme.panes.channel_alternate.a, 0.7);
+            // The theme keeps the pane's own opacity (100 %): the wallpaper's
+            // is in `background`.
+            assert_eq!(resolved.theme.panes.channel_log.a, 1.);
+            assert_eq!(resolved.theme.panes.channel_alternate.a, 1.);
             assert_eq!(resolved.text, Some(rgb(0xAABBCC)));
             assert_eq!(resolved.font_size, 20);
             let wallpaper = resolved.wallpaper.unwrap();

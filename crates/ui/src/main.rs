@@ -8106,9 +8106,13 @@ impl ChatWindow {
         };
         let border = theme.border;
         let look = self.channel_log_look(theme);
-        let wallpaper =
-            self.wallpaper
-                .element(look.wallpaper.as_ref(), look.background, window, cx);
+        let wallpaper = self.wallpaper.element(
+            look.wallpaper.as_ref(),
+            look.background,
+            look.theme.panes.channel_log.a < 1.,
+            window,
+            cx,
+        );
         let frame_slice = self.wallpaper.slice(look.background);
         let appearance = &self.appearance;
         let translucent = appearance.has_translucent_pane() && self.window_compositing;

@@ -98,6 +98,13 @@ def check_wallpaper(app, pane, wallpaper):
     background = parse_color(BACKGROUND)
     alternate = parse_color(ALTERNATE)
     on_base = (over_base(background, percent), over_base(alternate, percent))
+    if pane == 100:
+        # An opaque pane keeps its own color under the rows, as it did before
+        # the pane had an opacity: the plain color, and an alternate row's
+        # color at the wallpaper's opacity over it.
+        on_base = (background,
+                   tuple(round((a * wallpaper + b * (100 - wallpaper)) / 100)
+                         for a, b in zip(alternate, background)))
     on_picture = tuple(tuple(round(c * percent / 100) for c in color)
                        for color in (background, alternate))
     wanted = {"beside the picture": (BESIDE_PICTURE, on_base),
