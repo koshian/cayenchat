@@ -156,6 +156,7 @@ impl SettingsWindow {
                     crate::button_order::row(div().flex().flex_wrap().gap_2())
                         .child(
                             settings_theme::button("avatar-editor-upload", true, cx)
+                                .debug_selector(|| "avatar-editor-upload".into())
                                 .child(
                                     self.i18n.format(
                                         "ircv3_avatar_edit_upload",
@@ -336,5 +337,12 @@ mod window_tests {
         cx.simulate_click(reset.center(), none);
         cx.run_until_parked();
         assert_eq!(crop(cx).unwrap(), first);
+
+        // The upload button takes the editor away and starts the upload.
+        let upload = cx.debug_bounds("avatar-editor-upload").expect("button");
+        cx.simulate_click(upload.center(), none);
+        cx.run_until_parked();
+        let open = form.read_with(cx, |form, _| form.avatar_editor.is_some());
+        assert!(!open, "the editor stays after the upload button");
     }
 }
