@@ -83,12 +83,12 @@ def white_square(path, side=40):
 
 
 def check_wallpaper(app, percent):
-    """Where a "contain" wallpaper leaves the log bare, the pane is painted
-    once: the plain rows show the background and the alternate rows the
-    alternate color over it, not stacked over a second background."""
-    background = parse_color(BACKGROUND)
-    alternate = tuple(round((a * percent + b * (100 - percent)) / 100)
-                      for a, b in zip(parse_color(ALTERNATE), background))
+    """Where a "contain" wallpaper leaves the log bare, every pixel is the
+    row color at the pane's opacity once (over the window base here): the
+    plain rows and the part above a short log the background, the alternate
+    rows the alternate color, none stacked on another layer, and none opaque."""
+    background = over_base(parse_color(BACKGROUND), percent)
+    alternate = over_base(parse_color(ALTERNATE), percent)
     with tempfile.TemporaryDirectory(prefix="opacity-picture-") as scratch:
         picture = os.path.join(scratch, "square.png")
         white_square(picture)

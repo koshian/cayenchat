@@ -7874,13 +7874,14 @@ impl ChatWindow {
     /// nothing under them (`log_surface`), so the part below the last row of a
     /// short log would show the desktop at no opacity. This fills that part
     /// with the plain row color; `unfilled` is the height the rows take
-    /// (`LogList::unfilled_from`). A pane under a wallpaper has its backdrop
-    /// layer and needs none: pass a `bg` that is opaque then.
+    /// (`LogList::unfilled_from`). Under a wallpaper the filler shows the
+    /// picture's `slice` below its color, like the rows.
     /// The layout it follows is the previous frame's, so one check after this
     /// frame redraws the pane if the answer changed.
     fn log_tail_filler(
         unfilled: Option<Pixels>,
         bg: Rgba,
+        slice: Option<&channel_look::Slice>,
         list: impl Fn(&Self) -> Option<&LogList> + 'static,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
@@ -7898,13 +7899,13 @@ impl ChatWindow {
         // A short log's rows sit at the bottom of the list, `from` tall: the
         // filler is the part above them.
         unfilled.map(|rows_height| {
-            div()
+            let filler = div()
                 .absolute()
                 .left_0()
                 .right_0()
                 .top_0()
-                .bottom(rows_height)
-                .bg(bg)
+                .bottom(rows_height);
+            channel_look::alternate_row(filler, bg, slice)
         })
     }
 
@@ -7924,11 +7925,12 @@ impl ChatWindow {
             PaneKind::ChannelLog => {
                 let selection = self.state.selection();
                 let look = self.channel_log_look(theme);
-                let picture = self.wallpaper.slice(look.background).is_some();
+                let slice = self.wallpaper.slice(look.background);
                 let main = self
                     .channel_log_lists
                     .get_mut(&selection)
                     .expect("synced before drawing");
+                let unfilled = main.unfilled_from();
                 if let Selection::Channel(id) = selection {
                     let chat = cx.weak_entity();
                     main.on_scroll(move |first_visible, cx| {
@@ -7966,15 +7968,12 @@ impl ChatWindow {
                         }
                     });
                 });
-                // The log's own background (a channel's color included), and
-                // none under a wallpaper, whose backdrop layer fills it.
-                let mut filler_bg = look.theme.panes.channel_log;
-                if picture {
-                    filler_bg.a = 1.;
-                }
+                // The log's own background (a channel's color included), over
+                // the wallpaper's picture when there is one.
                 let filler = Self::log_tail_filler(
-                    main.unfilled_from(),
-                    filler_bg,
+                    unfilled,
+                    look.theme.panes.channel_log,
+                    slice.as_ref(),
                     move |chat| chat.channel_log_lists.get(&selected),
                     cx,
                 );
@@ -7997,6 +7996,7 @@ impl ChatWindow {
                 let filler = Self::log_tail_filler(
                     self.combined_list.unfilled_from(),
                     theme.panes.combined_log,
+                    None,
                     |chat| Some(&chat.combined_list),
                     cx,
                 );
@@ -8109,7 +8109,6 @@ impl ChatWindow {
         let wallpaper =
             self.wallpaper
                 .element(look.wallpaper.as_ref(), look.background, window, cx);
-        let picture = wallpaper.is_some();
         let appearance = &self.appearance;
         let translucent = appearance.has_translucent_pane() && self.window_compositing;
         let draft_row_height = self.draft_row_height();
@@ -8154,7 +8153,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .map(|d| log_surface(d, channel_log_bg, picture))
+            .map(|d| log_surface(d, channel_log_bg))
             .when(!appearance.channel_log_font.is_empty(), |d| {
                 d.font_family(appearance.channel_log_font.clone())
             })
@@ -8176,7 +8175,7 @@ impl ChatWindow {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .map(|d| log_surface(d, combined_bg, false))
+            .map(|d| log_surface(d, combined_bg))
             .when(!appearance.combined_log_font.is_empty(), |d| {
                 d.font_family(appearance.combined_log_font.clone())
             })
@@ -9371,13 +9370,13 @@ fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoEle
 }
 
 /// Padding and background of a log pane. An opaque background is painted under
-/// the rows, and so is the background under a wallpaper, whose backdrop layer
-/// covers it. A translucent one without a picture is painted as the padding's
-/// border instead and each row paints its own color (`row_background`,
-/// `LogStyle::channel_plain_row_bg`), so a row never stacks on the pane
-/// background and every row shows the same opacity.
-fn log_surface<T: Styled>(d: T, bg: Rgba, picture: bool) -> T {
-    if bg.a >= 1. || picture {
+/// the rows. A translucent one is painted as the padding's border instead and
+/// each row paints its own color (`row_background`,
+/// `LogStyle::channel_plain_row`), so a row never stacks on the pane
+/// background and every row shows the same opacity. (That frame has no
+/// wallpaper picture in it.)
+fn log_surface<T: Styled>(d: T, bg: Rgba) -> T {
+    if bg.a >= 1. {
         return d.px_2().py_1().bg(bg);
     }
     let mut d = d.border_color(bg);
@@ -9451,15 +9450,20 @@ impl LogStyle {
         }
     }
 
-    /// Background a plain (not alternate) channel log row paints itself: the
-    /// pane color on a translucent pane without a wallpaper, where the pane
-    /// paints nothing under the rows. Alternate rows go through
-    /// `channel_look::alternate_row`.
-    fn channel_plain_row_bg(&self, index: usize) -> Option<Rgba> {
-        if self.slice.is_some() || (self.alternate_rows && index % 2 == 1) {
-            return None;
+    /// `row` with the background a plain (not alternate) channel log row
+    /// paints itself: the pane color on a translucent pane, where the pane
+    /// paints nothing under the rows (over the wallpaper's `slice`, if any).
+    /// Alternate rows go through `channel_look::alternate_row`.
+    fn channel_plain_row(
+        &self,
+        row: Div,
+        index: usize,
+        slice: Option<&channel_look::Slice>,
+    ) -> Div {
+        if (self.alternate_rows && index % 2 == 1) || self.channel_bg.a >= 1. {
+            return row;
         }
-        (self.channel_bg.a < 1.).then_some(self.channel_bg)
+        channel_look::alternate_row(row, self.channel_bg, slice)
     }
 
     /// Background the combined log row at `index` paints itself, if any.
@@ -9737,7 +9741,7 @@ impl ChatWindow {
                         .flex()
                         .gap_1()
                         .py(px(1.))
-                        .when_some(style.channel_plain_row_bg(index), |d, color| d.bg(color))
+                        .map(|d| style.channel_plain_row(d, index, style.slice.as_ref()))
                         .when(style.alternate_rows && index % 2 == 1, |d| {
                             channel_look::alternate_row(d, style.channel_alt, style.slice.as_ref())
                         })
@@ -9997,7 +10001,10 @@ impl ChatWindow {
             .items_start()
             .gap_1()
             .py(px(1.))
-            .when_some(style.channel_plain_row_bg(index), |d, color| d.bg(color))
+            .map(|d| {
+                let slice = style.slice.as_ref().filter(|_| flash.is_none());
+                style.channel_plain_row(d, index, slice)
+            })
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 // The flash below is the row's own background, which a
                 // picture layer would hide: the row keeps the plain color

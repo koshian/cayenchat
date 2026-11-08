@@ -1906,6 +1906,36 @@ fn fp3232_to_f32(value: xinput::Fp3232) -> f32 {
     value.integral as f32 + value.frac as f32 / u32::MAX as f32
 }
 
+/// Whether a compositor owns the `_NET_WM_CM_S<n>` manager selection of the
+/// screen whose root window is `root`, the EWMH way to tell one is running.
+/// (A window manager alone does not own it.)
+pub(super) fn compositor_selection_owned(xcb_connection: &XCBConnection, root: u32) -> bool {
+    let Some(screen) = xcb_connection
+        .setup()
+        .roots
+        .iter()
+        .position(|screen| screen.root == root)
+    else {
+        return false;
+    };
+    let atom_name = format!("_NET_WM_CM_S{screen}");
+    let atom = get_reply(
+        || format!("Failed to intern {atom_name}"),
+        xcb_connection.intern_atom(true, atom_name.as_bytes()),
+    )
+    .log_with_level(Level::Debug);
+    let Some(atom) = atom.map(|reply| reply.atom).filter(|a| *a != x11rb::NONE) else {
+        return false;
+    };
+    get_reply(
+        || format!("Failed to get {atom_name} owner"),
+        xcb_connection.get_selection_owner(atom),
+    )
+    .map(|reply| reply.owner != x11rb::NONE)
+    .log_with_level(Level::Debug)
+    .unwrap_or(false)
+}
+
 pub(super) fn check_compositor_present(xcb_connection: &XCBConnection, root: u32) -> bool {
     // Method 1: Check for _NET_WM_CM_S{root}
     let atom_name = format!("_NET_WM_CM_S{}", root);

@@ -139,36 +139,32 @@ pub(crate) fn backdrop(picture: Option<Div>, background: Rgba) -> Div {
         .child(div().absolute().top_0().left_0().size_full().bg(background))
 }
 
-/// The picture as an alternate row needs it. A row replaces the background
-/// (it is not laid over it, which would add the opacity twice): it paints the
-/// picture again over its own area, where it lay under the background, and
-/// its color over that.
+/// The picture as a row needs it on a translucent pane, which has no backdrop
+/// layer (it would add its opacity under the rows): each row, and the filler
+/// below a short log, paints the picture over its own area and its color over
+/// that, so the color's opacity is applied once, also where the picture does
+/// not reach.
 #[derive(Clone)]
 pub(crate) struct Slice {
     image: Arc<RenderImage>,
     /// Where the pane placed the picture, set while it paints.
     placed: Rc<Cell<Bounds<Pixels>>>,
-    /// The pane background made opaque: what lies under the picture where
-    /// it does not reach (contain, center), so a row replaces the backdrop
-    /// there too instead of adding its opacity to it.
-    base: Rgba,
     /// The opacity of the row color.
     alpha: f32,
 }
 
-/// `row` with the alternate `color` as its background. With a `slice` it
-/// replaces the pane background, by the same opacity; without one (no
-/// wallpaper, or not loaded) the color is opaque.
+/// `row` with `color` as its background. With a `slice` it paints the picture
+/// and the color over it at the pane's opacity; without one (no wallpaper, or
+/// not loaded) the color is as `color` is.
 pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div {
     let Some(slice) = slice else {
         return row.bg(color);
     };
-    let (image, placed, base) = (slice.image.clone(), slice.placed.clone(), slice.base);
+    let (image, placed) = (slice.image.clone(), slice.placed.clone());
     let picture = canvas(
         |_, _, _| (),
         move |bounds, (), window, _| {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                window.paint_quad(fill(bounds, base));
                 let _ = window.paint_image(placed.get(), Corners::default(), image, 0, false);
             });
         },
@@ -181,8 +177,7 @@ pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div
         a: slice.alpha,
         ..color
     };
-    row.relative()
-        .child(picture)
+    row.child(picture)
         .child(div().absolute().top_0().left_0().size_full().bg(color))
 }
 
@@ -218,10 +213,6 @@ impl Wallpaper {
             Some((_, State::Ready(image))) => Some(Slice {
                 image: image.clone(),
                 placed: self.placed.clone(),
-                base: Rgba {
-                    a: 1.,
-                    ..background
-                },
                 alpha: background.a,
             }),
             _ => None,
@@ -283,16 +274,14 @@ impl Wallpaper {
             .detach();
         }
         match self.slot.as_ref() {
-            // The picture is the backmost layer, the pane background (with
-            // its opacity) lies over it, and the rows over both.
+            // On an opaque pane the picture is the backmost layer, the pane
+            // background lies over it, and the rows over both. On a
+            // translucent one there is no such layer: it would put its
+            // opacity under every row's. This only places the picture;
+            // rows and filler paint it (`Slice`).
             Some((_, State::Ready(image))) => {
                 let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
-                // Opaque under the picture, so that where it does not reach
-                // the pane's opacity is applied once, by the background.
-                let base = Rgba {
-                    a: 1.,
-                    ..background
-                };
+                let translucent = background.a < 1.;
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
                         |_, _, _| (),
@@ -300,13 +289,19 @@ impl Wallpaper {
                             let size = image.size(0);
                             let placed = fit_bounds(fit, bounds, size);
                             shared.set(placed);
-                            window.paint_quad(fill(bounds, base));
-                            let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+                            if !translucent {
+                                let _ =
+                                    window.paint_image(placed, Corners::default(), image, 0, false);
+                            }
                         },
                     )
                     .size_full(),
                 );
-                Some(backdrop(Some(picture), background))
+                Some(if translucent {
+                    picture
+                } else {
+                    backdrop(Some(picture), background)
+                })
             }
             _ => None,
         }

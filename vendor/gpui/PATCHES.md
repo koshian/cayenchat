@@ -286,8 +286,10 @@ the stub body with `self.layer.set_opaque(!transparent);`.
 In `src/platform.rs`, `src/window.rs`, `src/platform/linux/x11/window.rs` and
 `src/platform/linux/x11/client.rs`, `Window::is_compositing` tells whether a
 transparent window shows what lies behind it (CayenChat #930). The new
-`PlatformWindow::is_compositing` defaults to `true`; X11 answers it with
-`check_compositor_present` (made `pub(super)`), because without a compositor the
-X server composes a window's see-through pixels over black. CayenChat uses it to
-keep the window opaque in that case. To re-apply: add the trait method, the
-`Window` wrapper and the X11 override.
+`PlatformWindow::is_compositing` defaults to `true`; X11 answers it with the
+new `compositor_selection_owned`: whether the `_NET_WM_CM_S<n>` selection of the
+window's own screen has an owner. (`check_compositor_present` also accepts a
+mere window manager, so it is not used.) Without a compositor the X server
+composes a window's see-through pixels over black. CayenChat uses it to keep the
+window opaque in that case. To re-apply: add the trait method, the `Window`
+wrapper and the X11 override.

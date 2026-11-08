@@ -1204,8 +1204,8 @@ full manual GUI runs, repeated for every review):
   first user: the log's configured background and alternate-row colors, and
   the alternate-row modes drawing differently; `--expect-background` shows it
   failing. `scripts/e2e/opacity_gui.py` checks a log at 40 % opacity (every
-  row and the part above a short log at the same opacity, composed over the
-  black an X server without a compositor shows). A new check must be seen to fail once with a deliberately wrong
+  row, the part above a short log and the bare sides of a contain wallpaper at the same opacity, composed over the
+  window base an X server without a compositor leaves). A new check must be seen to fail once with a deliberately wrong
   expectation, and to pass twice in a row with the same build.
 - **What cannot be computed is judged once, then guarded.** A look that no
   formula gives (glyph shapes, a photo's scaling, overall taste) is confirmed

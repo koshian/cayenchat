@@ -1527,8 +1527,8 @@ impl PlatformWindow for X11Window {
     }
 
     fn is_compositing(&self) -> bool {
-        let root = self.0.xcb.setup().roots[0].root;
-        super::client::check_compositor_present(&self.0.xcb, root)
+        let root = self.0.state.borrow().x_root_window;
+        super::client::compositor_selection_owned(&self.0.xcb, root)
     }
 
     fn window_decorations(&self) -> crate::Decorations {
