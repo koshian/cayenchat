@@ -273,3 +273,23 @@ counted across all formats of one read and a 5 second deadline for the whole
 read. Dropping the `Task` cancels the read and closes the pipe. The synchronous
 `read_from_clipboard` is kept. When re-applying, keep these bounds and call the
 async API from CayenChat's paste paths.
+
+In `src/platform/mac/metal_renderer.rs`, `update_transparency` sets the Metal
+layer's opaque flag to `!transparent` (CayenChat #930). Upstream leaves it a
+`// todo(mac)?` stub and relies on the layer being created non-opaque; the draw
+path already clears with alpha 0 only while `is_opaque()` is false. With the
+patch an Opaque window gets an opaque layer cleared with alpha 1, and a
+Transparent one a non-opaque layer, so the window state and the layer agree
+when `set_background_appearance` switches back and forth. To re-apply: replace
+the stub body with `self.layer.set_opaque(!transparent);`.
+
+In `src/platform.rs`, `src/window.rs`, `src/platform/linux/x11/window.rs` and
+`src/platform/linux/x11/client.rs`, `Window::is_compositing` tells whether a
+transparent window shows what lies behind it (CayenChat #930). The new
+`PlatformWindow::is_compositing` defaults to `true`; X11 answers it with the
+new `compositor_selection_owned`: whether the `_NET_WM_CM_S<n>` selection of the
+window's own screen has an owner. (`check_compositor_present` also accepts a
+mere window manager, so it is not used.) Without a compositor the X server
+composes a window's see-through pixels over black. CayenChat uses it to keep the
+window opaque in that case. To re-apply: add the trait method, the `Window`
+wrapper and the X11 override.

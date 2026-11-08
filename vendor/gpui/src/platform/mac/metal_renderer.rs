@@ -342,8 +342,9 @@ impl MetalRenderer {
         }
     }
 
-    pub fn update_transparency(&self, _transparent: bool) {
-        // todo(mac)?
+    pub fn update_transparency(&self, transparent: bool) {
+        // `draw` clears with alpha 0 only while the layer is not opaque.
+        self.layer.set_opaque(!transparent);
     }
 
     pub fn destroy(&self) {
