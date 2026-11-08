@@ -282,15 +282,31 @@ mod window_tests {
         let first = crop(cx).expect("editor open");
         assert_eq!((first.x, first.y, first.side), (100.0, 0.0, 200.0));
 
-        // Drag the bottom-right corner inwards: the 400x200 image is shown
-        // at 320x160, so its pixel (300, 200) is at (240, 160).
+        // Drag the bottom-right corner inwards. The square's corner is the
+        // image pixel (300, 200); find it from the drawn picture, not from a
+        // fixed display scale.
         let picture = cx.debug_bounds("image-crop-picture").expect("drawn");
-        let at = |x: f32, y: f32| point(picture.origin.x + px(x), picture.origin.y + px(y));
+        let scale = f32::from(picture.size.width) / 400.0;
+        let at = |x: f32, y: f32| {
+            point(
+                picture.origin.x + px(x * scale),
+                picture.origin.y + px(y * scale),
+            )
+        };
         let none = Modifiers::none();
-        cx.simulate_mouse_down(at(240.0, 160.0), MouseButton::Left, none);
-        cx.simulate_mouse_move(at(200.0, 120.0), Some(MouseButton::Left), none);
-        cx.simulate_mouse_up(at(200.0, 120.0), MouseButton::Left, none);
-        cx.run_until_parked();
+        // Each event is followed by a frame, as in the running app, so the
+        // next one meets the handlers the last one's state painted.
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        cx.simulate_mouse_down(at(298.0, 198.0), MouseButton::Left, none);
+        settle(cx);
+        cx.simulate_mouse_move(at(220.0, 120.0), Some(MouseButton::Left), none);
+        settle(cx);
+        cx.simulate_mouse_up(at(220.0, 120.0), MouseButton::Left, none);
+        settle(cx);
         let moved = crop(cx).unwrap();
         assert!(moved.side < first.side, "{moved:?}");
         // The opposite corner stays.
