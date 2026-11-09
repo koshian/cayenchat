@@ -4007,11 +4007,16 @@ otherwise be sent the old host's passwords.
   would have to be registered with the network again.
 - **What counts as a change.** `ServerProfile::host_differs`: the host after
   trimming and lower-casing. The port, TLS and every other field never delete.
-- **Where.** `save_settings` (autosave and the Save button alike) compares the
-  settings with the saved ones before writing. A change with passwords noted
-  as saved (`has_host_bound_secrets`) asks in an OS dialog. A profile whose
-  channel key scan is still pending (`channel_key_scan_pending`) is not asked
-  about, as the notes do not say yet, but its possible entries are deleted too.
+- **Where.** `save_settings` (autosave and the Save button alike) and Connect
+  (after the marked passwords are written, before anything is read for the
+  connection) compare the settings with the saved ones. All go through
+  `start_host_change`; Connect goes on once the old passwords are deleted, and
+  a cancel or a failure starts no connection. A change with passwords noted
+  as saved (`has_host_bound_secrets`) asks in an OS dialog. For a profile whose
+  channel key scan is still pending (`channel_key_scan_pending`) the notes do
+  not say, so the store thread looks for the possible entries first and the
+  dialog is shown when one exists (an entry that cannot be read counts as
+  existing); none, no dialog. Either way the possible entries are deleted.
 - **Order.** Confirm, delete the entries on the store thread, clear the notes
   (`server_saved`, `sasl_saved`, the keyed channels; written to the settings
   file at once), and only then save the new host. Cancelling, or an entry that
