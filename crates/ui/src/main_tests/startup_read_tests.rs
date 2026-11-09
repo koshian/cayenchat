@@ -178,6 +178,10 @@ struct GatedBackend {
     inner: cayenchat_storage::credentials::MemoryBackend,
     gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     reads: std::sync::atomic::AtomicUsize,
+    /// Writes and deletes wait for the test too, as a read does.
+    gate_writes: std::sync::atomic::AtomicBool,
+    /// Writes and deletes fail, as when the user refuses the system store.
+    fail_writes: std::sync::atomic::AtomicBool,
 }
 
 impl GatedBackend {
@@ -197,11 +201,35 @@ impl GatedBackend {
             ),
             gate: std::sync::Mutex::new(gate),
             reads: Default::default(),
+            gate_writes: Default::default(),
+            fail_writes: Default::default(),
         });
         let store = cayenchat_storage::CredentialStore::with_backend(backend.clone());
         cx.set_global(crate::secrets::Credentials(store.clone()));
         cx.set_global(crate::secrets::Worker::start(store.clone()));
         (release, backend, store)
+    }
+}
+
+impl GatedBackend {
+    /// A call on the UI thread would wait here and fail the test.
+    fn wait_for_test(&self) {
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the test lets the call go");
+    }
+
+    fn before_write(&self) -> Result<(), cayenchat_storage::CredentialError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.gate_writes.load(SeqCst) {
+            self.wait_for_test();
+        }
+        if self.fail_writes.load(SeqCst) {
+            return Err(cayenchat_storage::CredentialError::Access("refused".into()));
+        }
+        Ok(())
     }
 }
 
@@ -218,12 +246,7 @@ impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
         &self,
         key: &cayenchat_storage::SecretKey,
     ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
-        // A read on the UI thread would wait here and fail the test.
-        self.gate
-            .lock()
-            .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(20))
-            .expect("the test lets the read go");
+        self.wait_for_test();
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get(key)
     }
@@ -233,6 +256,7 @@ impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
         key: &cayenchat_storage::SecretKey,
         value: &Secret,
     ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.before_write()?;
         self.inner.set(key, value)
     }
 
@@ -240,6 +264,7 @@ impl cayenchat_storage::credentials::CredentialBackend for GatedBackend {
         &self,
         key: &cayenchat_storage::SecretKey,
     ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.before_write()?;
         self.inner.delete(key)
     }
 }
@@ -379,4 +404,255 @@ fn a_write_queued_during_a_move_lands_in_the_new_store(cx: &mut TestAppContext) 
             cayenchat_storage::CredentialBackendKind::LocalFile
         );
     });
+}
+
+/// An ordinary quit does not end while a store job is out (#982): it says so,
+/// goes on by itself once the job's result has been taken in, and offers a
+/// forced quit only after the store has kept it waiting.
+#[gpui::test]
+fn a_quit_waits_for_the_store_and_shows_why(cx: &mut TestAppContext) {
+    let app = cx.clone();
+    let key = settings(false).servers[0].server_password_key();
+    let release = cx.update(|cx| {
+        set_theme(cx);
+        GatedBackend::install(cx).0
+    });
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    cx.executor().allow_parking();
+    let waiting =
+        |cx: &mut gpui::VisualTestContext| chat.read_with(cx, |c, _| c.quit_dialog.is_waiting());
+    let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.debug_bounds(id).is_some()
+    };
+
+    // The store is stuck on a read, as when the system asks for permission.
+    let result = cx.update(|_, cx| Box::pin(crate::secrets::run(cx, move |store| store.get(&key))));
+    app.update(|cx| assert!(crate::secrets::pending(cx)));
+    app.update(crate::quit_app);
+    assert!(
+        shown(cx, "quit-wait-dialog"),
+        "the quit is held back, with a reason"
+    );
+    assert!(waiting(cx));
+    assert!(!shown(cx, "quit-wait-force"), "no forced quit at first");
+
+    // Nobody can be told it is stuck before the wait has lasted.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"), "then the choice is offered");
+    // "Keep waiting" (Escape) takes the choice away until the next interval.
+    cx.simulate_keystrokes("escape");
+    assert!(waiting(cx));
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.offers_force()));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"));
+
+    // The worker finishes, but the result is not taken in yet: still held.
+    release.send(()).unwrap();
+    // `flush` returns once the worker has run everything queued so far.
+    app.update(|cx| crate::secrets::flush(cx, std::time::Duration::from_secs(20)));
+    cx.run_until_parked();
+    assert!(app.update(|cx| crate::secrets::pending(cx)), "not taken in");
+    assert!(waiting(cx));
+
+    // Taking the result in lets the quit go on.
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    cx.run_until_parked();
+    app.update(|cx| assert!(!crate::secrets::pending(cx)));
+    assert!(!waiting(cx), "the quit went on");
+
+    // Cancel before the wait is long: the quit is given up, the window stays.
+    let (release, key) = (release, settings(false).servers[0].server_password_key());
+    let result = cx.update(|_, cx| Box::pin(crate::secrets::run(cx, move |store| store.get(&key))));
+    app.update(crate::quit_app);
+    assert!(shown(cx, "quit-wait-dialog"));
+    cx.simulate_keystrokes("escape");
+    assert!(!waiting(cx), "cancelled");
+    release.send(()).unwrap();
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    let started = std::time::Instant::now();
+    while app.update(|cx| crate::secrets::pending(cx)) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}
+
+type Written = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<Result<(), cayenchat_storage::CredentialError>>>>,
+>;
+
+/// Starts a quit held back by a store `set` that waits for the test, and
+/// returns what the tests below need.
+fn quit_during_a_write(
+    cx: &mut TestAppContext,
+    note_fails: bool,
+    store_fails: bool,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    std::sync::Arc<GatedBackend>,
+    gpui::Entity<ChatWindow>,
+    &mut gpui::VisualTestContext,
+    Written,
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let app = cx.clone();
+    let key = settings(false).servers[0].server_password_key();
+    let (release, backend) = cx.update(|cx| {
+        set_theme(cx);
+        let (release, backend, _) = GatedBackend::install(cx);
+        (release, backend)
+    });
+    backend.gate_writes.store(true, SeqCst);
+    backend.fail_writes.store(store_fails, SeqCst);
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    cx.executor().allow_parking();
+    let result = cx.update(|_, cx| {
+        Box::pin(crate::secrets::run(cx, move |store| {
+            store.set(&key, &Secret::new("secret"))
+        })) as std::pin::Pin<Box<_>>
+    });
+    // The note of the save is waiting to be written.
+    chat.update(cx, |c, _| {
+        c.pending_notes
+            .insert(settings(false).servers[0].id.clone())
+    });
+    crate::settings_file::fail_saves(note_fails);
+    app.update(crate::quit_app);
+    cx.run_until_parked();
+    assert!(chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+    (release, backend, chat, cx, result)
+}
+
+fn shown(cx: &mut gpui::VisualTestContext, id: &'static str) -> bool {
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    cx.debug_bounds(id).is_some()
+}
+
+/// A save that blocked the quit and then went in lets it go on, once its
+/// note is in the settings file too.
+#[gpui::test]
+fn a_blocked_save_and_its_note_let_the_quit_go_on(cx: &mut TestAppContext) {
+    let (release, _, chat, cx, result) = quit_during_a_write(cx, false, false);
+    release.send(()).unwrap();
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    let started = std::time::Instant::now();
+    while chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    assert!(chat.read_with(cx, |c, _| c.pending_notes.is_empty()));
+}
+
+/// A refused save is not a finished one: the quit stays held, the dialog
+/// says it failed and offers a forced quit, and cancelling gives it up.
+#[gpui::test]
+fn a_failed_save_holds_the_quit_for_the_user(cx: &mut TestAppContext) {
+    let (release, _, chat, cx, result) = quit_during_a_write(cx, false, true);
+    release.send(()).unwrap();
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    let started = std::time::Instant::now();
+    while !chat.read_with(cx, |c, _| c.quit_dialog.shows_trouble()) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    assert!(shown(cx, "quit-wait-force"), "the way out is offered");
+    cx.simulate_keystrokes("escape");
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+}
+
+/// A note that cannot be written leaves the secret without its record; the
+/// quit is held for the user instead of ending silently.
+#[gpui::test]
+fn a_note_that_cannot_be_written_holds_the_quit(cx: &mut TestAppContext) {
+    let (release, _, chat, cx, result) = quit_during_a_write(cx, true, false);
+    release.send(()).unwrap();
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    let started = std::time::Instant::now();
+    while !chat.read_with(cx, |c, _| c.quit_dialog.shows_trouble()) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    assert!(!chat.read_with(cx, |c, _| c.pending_notes.is_empty()));
+    crate::settings_file::fail_saves(false);
+}
+
+/// The wait's text and buttons stay inside the box, in both languages.
+#[gpui::test]
+fn the_wait_dialog_fits_its_text_and_buttons(cx: &mut TestAppContext) {
+    let (_release, _, _chat, cx, _result) = quit_during_a_write(cx, false, false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"));
+    let inside = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        let outer = cx.debug_bounds("quit-wait-box").unwrap();
+        let inner = cx.debug_bounds(id).unwrap();
+        outer.contains(&inner.origin) && outer.contains(&inner.bottom_right())
+    };
+    assert!(inside(cx, "quit-wait-detail"), "the text is inside the box");
+    assert!(
+        inside(cx, "quit-wait-force"),
+        "the button is inside the box"
+    );
+}
+
+/// A note still unwritten when no store job is out holds the quit too, and
+/// another quit request while the failure is shown does not end it.
+#[gpui::test]
+fn an_unwritten_note_holds_a_later_quit_until_the_user_answers(cx: &mut TestAppContext) {
+    let app = cx.clone();
+    cx.update(set_theme);
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    chat.update(cx, |c, _| {
+        c.pending_notes
+            .insert(settings(false).servers[0].id.clone())
+    });
+    crate::settings_file::fail_saves(true);
+    app.update(crate::quit_app);
+    assert!(shown(cx, "quit-wait-force"), "no job, still held");
+    assert!(chat.read_with(cx, |c, _| c.quit_dialog.shows_trouble()));
+    app.update(crate::quit_app);
+    assert!(
+        shown(cx, "quit-wait-force"),
+        "a second request changes nothing"
+    );
+
+    // Cancelled and fixed, the next quit writes the note and goes on.
+    cx.simulate_keystrokes("escape");
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+    crate::settings_file::fail_saves(false);
+    app.update(crate::quit_app);
+    cx.run_until_parked();
+    assert!(chat.read_with(cx, |c, _| c.pending_notes.is_empty()));
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+}
+
+/// Enter on a wait button acts on the key press only; the release must not
+/// press the button that appears under the focus next.
+#[gpui::test]
+fn the_key_release_does_not_press_the_next_wait_button(cx: &mut TestAppContext) {
+    let (_release, _, chat, cx, _result) = quit_during_a_write(cx, false, false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"));
+    // "Keep waiting" has the focus; Enter, with its release.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    cx.run_until_parked();
+    assert!(
+        chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()),
+        "waiting goes on"
+    );
 }
