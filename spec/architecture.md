@@ -2160,7 +2160,12 @@ was added to the list, and the note is corrected from what the store returned
 
 **Concurrent writers of the credential notes (CRED-3, CRED-4).** The backend
 choice is changed only by `settings_file::set_credential_backend`, a short
-read-modify-write that sets that one field; `settings_file::save` (every
+read-modify-write that sets that one field and, on the store thread, flushes
+the file and its replacing rename to disk (`storage::save_durable`: the
+directory on Unix, `MoveFileExW` write-through on Windows; a failure keeps the
+originals) before the old
+store's secrets are deleted, so a power loss cannot leave the old choice with
+the originals gone; `settings_file::save` (every
 whole-file save and a settings import) keeps the file's choice, so a window holding an older
 snapshot cannot write the old store back while or after the secrets move. The
 file lock is never held across the copy. A channel key written to the store
@@ -2170,6 +2175,13 @@ Results of one channel are ordered by the order the writes were queued, not by
 the order the callbacks arrive, so an older success cannot undo a newer one; a
 failed write changes no note. A note the file refuses stays pending
 (`pending_notes`) for the next save.
+
+A job that lists keys from the notes (the move of the secrets, #1001) is queued
+only when no credential job is outstanding (`secrets::idle`), so a channel key
+saved before it is noted in the file first. A removal of servers also lists the
+keys the file notes for the profiles being removed, and a channel key whose
+save finishes after its profile was removed is deleted when the save is taken
+in (`key_store_written`).
 
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the
