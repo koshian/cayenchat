@@ -1329,7 +1329,7 @@ pub(crate) struct SettingsWindow {
     /// What the settings file last received from this window; edits that
     /// differ from it are saved after a short pause.
     pub(crate) saved: Settings,
-    window: AnyWindowHandle,
+    pub(crate) window: AnyWindowHandle,
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,

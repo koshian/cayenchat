@@ -740,17 +740,8 @@ impl SettingsWindow {
             Ok((UploaderReadiness::Ready { .. }, Some(_))) => {
                 self.open_avatar_editor(profile, attachment.bytes.clone(), attachment.source, cx);
             }
-            Ok((UploaderReadiness::NeedsAccount { provider }, _)) => {
-                self.avatar_setup_link = true;
-                self.avatar_feedback = Some(
-                    self.i18n
-                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
-                );
-            }
-            Ok(_) => {
-                self.avatar_setup_link = true;
-                self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
-            }
+            Ok(_) => self.warn_avatar_upload("ircv3_avatar_upload_needs_setup", None, cx),
+
             Err(error) => self.avatar_feedback = Some(error),
         }
         cx.notify();
@@ -841,16 +832,8 @@ impl SettingsWindow {
                 Some(uploader) => self.start_avatar_upload(uploader, registers, cx),
                 None => self.avatar_upload.decline(),
             },
-            Offer::Configure => {
-                self.avatar_setup_link = true;
-                self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
-            }
-            Offer::Reconnect { provider } => {
-                self.avatar_setup_link = true;
-                self.avatar_feedback = Some(
-                    self.i18n
-                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
-                );
+            Offer::Configure | Offer::Reconnect { .. } => {
+                self.warn_avatar_upload("ircv3_avatar_upload_needs_setup", None, cx)
             }
             Offer::Busy => self.avatar_feedback = Some(self.i18n.text("upload_busy")),
         }
@@ -930,18 +913,47 @@ impl SettingsWindow {
                 provider,
                 failure: UploadFailure::Authentication,
             } => {
-                self.avatar_setup_link = true;
-                self.avatar_feedback = Some(
-                    self.i18n
-                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
-                );
+                self.warn_avatar_upload("ircv3_avatar_upload_rejected", Some(&provider), cx);
             }
             Completion::Failed { provider, failure } => {
-                self.avatar_feedback = Some(upload_failure_text(&provider, failure, &self.i18n));
+                let text = upload_failure_text(&provider, failure, &self.i18n);
+                self.avatar_feedback = Some(text.clone());
+                self.open_avatar_warning(text, cx);
             }
             Completion::Ignored => {}
         }
         cx.notify();
+    }
+
+    /// Missing or rejected upload account (`key`): shown in the section, in a
+    /// dialog so it is not overlooked, and with the way to the Image Upload tab.
+    fn warn_avatar_upload(&mut self, key: &str, provider: Option<&str>, cx: &mut Context<Self>) {
+        self.avatar_setup_link = true;
+        let text = match provider {
+            Some(provider) => self.i18n.format(key, &[("provider", provider)]),
+            None => self.i18n.text(key),
+        };
+        self.avatar_feedback = Some(text.clone());
+        self.open_avatar_warning(text, cx);
+    }
+
+    /// The warning dialog of a failed avatar upload.
+    fn open_avatar_warning(&self, detail: String, cx: &mut Context<Self>) {
+        let handle = self.window;
+        let title = self.i18n.text("ircv3_avatar_upload_failed_title");
+        let close = self.i18n.text("upload_failed_close");
+        cx.spawn(async move |_, cx| {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                drop(window.os_prompt(
+                    PromptLevel::Warning,
+                    &title,
+                    Some(&detail),
+                    &[PromptButton::cancel(close)],
+                    cx,
+                ));
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn cancel_avatar_upload(&mut self, cx: &mut Context<Self>) {
@@ -1488,7 +1500,8 @@ mod tests {
             "ircv3_avatar_upload_bad_url",
             "ircv3_avatar_upload_server_gone",
             "ircv3_avatar_upload_needs_setup",
-            "ircv3_avatar_upload_reconnect",
+            "ircv3_avatar_upload_rejected",
+            "ircv3_avatar_upload_failed_title",
             "ircv3_avatar_upload_cancelled",
             "upload_busy",
             "ircv3_avatar_exposure",
