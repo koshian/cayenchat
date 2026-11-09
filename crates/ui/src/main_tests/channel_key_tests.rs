@@ -295,8 +295,8 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
         );
     });
 
-    chat.update(cx, |chat, _| {
-        chat.finish_key_refresh(NET, &profile, &read, generation, revision, old_snapshot);
+    chat.update(cx, |chat, cx| {
+        chat.finish_key_refresh(NET, &profile, &read, generation, revision, old_snapshot, cx);
         assert!(
             !chat.sessions[&NET]
                 .active_config
@@ -475,6 +475,36 @@ fn a_saved_key_that_works_is_left_alone(cx: &mut TestAppContext) {
         event(chat, joined("#secret"), cx);
         assert_eq!(key_of(&store, chat).as_deref(), Some("good"));
         assert!(chat.key_prompts.is_empty());
+    });
+}
+
+#[gpui::test]
+fn an_unreadable_store_keeps_the_note_and_a_readable_empty_one_clears_it(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, _| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+    });
+    cx.update(|_, cx| {
+        let broken = CredentialStore::with_backend(std::sync::Arc::new(
+            cayenchat_storage::credentials::MemoryBackend::unavailable(
+                cayenchat_storage::CredentialBackendKind::System,
+            ),
+        ));
+        cx.set_global(crate::secrets::Credentials(broken));
+    });
+    chat.update(cx, |chat, cx| event(chat, registered(), cx));
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+    // The store works again and holds no key: now the note goes.
+    cx.update(|_, cx| {
+        crate::secrets::install_memory(cx);
+    });
+    chat.update(cx, |chat, cx| chat.start_key_tracking(NET, cx));
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
     });
 }
 

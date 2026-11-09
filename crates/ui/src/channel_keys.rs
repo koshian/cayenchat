@@ -321,7 +321,7 @@ impl ChatWindow {
 
     /// A new connection registered: its auto-join JOINs (with the saved keys
     /// it was configured with) are about to be answered.
-    pub(crate) fn start_key_tracking(&mut self, network: NetworkId) {
+    pub(crate) fn start_key_tracking(&mut self, network: NetworkId, cx: &mut Context<Self>) {
         self.key_prompts.retain(|prompt| prompt.network != network);
         let Some(session) = self.sessions.get_mut(&network) else {
             return;
@@ -335,18 +335,14 @@ impl ChatWindow {
             .iter()
             .map(|channel| KeyJoin::untyped(channel, config.channel_keys.contains_key(channel)))
             .collect();
-        let (profile_id, read, found) = (
-            session.profile_id.clone(),
-            config.channels.clone(),
-            config.channel_keys.clone(),
-        );
+        let (read, found) = (config.channels.clone(), config.channel_keys.clone());
         for join in joins {
             track(session, join);
         }
         // What the connection was configured with is what the store held for
         // the channels it was read for: correct the notes to it, and finish
         // the first scan of a file without notes.
-        self.correct_key_notes(&profile_id, &read, &found);
+        self.correct_key_notes(network, &read, &found, cx);
     }
 
     /// The connection ended: its JOINs will never be answered.
@@ -619,8 +615,8 @@ impl ChatWindow {
         let reading = read_stored_keys(cx, &profile);
         cx.spawn(async move |this, cx| {
             let keys = reading.await;
-            let _ = this.update(cx, |this, _| {
-                this.finish_key_refresh(network, &profile, &read, generation, revision, keys);
+            let _ = this.update(cx, |this, cx| {
+                this.finish_key_refresh(network, &profile, &read, generation, revision, keys, cx);
             });
         })
         .detach();
@@ -628,6 +624,7 @@ impl ChatWindow {
 
     /// Applies a completed refresh only while its connection and key state
     /// are still the ones it read.
+    #[allow(clippy::too_many_arguments)] // The state the refresh read, as the join read has.
     pub(super) fn finish_key_refresh(
         &mut self,
         network: NetworkId,
@@ -636,6 +633,7 @@ impl ChatWindow {
         generation: u64,
         revision: u64,
         keys: BTreeMap<String, String>,
+        cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.get_mut(&network) else {
             return;
@@ -650,7 +648,7 @@ impl ChatWindow {
         if let Some(config) = session.active_config.as_mut() {
             replace_keys_if_valid(config, keys.clone());
         }
-        self.correct_key_notes(&profile.id, read, &keys);
+        self.correct_key_notes(network, read, &keys, cx);
     }
 
     /// Corrects the notes of which of `read` (channels whose key was looked
@@ -658,19 +656,115 @@ impl ChatWindow {
     /// scan of a file without notes ends here too. The file follows with the
     /// next settings save; a note lost before that is corrected at the next
     /// connection.
+    ///
+    /// A key missing from `found` may be missing because the store could not
+    /// be read (`stored_channel_keys` cannot tell), so a note is cleared only
+    /// after a read of that key succeeds and finds none. A failed read leaves
+    /// the note, and a first scan unfinished, for the next connection.
     pub(crate) fn correct_key_notes(
+        &mut self,
+        network: NetworkId,
+        read: &[String],
+        found: &BTreeMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(&network) else {
+            return;
+        };
+        let profile_id = session.profile_id.clone();
+        let Some(profile) = self.saved.profile(&profile_id) else {
+            return;
+        };
+        let scanning = profile.channel_key_scan_pending();
+        let unsure: Vec<String> = read
+            .iter()
+            .filter(|channel| scanning || profile.channel_key_noted(channel))
+            .filter(|channel| !found.keys().any(|name| name.eq_ignore_ascii_case(channel)))
+            .cloned()
+            .collect();
+        if unsure.is_empty() {
+            self.apply_key_notes(&profile_id, read, found, &[]);
+            return;
+        }
+        let (generation, revision) = (session.generation, session.channel_key_revision);
+        let (found, read) = (found.clone(), read.to_vec());
+        let checking = secrets::run(cx, {
+            let (profile_id, unsure) = (profile_id.clone(), unsure.clone());
+            move |store| {
+                unsure
+                    .into_iter()
+                    .map(|channel| {
+                        let got = store.get(&SecretKey::channel_key(&profile_id, &channel));
+                        let key = match got {
+                            Ok(Some(key)) if valid_channel_key(key.expose()) => {
+                                Some(Some(key.expose().to_owned()))
+                            }
+                            Ok(_) => None,
+                            Err(_) => Some(None),
+                        };
+                        (channel, key)
+                    })
+                    .collect::<Vec<_>>()
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(checked) = checking.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, _| {
+                let Some(session) = this.sessions.get(&network) else {
+                    return;
+                };
+                if session.profile_id != profile_id
+                    || session.generation != generation
+                    || session.channel_key_revision != revision
+                    || session.channel_key_writes_pending != 0
+                {
+                    return;
+                }
+                let mut found = found;
+                let mut unknown = Vec::new();
+                for (channel, got) in checked {
+                    match got {
+                        // Not there (read succeeded): the note is cleared.
+                        None => {}
+                        Some(Some(key)) => {
+                            found.insert(channel, key);
+                        }
+                        Some(None) => unknown.push(channel),
+                    }
+                }
+                this.apply_key_notes(&profile_id, &read, &found, &unknown);
+            });
+        })
+        .detach();
+    }
+
+    /// Notes each of `read` as keyed or not by `found`, except the `unknown`
+    /// ones, whose read failed. A first scan with an unknown channel waits.
+    fn apply_key_notes(
         &mut self,
         profile_id: &str,
         read: &[String],
         found: &BTreeMap<String, String>,
+        unknown: &[String],
     ) {
         self.update_profile_note(profile_id, |profile| {
             let scanning = profile.channel_key_scan_pending();
+            if scanning && !unknown.is_empty() {
+                return false;
+            }
             if scanning {
                 profile.keyed_channels = Some(Vec::new());
             }
             let mut changed = scanning;
             for channel in read {
+                if unknown
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(channel))
+                {
+                    continue;
+                }
                 if scanning || profile.channel_key_noted(channel) {
                     let saved = found.keys().any(|name| name.eq_ignore_ascii_case(channel));
                     changed |= profile.note_channel_key(channel, saved);
