@@ -1386,6 +1386,7 @@ mod tests {
         });
         // The move has recorded the new store in the file and is deleting
         // the originals; the form still shows the old one.
+        cx.run_until_parked();
         backend.wait_until_held();
         assert_eq!(
             super::load().unwrap().unwrap().credential_backend,
@@ -1437,6 +1438,7 @@ mod tests {
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
         });
+        cx.run_until_parked();
         backend.wait_until_held();
         // Between the file's commit and the deletion of the originals.
         let mut other = stale.clone();

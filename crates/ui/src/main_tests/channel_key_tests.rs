@@ -1024,3 +1024,117 @@ fn the_same_channel_on_another_server_is_ordered_on_its_own(cx: &mut TestAppCont
         assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
     });
 }
+
+/// #1001: a save that finishes after its profile was removed leaves a key
+/// the removal could not list, so it is deleted when the save is taken in.
+#[gpui::test]
+fn a_key_saved_for_a_removed_profile_is_deleted(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(Some("k"), cx);
+    let key = secret_key(&chat, cx);
+    assert!(store.get(&key).unwrap().is_some());
+    chat.update(cx, |chat, cx| {
+        let write = written(chat, 1, Some("k"), 0);
+        chat.saved.servers.clear();
+        chat.key_store_written(NET, write, Ok(()), cx);
+    });
+    cx.run_until_parked();
+    assert!(store.get(&key).unwrap().is_none());
+}
+
+/// #1001, saved before the removal could list it: the save is held while
+/// the server is removed; the key it stores afterwards is deleted again.
+#[gpui::test]
+fn a_save_held_while_its_server_is_removed_leaves_no_key(cx: &mut TestAppContext) {
+    let (chat, release, backend, cx) = open_chat_with_worker(cx);
+    queue_key_write(&chat, "late", true, false, cx);
+    chat.update(cx, |chat, _| chat.saved.servers.clear());
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    wait_for_key_writes(&chat, cx);
+    let key = secret_key(&chat, cx);
+    let started = std::time::Instant::now();
+    while backend.inner.get(&key).unwrap().is_some() {
+        assert!(started.elapsed().as_secs() < 5, "the key was deleted");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}
+
+/// #1001: a move asked for while a key is being saved waits until the save
+/// is noted in the settings file, so the key moves with the others.
+#[gpui::test]
+fn a_move_asked_for_during_a_key_save_takes_the_key_along(cx: &mut TestAppContext) {
+    let (release, gate) = mpsc::channel();
+    let backend = std::sync::Arc::new(SlowWrites {
+        inner: cayenchat_storage::credentials::MemoryBackend::new(
+            cayenchat_storage::CredentialBackendKind::System,
+        ),
+        gate: std::sync::Mutex::new(gate),
+        refuse_delete: Default::default(),
+    });
+    let mut settings = crate::settings_with_channels("#Secret");
+    settings.servers[0].keyed_channels = Some(Vec::new());
+    let profile = settings.servers[0].id.clone();
+    let file = crate::settings_file::TestFile::with(&settings);
+    cx.update(|cx| {
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+        let store = CredentialStore::with_backend(backend.clone());
+        cx.set_global(crate::secrets::Credentials(store.clone()));
+        cx.set_global(crate::secrets::Worker::start(store));
+    });
+    let owner =
+        cx.add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
+    let chat = owner.entity(cx).unwrap();
+    let (form, cx) = cx.add_window_view(|window, cx| {
+        crate::settings_window::SettingsWindow::new(owner, settings.clone(), window, cx)
+    });
+    cx.executor().allow_parking();
+    chat.update(cx, |chat, _| {
+        let config = ConnectionConfig::tls("irc.example.org".into(), "me".into(), Vec::new());
+        chat.sessions.get_mut(&NET).unwrap().active_config = Some(config);
+    });
+    queue_key_write(&chat, "k", true, false, cx);
+
+    form.update(cx, |form, cx| {
+        form.switch_credential_backend(cayenchat_storage::CredentialBackendKind::LocalFile, cx);
+        assert!(form.store_busy());
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .credential_backend,
+        cayenchat_storage::CredentialBackendKind::System,
+        "the move has not started"
+    );
+    // The save, then the deletion of the original.
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    let started = std::time::Instant::now();
+    while form.read_with(cx, |form, _| form.store_busy())
+        || chat.read_with(cx, |chat, _| {
+            chat.sessions[&NET].channel_key_writes_pending > 0
+        })
+    {
+        assert!(started.elapsed().as_secs() < 20, "the move finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    let key = SecretKey::channel_key(&profile, "#secret");
+    assert!(
+        backend.inner.get(&key).unwrap().is_none(),
+        "not left behind"
+    );
+    let moved_to = cx.update(|_, cx| crate::secrets::store(cx));
+    assert_eq!(
+        moved_to.kind(),
+        cayenchat_storage::CredentialBackendKind::LocalFile
+    );
+    assert!(moved_to.get(&key).unwrap().is_some(), "in the new store");
+    drop(file);
+}
