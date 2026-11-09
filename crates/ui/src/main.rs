@@ -5645,7 +5645,7 @@ impl ChatWindow {
                     // Connected, so a password dialog left open is stale.
                     self.credential_prompts
                         .retain(|prompt| prompt.network != network);
-                    self.start_key_tracking(network);
+                    self.start_key_tracking(network, cx);
                 }
                 Event::Joined { channel } | Event::JoinedReplayed { channel } => {
                     self.key_join_succeeded(network, channel, cx)
