@@ -3746,7 +3746,7 @@ the start of the session.
     found the first range (0 to 20, default 3) too strong (2026-11-07); a
     whole-pixel `wallpaper_blur` of that build is not read.
   - **Background opacity**: percent of the log background color laid over
-    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 80. It
+    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 50. It
     is the alpha of the channel's background color. The path is general, not
     wallpaper's own (`channel_look::backdrop`: the picture, if any, and over
     it the pane background with its alpha; `ResolvedLook::background`).
