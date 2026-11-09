@@ -3746,7 +3746,7 @@ the start of the session.
     found the first range (0 to 20, default 3) too strong (2026-11-07); a
     whole-pixel `wallpaper_blur` of that build is not read.
   - **Background opacity**: percent of the log background color laid over
-    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 80. It
+    the wallpaper, 0 (picture only) to 100 (picture hidden). Default 50. It
     is the alpha of the channel's background color. The path is general, not
     wallpaper's own (`channel_look::backdrop`: the picture, if any, and over
     it the pane background with its alpha; `ResolvedLook::background`).
@@ -3781,7 +3781,8 @@ the start of the session.
   load.
 - **Controls.** Blur and opacity are sliders (`slider.rs`: click or drag on
   the track, arrow, Home, End and Page keys when focused). The fit is four
-  buttons. The defaults (blur 0.0, opacity 80 %, fit `cover`) are the
+  buttons. The defaults (blur 0.0, wallpaper strength 50 %, i.e. background opacity 50 %
+  since #1017, fit `cover`) are the
   maintainer's choice after trying real photos (2026-11-07).
 - **Choosing the image and its range** (`channel_settings_dialog/
   wallpaper_crop.rs`; the range editor itself is the one shared with the
@@ -3913,8 +3914,8 @@ the start of the session.
   `ChannelLook::no_wallpaper` joins the path: *inherit* (neither), *none*
   (`no_wallpaper`), *own* (a path); the two never coexist. A channel's background
   opacity applies to whichever picture shows; it is the channel's own once the
-  slider has been moved, also at 80 % (`ChannelLook::background_opacity` is
-  stored as `Some(80)`), and only an untouched one follows the standard
+  slider has been moved, also at the default (`ChannelLook::background_opacity` is
+  stored as `Some(50)`), and only an untouched one follows the standard
   wallpaper's. Files from before read as inheriting,
   which is the former display while no standard wallpaper is set. Theme
   changes never touch `channel_looks`.
