@@ -286,6 +286,20 @@ pub(crate) struct Wallpapers {
 }
 
 impl Wallpapers {
+    /// Whether no area holds or loads a file: `wallpaper::load` is the only
+    /// reader of a wallpaper path and runs only after a slot is set.
+    #[cfg(test)]
+    pub(crate) fn is_idle(&self) -> bool {
+        [
+            &self.channel_log,
+            &self.combined_log,
+            &self.member_list,
+            &self.channel_tree,
+        ]
+        .iter()
+        .all(|wallpaper| wallpaper.slot.is_none())
+    }
+
     pub(crate) fn get_mut(&mut self, region: WallpaperRegion) -> &mut Wallpaper {
         match region {
             WallpaperRegion::ChannelLog => &mut self.channel_log,

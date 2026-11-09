@@ -117,8 +117,6 @@ pub(crate) struct SettingsForm {
     pub(crate) dark_url_tooltip_link_color: Entity<TextInput>,
     pub(crate) url_tooltip_text_color: Entity<TextInput>,
     pub(crate) dark_url_tooltip_text_color: Entity<TextInput>,
-    /// Percent, as typed.
-    pub(crate) url_tooltip_opacity: Entity<TextInput>,
     pub(crate) channel_log_font: Entity<TextInput>,
     pub(crate) combined_log_font: Entity<TextInput>,
     pub(crate) member_list_font: Entity<TextInput>,
@@ -368,12 +366,6 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            url_tooltip_opacity: field(
-                "80",
-                &values.appearance.url_tooltip_opacity.to_string(),
-                false,
-                cx,
-            ),
             channel_log_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.fonts(false).channel_log_font,
@@ -547,13 +539,7 @@ impl SettingsForm {
             link_background: value(&self.link_background),
             url_tooltip_link_color: value(&self.url_tooltip_link_color),
             url_tooltip_text_color: value(&self.url_tooltip_text_color),
-            url_tooltip_opacity: value(&self.url_tooltip_opacity)
-                .parse()
-                .ok()
-                .filter(|percent| {
-                    (cayenchat_storage::MIN_URL_TOOLTIP_OPACITY..=100).contains(percent)
-                })
-                .ok_or_else(|| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
+            url_tooltip_opacity: self.values.appearance.url_tooltip_opacity,
             member_list_opacity: self.values.appearance.member_list_opacity,
             channel_tree_opacity: self.values.appearance.channel_tree_opacity,
             channel_log_opacity: self.values.appearance.channel_log_opacity,
@@ -727,7 +713,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 56] {
         [
             &self.custom_host,
             &self.port,
@@ -770,7 +756,6 @@ impl SettingsForm {
             &self.dark_url_tooltip_link_color,
             &self.url_tooltip_text_color,
             &self.dark_url_tooltip_text_color,
-            &self.url_tooltip_opacity,
             &self.channel_log_font,
             &self.combined_log_font,
             &self.member_list_font,
@@ -1332,10 +1317,10 @@ pub(crate) struct SettingsWindow {
     /// Where the log line height slider's track was last painted, to turn
     /// the pointer position into a value (#953).
     line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
-    /// The pane opacity sliders (member list, channel tree, channel log,
-    /// combined log): their painted tracks and keyboard focus.
-    opacity_tracks: [crate::slider::TrackBounds; 4],
-    opacity_focus: [FocusHandle; 4],
+    /// The opacity sliders (member list, channel tree, channel log,
+    /// combined log, hover popup): their painted tracks and keyboard focus.
+    opacity_tracks: [crate::slider::TrackBounds; 5],
+    opacity_focus: [FocusHandle; 5],
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -5093,10 +5078,16 @@ impl SettingsWindow {
         }
     }
 
-    /// A labelled slider for a pane's background opacity, `index` in the
-    /// order member list, channel tree, channel log, combined log.
+    /// A labelled slider for a background opacity, `index` in the order
+    /// member list, channel tree, channel log, combined log, hover popup.
     fn opacity_slider(&self, index: usize, label_key: &str, cx: &mut Context<Self>) -> Div {
-        use cayenchat_storage::MIN_PANE_OPACITY;
+        use cayenchat_storage::{MIN_PANE_OPACITY, MIN_URL_TOOLTIP_OPACITY};
+        // The hover popup has its own lower limit.
+        let min = if index == 4 {
+            MIN_URL_TOOLTIP_OPACITY
+        } else {
+            MIN_PANE_OPACITY
+        };
         let theme = settings_theme::palette(cx);
         let primary = settings_theme::primary_color(cx);
         let appearance = &self.settings.values.appearance;
@@ -5105,8 +5096,9 @@ impl SettingsWindow {
             appearance.channel_tree_opacity,
             appearance.channel_log_opacity,
             appearance.combined_log_opacity,
+            appearance.url_tooltip_opacity,
         ][index]
-            .clamp(MIN_PANE_OPACITY, 100);
+            .clamp(min, 100);
         let colors = crate::slider::SliderColors {
             track: theme.border,
             fill: primary.into(),
@@ -5115,20 +5107,21 @@ impl SettingsWindow {
         };
         let slider = crate::slider::slider(
             ("pane-opacity", index),
-            u32::from(percent - MIN_PANE_OPACITY),
-            u32::from(100 - MIN_PANE_OPACITY),
+            u32::from(percent - min),
+            u32::from(100 - min),
             &self.opacity_tracks[index],
             &self.opacity_focus[index],
             colors,
             cx,
             move |this, value, _, _| {
                 let appearance = &mut this.settings.values.appearance;
-                let value = MIN_PANE_OPACITY + value as u8;
+                let value = min + value as u8;
                 match index {
                     0 => appearance.member_list_opacity = value,
                     1 => appearance.channel_tree_opacity = value,
                     2 => appearance.channel_log_opacity = value,
-                    _ => appearance.combined_log_opacity = value,
+                    3 => appearance.combined_log_opacity = value,
+                    _ => appearance.url_tooltip_opacity = value,
                 }
             },
         );
@@ -5562,10 +5555,7 @@ impl SettingsWindow {
                 &self.settings.dark_url_tooltip_text_color,
                 cx,
             ))
-            .child(settings_field(
-                &self.i18n.text("url_tooltip_opacity"),
-                self.settings.url_tooltip_opacity.clone(),
-            ))
+            .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
             .child(
                 div()
                     .id("alternate-rows")
