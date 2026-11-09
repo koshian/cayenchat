@@ -5250,6 +5250,7 @@ impl ChatWindow {
     /// be operated.
     fn dialog_open(&self) -> bool {
         self.quit_prompt_open
+            || self.quit_dialog.is_waiting()
             || self.part_prompt.is_some()
             || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
@@ -10727,9 +10728,25 @@ fn settings_block_quit(cx: &mut App) -> bool {
 /// Quits unless the settings save check blocks it. The system's shutdown and
 /// signals call `cx.quit()` themselves and never reach this.
 pub(crate) fn quit_app(cx: &mut App) {
-    if !settings_block_quit(cx) {
-        cx.quit();
+    if settings_block_quit(cx) {
+        return;
     }
+    // The chat window decides (store jobs and notes still out, #982) and
+    // says what it waits for. Deferred: this may run inside its own update.
+    cx.defer(|cx| {
+        let held = cx
+            .windows()
+            .into_iter()
+            .find_map(|w| w.downcast::<ChatWindow>())
+            .is_some_and(|chat| {
+                chat.update(cx, |this, window, cx| this.quit_checked(window, cx))
+                    .is_ok()
+            });
+        // With no chat window nothing could say what is awaited.
+        if !held {
+            cx.quit();
+        }
+    });
 }
 
 /// The chat window cannot be updated while it is handling an event, which is
