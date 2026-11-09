@@ -878,11 +878,11 @@ mod tests {
             })
         };
         // The picture's strength is the rest of the background's opacity.
-        assert_eq!(100 - strength(&form, cx), 20);
+        assert_eq!(100 - strength(&form, cx), 50);
         form.update(cx, |form, cx| {
             form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx)
         });
-        assert_eq!(100 - strength(&form, cx), 25);
+        assert_eq!(100 - strength(&form, cx), 55);
         form.update(cx, |form, cx| {
             for _ in 0..30 {
                 form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx);
