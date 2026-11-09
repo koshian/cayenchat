@@ -19,12 +19,25 @@ const MAX_SIDE: u32 = 640;
 /// Reads `path` and returns the wallpaper reduced to at most 640 px a side
 /// and blurred with `blur` (tenths of a sigma in pixels of that size; 0 is
 /// no blur). Blocking; run it on a background thread.
+///
+/// `cancel` is checked before the file is opened, after it is read, while
+/// waiting for and after taking the decode gate (inside the decoder), and
+/// before the blur. A read or a decode or blur already running is not
+/// interrupted: a read blocked in the OS cannot be, and the decoder and the
+/// blur have no checkpoints of their own, so a cancel takes effect at the
+/// next boundary.
 pub fn load(path: &Path, blur: u8, cancel: &CancelFlag) -> Result<Thumbnail, LoadError> {
+    if cancel.is_cancelled() {
+        return Err(LoadError::Cancelled);
+    }
     let file = File::open(path).map_err(|_| LoadError::Network)?;
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| LoadError::Malformed)?;
+    if cancel.is_cancelled() {
+        return Err(LoadError::Cancelled);
+    }
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(LoadError::TooLarge);
     }
@@ -148,6 +161,33 @@ mod tests {
         assert!(validate(&png[..png.len() / 2]).is_err());
         let huge = vec![0u8; MAX_FILE_BYTES as usize + 1];
         assert_eq!(validate(&huge), Err(LoadError::TooLarge));
+    }
+
+    #[test]
+    fn a_load_cancelled_while_waiting_for_the_decode_gate_does_not_decode() {
+        let dir =
+            std::env::temp_dir().join(format!("cayenchat-wall-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ok.png");
+        image::RgbaImage::new(8, 8).save(&file).unwrap();
+        let cancel = CancelFlag::default();
+        // A slow decode elsewhere holds the gate; the load queues behind it.
+        let gate = crate::decode::DECODE.lock().unwrap();
+        let worker = {
+            let (file, cancel) = (file.clone(), cancel.clone());
+            std::thread::spawn(move || load(&file, 0, &cancel))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!worker.is_finished());
+        cancel.cancel();
+        drop(gate);
+        assert_eq!(worker.join().unwrap().unwrap_err(), LoadError::Cancelled);
+        // Cancelled before it starts, it does not even open the file.
+        assert_eq!(
+            load(&dir.join("absent.png"), 0, &cancel).unwrap_err(),
+            LoadError::Cancelled
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
