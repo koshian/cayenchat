@@ -23,8 +23,8 @@ pub(crate) enum Flush {
 /// written (and flushed to disk with [`Flush::Disk`]), then renamed over
 /// `path`. A crash during the write leaves the old file, and the rename
 /// replaces it whole, so no reader sees half of a file. The directory is not
-/// flushed, so after a power loss the rename itself may not have happened
-/// yet. The contents are never in a file with broader permissions. Missing
+/// flushed with [`Flush::Skip`], so after a power loss the rename itself may
+/// not have happened yet; [`Flush::Disk`] flushes it on Unix. The contents are never in a file with broader permissions. Missing
 /// directories are created user-only (`0700`).
 pub(crate) fn write(path: &Path, bytes: &[u8], flush: Flush) -> io::Result<()> {
     let parent = path
@@ -47,7 +47,14 @@ pub(crate) fn write(path: &Path, bytes: &[u8], flush: Flush) -> io::Result<()> {
             file.sync_all()?;
         }
         // `rename` replaces an existing file on Windows too.
-        fs::rename(&temporary, path)
+        fs::rename(&temporary, path)?;
+        // Make the rename itself durable too (Unix; Windows cannot open a
+        // directory this way).
+        #[cfg(unix)]
+        if flush == Flush::Disk {
+            fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
