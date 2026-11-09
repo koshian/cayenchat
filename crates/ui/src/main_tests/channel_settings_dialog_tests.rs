@@ -241,7 +241,8 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
         );
     });
 
-    // The defaults are stored as nothing; resetting removes the look.
+    // Values set by hand are the channel's own, also the defaults; resetting
+    // removes the look.
     view.update_in(wcx, |view, window, cx| {
         view.set_blur(DEFAULT_WALLPAPER_BLUR, cx);
         view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx);
@@ -260,7 +261,7 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
             (
                 Some(DEFAULT_WALLPAPER_BLUR),
                 Some(DEFAULT_BACKGROUND_OPACITY),
-                None
+                Some(WallpaperFit::default())
             )
         );
         // An explicit 0 stays 0 under a standard blur.
@@ -469,9 +470,10 @@ fn the_window_tells_inheriting_no_wallpaper_and_its_own_apart(cx: &mut TestAppCo
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_app, view, _file, cx) = open_window_for_b(cx);
     // Auto-join, decode, encode, four character references, the four log
-    // look fields, the wallpaper's three choices, the two sliders, four fit
-    // buttons and reset: twenty-one stops. Twenty-one Tabs make a full circle.
-    for _ in 0..21 {
+    // look fields, the wallpaper's three choices, the miniature's choose
+    // button, the two sliders, four fit buttons and reset: twenty-two stops.
+    // Twenty-two Tabs make a full circle.
+    for _ in 0..22 {
         tab(cx);
     }
     press(cx, "space");
@@ -756,6 +758,45 @@ fn an_inherited_blur_shows_the_standard_value_and_zero_can_be_chosen(cx: &mut Te
         view.save_now(window, cx);
         assert_eq!(view.look(cx).unwrap().wallpaper_blur, Some(0));
         assert_eq!(view.shown_strengths(cx).0, 0);
+    });
+    drop(file);
+}
+
+#[gpui::test]
+fn an_inherited_fit_is_shown_and_an_explicit_cover_overrides_it(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    chat.update(cx, |chat, cx| {
+        let dark = crate::theme::current(cx).dark;
+        let standard = chat
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(WallpaperRegion::ChannelLog);
+        standard.path = Some("standard.png".into());
+        standard.fit = Some(WallpaperFit::Contain);
+    });
+    let (view, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    view.read_with(wcx, |view, cx| {
+        assert_eq!(view.shown_fit(cx), WallpaperFit::Contain);
+        assert_eq!(view.look(cx).unwrap().wallpaper_fit, None);
+    });
+    // Choosing Cover is the channel's own fit, kept over the standard one.
+    view.update_in(wcx, |view, window, cx| {
+        view.set_fit(WallpaperFit::Cover, cx);
+        view.save_now(window, cx);
+        assert_eq!(
+            view.look(cx).unwrap().wallpaper_fit,
+            Some(WallpaperFit::Cover)
+        );
+        assert_eq!(view.shown_fit(cx), WallpaperFit::Cover);
+    });
+    chat.read_with(cx, |chat, _| {
+        let id = chat.saved.selected_profile().unwrap().id.clone();
+        let look = chat
+            .saved
+            .appearance
+            .channel_look(&id, "#a", |a: &str, b: &str| a.eq_ignore_ascii_case(b))
+            .unwrap();
+        assert_eq!(look.wallpaper_fit, Some(WallpaperFit::Cover));
     });
     drop(file);
 }

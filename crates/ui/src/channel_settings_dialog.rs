@@ -249,7 +249,9 @@ struct LookFields {
     /// Whether the opacity is the channel's own, also at the default value:
     /// an inherited one follows the standard wallpaper's (#962).
     opacity_own: bool,
-    fit: WallpaperFit,
+    /// The channel's own fit, also an explicit `Cover`; `None` follows the
+    /// standard wallpaper's.
+    fit: Option<WallpaperFit>,
     blur_track: TrackBounds,
     opacity_track: TrackBounds,
     wallpaper_choice: WallpaperChoice,
@@ -310,7 +312,7 @@ impl LookFields {
             blur_own: look.wallpaper_blur.is_some(),
             opacity: background_opacity_of(&look),
             opacity_own: look.background_opacity.is_some(),
-            fit: look.wallpaper_fit.unwrap_or_default(),
+            fit: look.wallpaper_fit,
             background: field(color(look.background), cx),
             alternate: field(color(look.alternate), cx),
             text: field(color(look.text), cx),
@@ -341,14 +343,15 @@ impl LookFields {
         self.blur_own = false;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
         self.opacity_own = false;
-        self.fit = WallpaperFit::default();
+        self.fit = None;
         self.wallpaper_choice = WallpaperChoice::Inherit;
     }
 
     /// The look the fields hold, or why it cannot be used. A value equal to
     /// its default is stored as unset, so it follows the default later too;
-    /// the opacity and the blur are the exception (`opacity_own`, `blur_own`):
-    /// a channel can set them equal to, or 0 under, a standard one.
+    /// the opacity, the blur and the fit are the exception (`opacity_own`,
+    /// `blur_own`, `fit`): a channel can set them equal to, or 0 under, a
+    /// standard one.
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -407,7 +410,7 @@ impl LookFields {
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_blur: self.blur_own.then_some(self.blur),
             background_opacity: self.opacity_own.then_some(self.opacity),
-            wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
+            wallpaper_fit: self.fit,
             no_wallpaper: choice == WallpaperChoice::Off,
             ..ChannelLook::default()
         })
@@ -430,6 +433,8 @@ struct Controls {
     crop_use: FocusHandle,
     crop_whole: FocusHandle,
     crop_cancel: FocusHandle,
+    /// The miniature's "choose an image" button.
+    pub(super) choose: FocusHandle,
     blur: FocusHandle,
     opacity: FocusHandle,
     fit: [FocusHandle; FIT_COUNT],
@@ -448,6 +453,7 @@ impl Controls {
             crop_use: handle(),
             crop_whole: handle(),
             crop_cancel: handle(),
+            choose: handle(),
             blur: handle(),
             opacity: handle(),
             fit: std::array::from_fn(|_| handle()),
@@ -489,6 +495,7 @@ impl Controls {
             );
         }
         order.extend([
+            (self.choose.clone(), Some(5)),
             (self.blur.clone(), Some(5)),
             (self.opacity.clone(), Some(5)),
         ]);
@@ -832,20 +839,9 @@ impl ChannelSettingsView {
     /// inherited value is the standard wallpaper's, as the miniature and the
     /// channel log use it. They become the channel's own only when moved.
     pub(crate) fn shown_strengths(&self, cx: &App) -> (u8, u8) {
-        let inherits = self.look.wallpaper_choice == WallpaperChoice::Inherit
-            && self.look.wallpaper.read(cx).text().trim().is_empty();
-        if !inherits || (self.look.blur_own && self.look.opacity_own) {
+        let Some(standard) = self.inherited_standard(cx) else {
             return (self.look.blur, self.look.opacity);
-        }
-        let dark = crate::theme::current(cx).dark;
-        let standard = self
-            .owner
-            .read(cx)
-            .map(|chat| chat.appearance.wallpapers(dark).channel_log.clone())
-            .unwrap_or_default();
-        if standard.path.is_none() {
-            return (self.look.blur, self.look.opacity);
-        }
+        };
         (
             if self.look.blur_own {
                 self.look.blur
@@ -860,8 +856,33 @@ impl ChannelSettingsView {
         )
     }
 
+    /// The channel log's standard wallpaper while the channel follows it:
+    /// inheriting, with a picture set there.
+    fn inherited_standard(&self, cx: &App) -> Option<cayenchat_storage::RegionWallpaper> {
+        let inherits = self.look.wallpaper_choice == WallpaperChoice::Inherit
+            && self.look.wallpaper.read(cx).text().trim().is_empty();
+        if !inherits {
+            return None;
+        }
+        let dark = crate::theme::current(cx).dark;
+        self.owner
+            .read(cx)
+            .ok()
+            .map(|chat| chat.appearance.wallpapers(dark).channel_log.clone())
+            .filter(|standard| standard.path.is_some())
+    }
+
+    /// The fit the buttons mark: the channel's own, else the one it uses.
+    pub(crate) fn shown_fit(&self, cx: &App) -> WallpaperFit {
+        self.look.fit.unwrap_or_else(|| {
+            self.inherited_standard(cx)
+                .and_then(|standard| standard.fit)
+                .unwrap_or_default()
+        })
+    }
+
     pub(crate) fn set_fit(&mut self, fit: WallpaperFit, cx: &mut Context<Self>) {
-        self.look.fit = fit;
+        self.look.fit = Some(fit);
         self.edited(cx);
     }
 
@@ -1114,9 +1135,10 @@ impl Render for ChannelSettingsView {
             );
         }
         let mut fits = div().flex().flex_wrap().gap_1();
+        let shown_fit = self.shown_fit(cx);
         for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
             fits = fits.child(
-                settings_theme::button(("channel-look-fit", index), self.look.fit == fit, cx)
+                settings_theme::button(("channel-look-fit", index), shown_fit == fit, cx)
                     .track_focus(&self.controls.fit[index])
                     .focus(move |style| style.border_color(ring))
                     .child(self.i18n.text(key))

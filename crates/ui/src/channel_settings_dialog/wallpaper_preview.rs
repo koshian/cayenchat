@@ -39,6 +39,9 @@ impl ChannelSettingsView {
             cx,
             |this: &mut Self| &mut this.miniature,
         );
+        let ring = settings_theme::current(cx).map_or(palette.text, |native| {
+            settings_theme::color(native.defaults.focus_ring_color)
+        });
         let drop_ring = theme.text;
         let hover = palette.selected;
         let text = resolved.text.unwrap_or(resolved.theme.text);
@@ -81,6 +84,8 @@ impl ChannelSettingsView {
                     })
                     .child(
                         settings_theme::button("channel-look-preview-choose", false, cx)
+                            .track_focus(&self.controls.choose)
+                            .focus(move |style| style.border_color(ring))
                             .text_size(px(11.))
                             .child(self.i18n.text("wallpaper_choose"))
                             .on_click(

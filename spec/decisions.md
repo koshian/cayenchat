@@ -3988,11 +3988,13 @@ the start of the session.
   (`wallpaper_crop::CropState`, shared by both screens; "Choose a range…"
   cuts the range out and keeps it as `wallpapers/wallpaper-<hash>.png`, set on
   the area it was opened for) and the fit (`RegionWallpaper.fit`, also in
-  `.cayentheme`; unset is cover; a channel's own fit still wins). The
-  miniature does not preview the fit. The strength and blur sliders and
+  `.cayentheme`; unset is cover; a channel's own fit still wins, also an
+  explicit cover: the channel's fit is an `Option`, and while it is unset the
+  fit buttons show the standard wallpaper's). The strength and blur sliders and
   their labels (`wallpaper_strength`, `wallpaper_blur`) are the same keys on
   both screens; the channel's strength slider shows 100 − its background
-  opacity.
+  opacity. The miniature's "Choose an image…" button is a Tab stop of the
+  channel settings (the old path form is gone).
 - **The channel settings show the same miniature for the channel log
   (#989).** `channel_settings_dialog/wallpaper_preview.rs`: the picture the
   channel shows (its own, the standard one or none, resolved by
