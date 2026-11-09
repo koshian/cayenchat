@@ -1190,6 +1190,11 @@ as absent rather than being truncated, which also keeps legacy-encoding
 decoding from producing a different identifier for the same message. No
 other tag is retained.
 
+CHATHISTORY reply lines take their `time` tag only while `server-time` is
+enabled, as live lines do (the flag is passed to `HistoryRequests::observe_with`
+per line). Without it the line shows the receipt time and its `msgid` is kept,
+so a resume reference never comes from an unnegotiated time.
+
 batch (opt-in per server): when enabled and offered, `batch` is requested
 with its own `CAP REQ`, on legacy encodings too because references and the
 history types are ASCII; it does not turn on `server-time` or

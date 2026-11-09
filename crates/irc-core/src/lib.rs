@@ -4112,7 +4112,8 @@ impl Worker {
         // Our history replies are consumed whole; nothing in
         // them is live traffic.
         if self.history_enabled {
-            match self.history.observe(message) {
+            let server_time = self.negotiation.enabled(cap::SERVER_TIME);
+            match self.history.observe_with(message, server_time) {
                 history::Observed::Unrelated => {}
                 history::Observed::Consumed => return ControlFlow::Continue(true),
                 history::Observed::Message(streamed) => {
