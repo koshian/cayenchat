@@ -1108,3 +1108,139 @@ fn a_dialog_that_cannot_carry_the_sasl_password_to_a_changed_host_stays_open(
         assert!(chat.sessions[&NET].irc.is_none());
     });
 }
+
+/// A store whose read waits for the test and then panics, as a faulty
+/// backend would; the store thread of a real run catches it.
+struct PanickingRead {
+    inner: cayenchat_storage::credentials::MemoryBackend,
+    gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    holding: std::sync::atomic::AtomicBool,
+}
+
+impl cayenchat_storage::credentials::CredentialBackend for PanickingRead {
+    fn kind(&self) -> cayenchat_storage::CredentialBackendKind {
+        self.inner.kind()
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(
+        &self,
+        _key: &cayenchat_storage::SecretKey,
+    ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.holding.store(true, SeqCst);
+        let released = self
+            .gate
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20));
+        self.holding.store(false, SeqCst);
+        released.expect("the test lets the read go");
+        panic!("the backend failed");
+    }
+
+    fn set(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+        value: &Secret,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.inner.set(key, value)
+    }
+
+    fn delete(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.inner.delete(key)
+    }
+}
+
+#[gpui::test]
+fn a_reconnect_whose_credential_read_fails_tells_only_its_own_current_attempt(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (chat, _store, cx) = open_chat(cx);
+    let (release, gate) = std::sync::mpsc::channel();
+    let backend = std::sync::Arc::new(PanickingRead {
+        inner: cayenchat_storage::credentials::MemoryBackend::new(
+            cayenchat_storage::CredentialBackendKind::System,
+        ),
+        gate: std::sync::Mutex::new(gate),
+        holding: Default::default(),
+    });
+    cx.update(|_, cx| {
+        cx.set_global(crate::secrets::Worker::start(
+            CredentialStore::with_backend(backend.clone()),
+        ));
+    });
+    cx.executor().allow_parking();
+    chat.update(cx, |chat, _| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
+    });
+    let lines = |chat: &gpui::Entity<ChatWindow>, network, cx: &mut gpui::VisualTestContext| {
+        chat.read_with(cx, |chat, _| chat.state.server_messages(network).len())
+    };
+    let other = NetworkId(2);
+    let finish = |cx: &mut gpui::VisualTestContext| {
+        // The read has panicked and the store thread has gone on.
+        cx.update(|_, cx| crate::secrets::flush(cx, std::time::Duration::from_secs(10)));
+        cx.run_until_parked();
+    };
+    let start = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+        chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+        let started = std::time::Instant::now();
+        while !backend.holding.load(SeqCst) {
+            assert!(started.elapsed().as_secs() < 20, "the read started");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+
+    // A newer attempt (or Disconnect or Connect) made this one stale.
+    let before = lines(&chat, NET, cx);
+    start(&chat, cx);
+    chat.update(cx, |chat, _| {
+        chat.sessions.get_mut(&NET).unwrap().retry_token += 1;
+    });
+    release.send(()).unwrap();
+    finish(cx);
+    assert_eq!(
+        lines(&chat, NET, cx),
+        before,
+        "a stale attempt hears nothing"
+    );
+
+    // The user ended the connection meanwhile.
+    start(&chat, cx);
+    chat.update(cx, |chat, _| {
+        chat.sessions.get_mut(&NET).unwrap().manual_disconnect = true;
+    });
+    release.send(()).unwrap();
+    finish(cx);
+    assert_eq!(
+        lines(&chat, NET, cx),
+        before,
+        "a manual disconnect stays quiet"
+    );
+    chat.update(cx, |chat, _| {
+        chat.sessions.get_mut(&NET).unwrap().manual_disconnect = false;
+    });
+
+    // The current attempt gets the error, on its own network, once, and
+    // nothing waits for a retry.
+    let other_before = lines(&chat, other, cx);
+    start(&chat, cx);
+    release.send(()).unwrap();
+    finish(cx);
+    chat.read_with(cx, |chat, _| {
+        let messages = chat.state.server_messages(NET);
+        assert_eq!(messages.len(), before + 1);
+        assert!(!messages[before].text.is_empty());
+        assert!(!chat.sessions[&NET].retry_pending);
+        assert!(chat.sessions[&NET].irc.is_none());
+    });
+    assert_eq!(lines(&chat, other, cx), other_before);
+}
