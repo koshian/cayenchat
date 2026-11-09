@@ -482,6 +482,32 @@ fn corrected_notes_are_written_with_the_next_settings_save(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn a_reload_keeps_the_notes_not_written_yet(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(
+        settings("#a,#b", Some(&["#a", "#b"])),
+        &[("#b", "secret")],
+        cx,
+    );
+    opened.chat.update(cx, |chat, cx| {
+        let config = chat.sessions.get_mut(&NET).unwrap().active_config.as_mut();
+        config
+            .unwrap()
+            .channel_keys
+            .insert("#b".into(), "secret".into());
+        registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, cx| {
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        // The settings window reloads the file, which lacks the correction.
+        let file = settings_file::load().unwrap().unwrap();
+        chat.apply_servers(file, cx);
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        assert!(!chat.pending_notes.is_empty());
+    });
+}
+
+#[gpui::test]
 fn notes_converge_on_the_first_scan_after_a_restart(cx: &mut TestAppContext) {
     // The corrections of the last run never reached the file: it still has
     // no notes, and the key is saved.
