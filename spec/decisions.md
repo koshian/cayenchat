@@ -2205,8 +2205,11 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   next connection. A file from before
   the note (`keyed_channels` absent) is read in full by its first connection
   (every enabled auto-join channel, as before) and the keys found become the
-  note, so no saved key is lost. A note made before that scan is ignored, as it
-  would hide the other keys from it. A manual JOIN (`/join`, the menus) reads
+  note, so no saved key is lost. A note made before that scan would hide the
+  other keys from it, so a key saved meanwhile for a channel the scan does not
+  read goes into `early_keyed_channels` instead (#997): the scan reads it too,
+  `channel_key_secret_keys` lists it, and the scan folds it into
+  `keyed_channels` and empties the list. A manual JOIN (`/join`, the menus) reads
   the store only for a channel the note lists (or while the first scan is
   pending); any other channel is sent without a key, and a 475 asks for it. The
   rule for every secret (D010, and #638 for the passwords) is: the store is
