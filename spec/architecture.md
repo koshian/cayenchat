@@ -2096,7 +2096,14 @@ jobs run in the order queued; the move to another backend is one job that
 switches the store as it ends (`run_switching`), so what is queued during it
 lands in the new store. A job that panics is caught per job: it is not run
 again, its switch (if any) is not applied, its future resolves to `None`
-(`secrets::stopped()`, never a success), and the jobs behind it go on. A
+(`secrets::stopped()`, never a success), and the jobs behind it go on. The
+exception is a panic in the job that moves the secrets to another backend
+(`run_switching`): how far it copied, saved the setting and deleted the
+originals is unknown, so the store in use may not be the one the settings
+file names. The worker is then failed until the app restarts: this job and
+every later one resolves to `None` without running, so nothing is written to
+the wrong store (an accepted limitation: credentials are unavailable for the
+rest of the session, with the error shown, instead of silently diverging). A
 failed thread spawn fails every job the same way; nothing falls back to the
 UI thread. A reconnect whose read fails this way shows the error on its own
 network only while its retry token is current. A result read for a profile

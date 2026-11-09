@@ -8,6 +8,7 @@
 //! the moment a test binary reads the user's "CayenChat" item.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -45,6 +46,12 @@ pub struct Worker {
     /// that is current at its place in the queue, not the one that was
     /// installed when it was queued.
     current: Arc<Mutex<CredentialStore>>,
+    /// Set when a job that switches the store panicked: how far it moved the
+    /// secrets and the setting is unknown, so `current` may not be the store
+    /// the settings file names. Every later job fails without running until
+    /// the app is restarted; none writes to a store that may be the wrong
+    /// one.
+    failed: Arc<AtomicBool>,
 }
 
 impl Global for Worker {}
@@ -64,7 +71,8 @@ impl Worker {
                     // (the caller's receiver closes, so it sees a failure,
                     // `stopped`), a switch of the store it was making is not
                     // applied, and it is not run again. The jobs after it
-                    // go on. The panic message is not printed here beyond
+                    // go on, unless it was a switch of the store (`failed`).
+                    // The panic message is not printed here beyond
                     // the default hook; jobs hold secrets only inside the
                     // store, never in their panic payload.
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
@@ -82,24 +90,35 @@ impl Worker {
         Self {
             queue,
             current: Arc::new(Mutex::new(store)),
+            failed: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Queues `job` against the current store. The receiver closes without
-    /// a value if the job panics or the thread is gone.
-    fn submit<T, F>(&self, job: F) -> futures_channel::oneshot::Receiver<T>
+    /// a value if the job panics, the worker has failed or the thread is
+    /// gone. `switching` is for a job that moves the secrets: if it panics,
+    /// the worker fails (see `failed`).
+    fn submit<T, F>(&self, switching: bool, job: F) -> futures_channel::oneshot::Receiver<T>
     where
         T: Send + 'static,
         F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
     {
         let (done, result) = futures_channel::oneshot::channel();
         let current = self.current.clone();
+        let failed = self.failed.clone();
         let queued: Job = Box::new(move || {
+            if failed.load(Ordering::SeqCst) {
+                return;
+            }
+            // A panic leaves the flag set; a job that ends, with an error or
+            // not, clears it.
+            failed.store(switching, Ordering::SeqCst);
             let store = lock(&current).clone();
             let (value, switched) = job(&store);
             if let Some(switched) = switched {
                 *lock(&current) = switched;
             }
+            failed.store(false, Ordering::SeqCst);
             let _ = done.send(value);
         });
         let _ = self.queue.send(queued);
@@ -120,21 +139,33 @@ where
     T: Send + 'static,
     F: FnOnce(&CredentialStore) -> T + Send + 'static,
 {
-    run_switching(cx, move |store| (job(store), None))
+    dispatch(cx, false, move |store| (job(store), None))
 }
 
 /// `run` for a job that may switch the store: the one it returns, if any,
 /// becomes the current store as the job ends, before the next job starts.
 /// This keeps a move of the secrets to another store whole: what is queued
 /// while it runs lands in the new store, not in the old one it deletes.
+///
+/// If such a job panics, the secrets and the setting may be half moved, so
+/// the worker fails: this and every later job resolves with `None` until the
+/// app restarts, rather than write to a store that may be the wrong one.
 pub fn run_switching<T, F>(cx: &App, job: F) -> impl Future<Output = Option<T>> + use<T, F>
+where
+    T: Send + 'static,
+    F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
+{
+    dispatch(cx, true, job)
+}
+
+fn dispatch<T, F>(cx: &App, switching: bool, job: F) -> impl Future<Output = Option<T>> + use<T, F>
 where
     T: Send + 'static,
     F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
 {
     let installed = store(cx);
     let result = match cx.try_global::<Worker>() {
-        Some(worker) => worker.submit(job),
+        Some(worker) => worker.submit(switching, job),
         None => {
             let (done, result) = futures_channel::oneshot::channel();
             let (value, _) = job(&installed);
@@ -375,24 +406,64 @@ mod tests {
     fn a_panicking_job_fails_alone_and_the_next_job_runs() {
         let worker = worker();
         let key = SecretKey::server_password("secrets-test-panic");
-        let panicking = worker.submit(|_| -> ((), Option<CredentialStore>) { panic!("boom") });
-        let switching = worker.submit(|_| -> ((), _) {
-            if true {
-                panic!("boom while switching");
-            }
-            ((), Some(memory_store(CredentialBackendKind::LocalFile)))
+        let panicking = worker.submit(false, |_| -> ((), Option<CredentialStore>) {
+            panic!("boom")
         });
-        let ok = worker.submit({
+        let ok = worker.submit(false, {
             let key = key.clone();
             move |store| (store.set(&key, &Secret::new("x")).is_ok(), None)
         });
         after_queue(&worker);
         use futures_util::FutureExt;
         assert!(matches!(panicking.now_or_never(), Some(Err(_))));
-        assert!(matches!(switching.now_or_never(), Some(Err(_))));
         assert_eq!(ok.now_or_never().and_then(Result::ok), Some(true));
-        // The store the panicking switch would have installed is not current.
+    }
+
+    #[test]
+    fn a_job_that_ends_with_an_error_does_not_fail_the_worker() {
+        let worker = worker();
+        let switch = worker.submit(true, |_| (Err::<(), _>(stopped()), None));
+        let next = worker.submit(false, |_| ((), None));
+        after_queue(&worker);
+        use futures_util::FutureExt;
+        assert!(matches!(switch.now_or_never(), Some(Ok(Err(_)))));
+        assert!(matches!(next.now_or_never(), Some(Ok(()))));
+    }
+
+    #[test]
+    fn a_panic_while_switching_the_store_fails_every_later_job() {
+        let worker = worker();
+        let key = SecretKey::server_password("secrets-test-panic-switch");
+        // As the real move does: something is done to the new store, then
+        // the job panics before it returns the store to switch to.
+        let target = memory_store(CredentialBackendKind::LocalFile);
+        let switching = worker.submit(true, {
+            let target = target.clone();
+            let key = key.clone();
+            move |_| -> ((), Option<CredentialStore>) {
+                target.set(&key, &Secret::new("old")).unwrap();
+                panic!("boom while deleting the originals");
+            }
+        });
+        let later_write = worker.submit(false, {
+            let key = key.clone();
+            move |store| (store.set(&key, &Secret::new("new")).is_ok(), None)
+        });
+        after_queue(&worker);
+        let after = worker.submit(false, |_| ((), None));
+        after_queue(&worker);
+        use futures_util::FutureExt;
+        assert!(matches!(switching.now_or_never(), Some(Err(_))));
+        // Neither the queued write nor a later job ran: no secret went to
+        // the store that may be the wrong one, and each failed, not hung.
+        assert!(matches!(later_write.now_or_never(), Some(Err(_))));
+        assert!(matches!(after.now_or_never(), Some(Err(_))));
         assert_eq!(lock(&worker.current).kind(), CredentialBackendKind::System);
+        assert_eq!(
+            lock(&worker.current).get(&key).unwrap(),
+            None,
+            "the store in use was not written"
+        );
     }
 
     #[test]
@@ -403,8 +474,9 @@ mod tests {
         let worker = Worker {
             queue,
             current: Arc::new(Mutex::new(memory_store(CredentialBackendKind::System))),
+            failed: Arc::new(AtomicBool::new(false)),
         };
-        let job = worker.submit(|_| ((), None));
+        let job = worker.submit(false, |_| ((), None));
         use futures_util::FutureExt;
         assert!(matches!(job.now_or_never(), Some(Err(_))));
     }
