@@ -111,6 +111,18 @@ fn a_file_without_notes_is_scanned_once_so_saved_keys_survive() {
     assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
+#[test]
+fn a_key_saved_outside_the_auto_join_list_before_the_scan_is_read_by_it() {
+    let (store, _) = counting_store();
+    let mut settings = settings("#a", None);
+    save_key(&store, &settings, "#other", "secret");
+    // The note made while the first scan was pending (#997).
+    let profile = settings.selected_profile_mut().unwrap();
+    assert!(profile.note_channel_key("#other", true));
+    let config = connect(&settings, &store);
+    assert_eq!(config.channel_keys["#other"], "secret");
+}
+
 struct Opened {
     chat: gpui::Entity<ChatWindow>,
     store: CredentialStore,
