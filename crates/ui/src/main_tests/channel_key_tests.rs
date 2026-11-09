@@ -497,10 +497,19 @@ fn an_unreadable_store_keeps_the_note_and_a_readable_empty_one_clears_it(cx: &mu
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+        assert!(chat.sessions[&NET].key_read_failed.contains("#secret"));
     });
-    // The store works again and holds no key: now the note goes.
+    // The store works again, but the failed read is not repeated in this
+    // session: the note stays.
     cx.update(|_, cx| {
         crate::secrets::install_memory(cx);
+    });
+    chat.update(cx, |chat, cx| chat.start_key_tracking(NET, cx));
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+        // A new session reads again and finds no key: the note goes.
+        chat.sessions.get_mut(&NET).unwrap().key_read_failed.clear();
     });
     chat.update(cx, |chat, cx| chat.start_key_tracking(NET, cx));
     cx.run_until_parked();
