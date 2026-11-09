@@ -36,7 +36,7 @@ pub(crate) fn limited_decoder<'a>(
     // change after construction (`PngDecoder::set_limits` does not reach it),
     // so for PNG the input copy, the retained eXIf data and the raster
     // declared by IHDR are all taken off that limit here.
-    let (metadata_copy_bytes, raster_bytes) = png_reservations(bytes, format);
+    let (metadata_copy_bytes, raster_bytes) = png_reservations(bytes, format)?;
     if metadata_copy_bytes.saturating_add(raster_bytes) > limits.max_decode_bytes {
         return Err(insufficient_memory());
     }
@@ -76,22 +76,43 @@ fn insufficient_memory() -> image::ImageError {
 /// Returns that reservation and the raster the decoded image will need
 /// (see `png_raster_bytes`), which `reserve_source_image` charges later from
 /// `total_bytes`; here it only lowers `png`'s fixed allocation limit.
-fn png_reservations(bytes: &[u8], format: ImageFormat) -> (u64, u64) {
+///
+/// A PNG whose first chunk is not a well-formed IHDR is rejected here, before
+/// any metadata is stripped: otherwise a chunk placed ahead of IHDR would make
+/// the estimate unavailable and then be removed, leaving a valid PNG whose
+/// raster was never reserved.
+fn png_reservations(bytes: &[u8], format: ImageFormat) -> image::ImageResult<(u64, u64)> {
     if format != ImageFormat::Png {
-        return (0, 0);
+        return Ok((0, 0));
     }
     let scan = scan_png_chunks(bytes);
+    let Some(raster) = png_raster_bytes(bytes, scan.has_trns) else {
+        return Err(image::ImageError::Decoding(
+            image::error::DecodingError::new(
+                image::error::ImageFormatHint::Exact(ImageFormat::Png),
+                "PNG does not start with a valid IHDR",
+            ),
+        ));
+    };
     let copy = if scan.has_metadata {
         bytes.len() as u64
     } else {
         0
     };
-    let raster = png_raster_bytes(bytes, scan.has_trns).unwrap_or(0);
-    (
-        copy.saturating_add(scan.exif_bytes.saturating_mul(2)),
+    Ok((
+        copy.saturating_add(scan.exif_bytes.saturating_mul(2))
+            .saturating_add(PNG_UNRESERVED_HEADROOM),
         raster,
-    )
+    ))
 }
+
+/// Memory `png` allocates without going through its allocation limit
+/// (`UnfilteringBuffer`, inflate state, row buffers), so lowering `max_alloc`
+/// cannot account for it. Measured at the default 48 MiB budget with a
+/// 4096 × 3070 RGBA PNG, plain and Adam7: the decode peak exceeded the budget
+/// by about 250–266 KiB with the raster filling it; this keeps twice that
+/// aside for PNG. See `spec/performance.md`.
+const PNG_UNRESERVED_HEADROOM: u64 = 512 * 1024;
 
 /// Upper bound of the decoded raster `image` produces for a PNG, from its
 /// IHDR (and whether a tRNS chunk adds an alpha channel). `None` when the
