@@ -317,6 +317,10 @@ impl Wallpapers {
 #[derive(Default)]
 pub(crate) struct Wallpaper {
     slot: Option<(Key, State)>,
+    /// Cancels the load of the slot's key. `release` sets it and takes a new
+    /// one, so a replaced or removed wallpaper's load stops at its next check
+    /// and its result is never applied.
+    cancel: CancelFlag,
     placed: Rc<Cell<Bounds<Pixels>>>,
 }
 
@@ -359,11 +363,18 @@ impl Wallpaper {
             self.release(window);
             self.slot = Some((key.clone(), State::Loading));
             let loading = key.clone();
+            let cancel = self.cancel.clone();
+            let task_cancel = cancel.clone();
             let loaded = cx.background_spawn(async move {
-                wallpaper::load(&loading.path, loading.blur, &CancelFlag::default())
+                wallpaper::load(&loading.path, loading.blur, &task_cancel)
             });
             cx.spawn(async move |this, cx| {
                 let result = loaded.await;
+                // Keyed by this load's own flag: a slot released and filled
+                // again with the same key must not take this stale result.
+                if cancel.is_cancelled() {
+                    return;
+                }
                 let _ = this.update(cx, |this, cx| {
                     let Some((held, state)) = this.wallpapers.get_mut(region).slot.as_mut() else {
                         return;
@@ -424,9 +435,22 @@ impl Wallpaper {
     }
 
     fn release(&mut self, window: &mut Window) {
-        if let Some((_, State::Ready(image))) = self.slot.take() {
+        // Called on every frame a pane has no wallpaper: only a slot has a
+        // load to cancel.
+        let Some((_, state)) = self.slot.take() else {
+            return;
+        };
+        self.cancel.cancel();
+        self.cancel = CancelFlag::default();
+        if let State::Ready(image) = state {
             let _ = window.drop_image(image);
         }
+    }
+}
+
+impl Drop for Wallpaper {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 

@@ -1190,6 +1190,11 @@ as absent rather than being truncated, which also keeps legacy-encoding
 decoding from producing a different identifier for the same message. No
 other tag is retained.
 
+CHATHISTORY reply lines take their `time` tag only while `server-time` is
+enabled, as live lines do (the flag is passed to `HistoryRequests::observe_with`
+per line). Without it the line shows the receipt time and its `msgid` is kept,
+so a resume reference never comes from an unnegotiated time.
+
 batch (opt-in per server): when enabled and offered, `batch` is requested
 with its own `CAP REQ`, on legacy encodings too because references and the
 history types are ASCII; it does not turn on `server-time` or
@@ -2094,7 +2099,20 @@ never the UI, and two threads cannot take turns at the backend's lock to stop
 it (#638). A job uses the store that is current at its place in the queue, and
 jobs run in the order queued; the move to another backend is one job that
 switches the store as it ends (`run_switching`), so what is queued during it
-lands in the new store. A result read for a profile that has changed is read
+lands in the new store. A job that panics is caught per job: it is not run
+again, its switch (if any) is not applied, its future resolves to `None`
+(`secrets::stopped()`, never a success), and the jobs behind it go on. The
+exception is a panic in the job that moves the secrets to another backend
+(`run_switching`): how far it copied, saved the setting and deleted the
+originals is unknown, so the store in use may not be the one the settings
+file names. The worker is then failed until the app restarts: this job and
+every later one resolves to `None` without running, so nothing is written to
+the wrong store (an accepted limitation: credentials are unavailable for the
+rest of the session, with the error shown, instead of silently diverging). A
+failed thread spawn fails every job the same way; nothing falls back to the
+UI thread. A reconnect whose read fails this way shows the error on its own
+network only while its retry token is current. A result read for a profile
+that has changed is read
 again (D087). A flow that needs a result
 before it can go on (connect, reconnect, the credential dialog's channel
 keys, the upload service's token, Connect and the draft's Save in settings)
