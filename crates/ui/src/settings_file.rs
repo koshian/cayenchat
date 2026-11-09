@@ -34,6 +34,9 @@ pub(crate) fn save(settings: &Settings) -> Result<(), String> {
 
 /// Records `kind` as the credential backend in the file as it is now,
 /// changing nothing else; `fallback` is written when there is no file yet.
+/// It returns once the file is on disk: the caller deletes the old store's
+/// secrets next, and a power loss must not leave the old choice with them
+/// gone. Only the store thread calls it, so the wait does not stall the UI.
 #[cfg(not(test))]
 pub(crate) fn set_credential_backend(
     kind: cayenchat_storage::CredentialBackendKind,
@@ -42,7 +45,7 @@ pub(crate) fn set_credential_backend(
     let _write = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = cayenchat_storage::load()?.unwrap_or_else(|| fallback.clone());
     settings.credential_backend = kind;
-    cayenchat_storage::save(&settings)
+    cayenchat_storage::save_durable(&settings)
 }
 
 /// Replaces the file with `settings` after copying the old one beside it;
@@ -70,6 +73,9 @@ pub(crate) struct TestState {
     enabled: bool,
     failing: bool,
     unreadable: bool,
+    /// `set_credential_backend` changes the file, then reports an error, as a
+    /// failed flush of the directory after the rename does.
+    fail_after_replace: bool,
 }
 
 /// What a test's file is made of. Each test thread has its own, so tests do
@@ -158,8 +164,17 @@ pub(crate) fn set_credential_backend(
             settings.credential_backend = kind;
             state.file = Some(settings);
         }
+        if state.fail_after_replace {
+            return Err("cannot flush the settings directory".into());
+        }
         Ok(())
     })
+}
+
+/// Makes `set_credential_backend` fail after it replaced the file.
+#[cfg(test)]
+pub(crate) fn fail_set_backend_after_replace(failing: bool) {
+    with_state(|state| state.fail_after_replace = failing);
 }
 
 #[cfg(test)]

@@ -23,8 +23,10 @@ pub(crate) enum Flush {
 /// written (and flushed to disk with [`Flush::Disk`]), then renamed over
 /// `path`. A crash during the write leaves the old file, and the rename
 /// replaces it whole, so no reader sees half of a file. The directory is not
-/// flushed, so after a power loss the rename itself may not have happened
-/// yet. The contents are never in a file with broader permissions. Missing
+/// flushed with [`Flush::Skip`], so after a power loss the rename itself may
+/// not have happened yet; [`Flush::Disk`] makes the rename durable too (the
+/// directory on Unix, write-through on Windows) and fails if it cannot. The
+/// contents are never in a file with broader permissions. Missing
 /// directories are created user-only (`0700`).
 pub(crate) fn write(path: &Path, bytes: &[u8], flush: Flush) -> io::Result<()> {
     let parent = path
@@ -46,13 +48,62 @@ pub(crate) fn write(path: &Path, bytes: &[u8], flush: Flush) -> io::Result<()> {
         if flush == Flush::Disk {
             file.sync_all()?;
         }
-        // `rename` replaces an existing file on Windows too.
-        fs::rename(&temporary, path)
+        if flush == Flush::Disk {
+            replace_durably(&temporary, path, parent)
+        } else {
+            // `rename` replaces an existing file on Windows too.
+            fs::rename(&temporary, path)
+        }
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Renames `from` over `to` and returns only once the rename itself has
+/// reached the disk: on Unix by flushing the directory, on Windows by
+/// `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. An error means the rename is
+/// not known to be durable, so the caller must keep what it would delete.
+fn replace_durably(from: &Path, to: &Path, parent: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    tests::DURABLE_REPLACES.with(|count| count.set(count.get() + 1));
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+        let wide =
+            |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain(Some(0)).collect() };
+        // `MoveFileExW` takes a path of at most MAX_PATH units unless it is
+        // in the `\\?\` form, which `fs::rename` used to add itself. The
+        // canonical directory has that form; both files live in it.
+        let parent = fs::canonicalize(parent)?;
+        let named = |path: &Path| {
+            path.file_name()
+                .map(|name| parent.join(name))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))
+        };
+        let (from, to) = (wide(&named(from)?), wide(&named(to)?));
+        // SAFETY: both buffers are NUL-terminated and outlive the call.
+        let moved = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(from, to)?;
+        fs::File::open(parent)?.sync_all()
+    }
 }
 
 /// Creates missing directories as user-only (`0700`) on Unix. Existing
@@ -71,6 +122,37 @@ pub(crate) fn create_dir(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static DURABLE_REPLACES: Cell<u32> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn only_a_disk_write_makes_the_replacement_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.json");
+        let count = || DURABLE_REPLACES.with(Cell::get);
+        write(&path, b"a", Flush::Skip).unwrap();
+        assert_eq!(count(), 0);
+        write(&path, b"b", Flush::Disk).unwrap();
+        assert_eq!(count(), 1);
+        assert_eq!(fs::read(&path).unwrap(), b"b");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_disk_write_replaces_a_file_under_a_path_over_max_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut long = directory.path().to_path_buf();
+        while long.as_os_str().len() <= 300 {
+            long.push("a_directory_name_of_some_length");
+        }
+        let path = long.join("file.json");
+        write(&path, b"first", Flush::Disk).unwrap();
+        write(&path, b"second", Flush::Disk).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+    }
 
     #[test]
     fn replaces_the_whole_file_and_leaves_nothing_else() {
