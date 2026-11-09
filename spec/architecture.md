@@ -2168,7 +2168,10 @@ store's secrets are deleted, so a power loss cannot leave the old choice with
 the originals gone; `settings_file::save` (every
 whole-file save and a settings import) keeps the file's choice, so a window holding an older
 snapshot cannot write the old store back while or after the secrets move. The
-file lock is never held across the copy. A channel key written to the store
+file lock is never held across the copy. When recording the choice fails, the
+copies are deleted only if the file is read back still naming the old store; if
+it names the new store (the replace succeeded and a later step failed) or
+cannot be read, copies and originals both stay (#1016). A channel key written to the store
 and confirmed is noted in `keyed_channels` even when its connection has gone
 (a reconnect); only the running connection's configuration is skipped then.
 Results of one channel are ordered by the order the writes were queued, not by
