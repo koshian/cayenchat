@@ -3758,7 +3758,10 @@ the start of the session.
   buttons. The defaults (blur 0.0, opacity 80 %, fit `cover`) are the
   maintainer's choice after trying real photos (2026-11-07).
 - **Choosing the image and its range** (`channel_settings_dialog/
-  wallpaper_crop.rs`). The "Browse…" button and a file dropped on the
+  wallpaper_crop.rs`; the range editor itself is the one shared with the
+  avatar editor, `crop_editor::ImageCropEditor` with `CropConstraint::Free`
+  here and `Square` there, so drag, resize, close-up and drawing exist
+  once, #968). The "Browse…" button and a file dropped on the
   window both read the file in the background as an attachment
   (`image_upload::read_in_background`, so a macOS file promise from Photos
   is read before the platform deletes it, as for the avatar) and decode it
