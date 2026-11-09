@@ -1079,9 +1079,10 @@ struct ChatWindow {
     window_display: Option<String>,
     /// The native window title last set from `render`.
     shown_title: String,
-    /// The native window was last made transparent because a pane background
-    /// is see-through (set from `render`).
-    window_transparent: bool,
+    /// The background appearance last set on the native window from `render`:
+    /// transparent while a pane background is see-through, blurred when the
+    /// background blur is on as well (#1018).
+    window_background: WindowBackgroundAppearance,
     /// Whether a pane was see-through when the window last asked the platform
     /// whether it composites; asked again when this changes (#930).
     translucent_seen: bool,
@@ -1703,7 +1704,7 @@ impl ChatWindow {
             window_bounds: None,
             window_display: None,
             shown_title: String::new(),
-            window_transparent: false,
+            window_background: WindowBackgroundAppearance::Opaque,
             translucent_seen: false,
             window_compositing: true,
             whois_windows: HashMap::new(),
@@ -7167,13 +7168,18 @@ impl Render for ChatWindow {
             self.window_compositing = !translucent || window.is_compositing();
         }
         let transparent = translucent && self.window_compositing;
-        if transparent != self.window_transparent {
-            window.set_background_appearance(if transparent {
-                WindowBackgroundAppearance::Transparent
-            } else {
-                WindowBackgroundAppearance::Opaque
-            });
-            self.window_transparent = transparent;
+        // The platform blurs the whole window, not the panes, so the blur
+        // asks for a see-through pane and a platform that can (#1018).
+        let background = if !transparent {
+            WindowBackgroundAppearance::Opaque
+        } else if self.appearance.background_blur && window.supports_background_blur() {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Transparent
+        };
+        if background != self.window_background {
+            window.set_background_appearance(background);
+            self.window_background = background;
         }
         self.check_double_enter(window, cx);
         let content = self.render_chat(window, cx);

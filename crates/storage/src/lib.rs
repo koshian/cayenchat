@@ -736,6 +736,12 @@ pub struct Appearance {
     pub channel_tree_opacity: u8,
     pub channel_log_opacity: u8,
     pub combined_log_opacity: u8,
+    /// Blur what the desktop shows through the see-through panes (#1018).
+    /// The platform blurs the whole window with a strength of its own, so
+    /// this is one switch, not one per pane; it takes effect only while a
+    /// pane is below 100 % and the platform can blur. Off by default and for
+    /// files without it. Added after version 15 without a version change.
+    pub background_blur: bool,
     pub alternate_rows: bool,
     /// Inline thumbnails of direct image links in the channel log
     /// (version 14). Off by default, also for settings saved before it existed.
@@ -1045,6 +1051,7 @@ impl Default for Appearance {
             channel_tree_opacity: 100,
             channel_log_opacity: 100,
             combined_log_opacity: 100,
+            background_blur: false,
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
@@ -4115,6 +4122,28 @@ mod tests {
         let mut settings = load_from(&path).unwrap().unwrap();
         assert!(!settings.appearance.compact_urls);
         settings.appearance.compact_urls = true;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn background_blur_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.background_blur);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        assert!(
+            old["appearance"]
+                .as_object_mut()
+                .unwrap()
+                .remove("background_blur")
+                .is_some()
+        );
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.background_blur);
+        settings.appearance.background_blur = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }

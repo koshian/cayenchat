@@ -544,6 +544,7 @@ impl SettingsForm {
             channel_tree_opacity: self.values.appearance.channel_tree_opacity,
             channel_log_opacity: self.values.appearance.channel_log_opacity,
             combined_log_opacity: self.values.appearance.combined_log_opacity,
+            background_blur: self.values.appearance.background_blur,
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             compact_urls: self.values.appearance.compact_urls,
@@ -1324,6 +1325,9 @@ pub(crate) struct SettingsWindow {
     /// combined log, hover popup): their painted tracks and keyboard focus.
     opacity_tracks: [crate::slider::TrackBounds; 5],
     opacity_focus: [FocusHandle; 5],
+    /// Whether this window's platform can blur what lies behind it, read
+    /// from the window on each render (#1018).
+    blur_supported: bool,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1607,6 +1611,7 @@ impl SettingsWindow {
             line_height_tracks: Default::default(),
             opacity_tracks: Default::default(),
             opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            blur_supported: true,
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -5451,6 +5456,45 @@ impl SettingsWindow {
         field
     }
 
+    /// The window-wide background blur switch (#1018). It only does
+    /// something where the platform blurs behind the window, so elsewhere it
+    /// is shown disabled with the reason; the stored value is kept.
+    fn render_background_blur(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let supported = self.blur_supported;
+        let mut row = div()
+            .id("background-blur")
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .gap_2()
+            .child(settings_theme::checkbox(
+                self.settings.values.appearance.background_blur,
+                supported,
+                cx,
+            ))
+            .child(self.i18n.text("background_blur"));
+        if supported {
+            row = row.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                let value = &mut this.settings.values.appearance.background_blur;
+                *value = !*value;
+                cx.notify();
+            }));
+        } else {
+            row = row.text_color(theme.text_muted);
+        }
+        let hint = if supported {
+            "background_blur_hint"
+        } else {
+            "background_blur_unsupported"
+        };
+        div().flex().flex_col().gap_1().child(row).child(
+            div()
+                .ml(settings_theme::LABEL_INDENT)
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text(hint)),
+        )
+    }
+
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         account_settings::panel(cx)
@@ -5569,6 +5613,7 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
+            .child(self.render_background_blur(cx))
             .child(
                 div()
                     .id("alternate-rows")
@@ -6064,6 +6109,7 @@ impl SettingsWindow {
     fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
         let nav_focused = self.nav_focus.is_focused(window);
+        self.blur_supported = window.supports_background_blur();
         let mut tabs = Self::settings_tabs();
         let experimental = tabs.pop();
         let mut nav = div()
