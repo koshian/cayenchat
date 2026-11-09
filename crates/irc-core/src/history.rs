@@ -730,7 +730,16 @@ impl HistoryRequests {
         ended
     }
 
+    /// `observe_with` for a connection that negotiated `server-time`.
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
+        self.observe_with(message, true)
+    }
+
+    /// `server_time` is whether `server-time` is enabled on this
+    /// connection: only then is a reply line's `time` tag trusted, as for
+    /// live lines.
+    pub(crate) fn observe_with(&mut self, message: &IrcMessage, server_time: bool) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
         // Past the nesting limit the reply's deeper batches are not tracked:
         // swallow every line (BATCH open and close included) that hangs off
@@ -786,7 +795,7 @@ impl HistoryRequests {
             }
             // Without event-playback only PRIVMSG and NOTICE may appear;
             // anything else is dropped rather than applied as live state.
-            if let Some(line) = history_line(message, &outstanding.channel, mapping) {
+            if let Some(line) = history_line(message, &outstanding.channel, mapping, server_time) {
                 if outstanding.kept < MAX_HISTORY_LINES {
                     outstanding.kept += 1;
                     return Observed::Message(Streamed {
@@ -971,6 +980,7 @@ fn history_line(
     message: &IrcMessage,
     channel: &str,
     mapping: CaseMapping,
+    server_time: bool,
 ) -> Option<HistoryMessage> {
     let (target, text, notice) = match &message.command {
         IrcCommand::PRIVMSG(target, text) => (target, text, false),
@@ -1010,8 +1020,9 @@ fn history_line(
         text,
         notice,
         // The reply carries the time the server recorded; a missing or
-        // invalid one shows the receipt time.
-        server_time: tags::tag_value(message, "time").and_then(tags::parse_server_time),
+        // invalid one, or any when `server-time` is not enabled (as for
+        // live lines), shows the receipt time.
+        server_time: tags::server_time(message, server_time),
         msgid: tags::msgid(message).map(str::to_owned),
         account: tags::account(message).map(str::to_owned),
     })
@@ -1924,12 +1935,43 @@ mod tests {
     }
 
     #[test]
+    fn history_time_tag_is_trusted_only_with_server_time() {
+        let message = parse("@time=2099-01-01T00:00:00.000Z;msgid=m1 :bob!u@h PRIVMSG #a :hi");
+        let line = |enabled| history_line(&message, "#a", CaseMapping::default(), enabled).unwrap();
+        let on = line(true);
+        assert!(on.server_time.is_some());
+        let off = line(false);
+        // Everything but the time is kept.
+        assert_eq!(off.server_time, None);
+        assert_eq!(off.msgid.as_deref(), Some("m1"));
+        assert_eq!(off.sender, "bob");
+        assert_eq!(off.text, "hi");
+    }
+
+    #[test]
+    fn observe_drops_the_history_time_without_server_time() {
+        let mut requests = HistoryRequests::default();
+        requests.enqueue("#a");
+        sent(&mut requests, Instant::now());
+        requests.observe_with(&parse(":srv BATCH +r chathistory #a"), false);
+        let observed = requests.observe_with(
+            &parse("@batch=r;time=2099-01-01T00:00:00.000Z :bob!u@h PRIVMSG #a :hi"),
+            false,
+        );
+        let Observed::Message(streamed) = observed else {
+            panic!("expected a message");
+        };
+        assert_eq!(streamed.message.server_time, None);
+    }
+
+    #[test]
     fn history_lines_keep_the_account_they_were_sent_under() {
         let line = |text: &str| {
             history_line(
                 &text.parse::<IrcMessage>().unwrap(),
                 "#test",
                 CaseMapping::default(),
+                true,
             )
             .unwrap()
         };
@@ -1946,6 +1988,7 @@ mod tests {
                 &text.parse::<IrcMessage>().unwrap(),
                 channel,
                 CaseMapping::default(),
+                true,
             )
             .unwrap()
             .text
