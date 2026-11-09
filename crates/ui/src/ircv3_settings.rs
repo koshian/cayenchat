@@ -762,7 +762,7 @@ impl SettingsWindow {
         let Some(editor) = self.avatar_editor.take() else {
             return;
         };
-        let (source, crop) = (editor.source(), editor.crop());
+        let (source, crop) = (editor.source(cx), editor.crop(cx));
         let (profile, kind) = (editor.profile, editor.source_kind);
         self.avatar_opening = true;
         cx.notify();
@@ -1982,5 +1982,128 @@ mod own_avatar_tests {
         assert!(!offline.can_request && !offline.waiting);
         assert_eq!(offline.confirmed, Confirmed::Unknown);
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod avatar_upload_tests {
+    use cayenchat_app::attachments::Completion;
+    use gpui::TestAppContext;
+
+    use crate::ChatWindow;
+
+    const URL: &str = "https://i.ibb.co/x/new.png";
+
+    /// A finished avatar upload puts its URL into the shown server's avatar
+    /// URL field, both from the IRCv3 tab and from the quick icon section.
+    #[gpui::test]
+    fn a_finished_upload_fills_the_avatar_url_field(cx: &mut TestAppContext) {
+        crate::support::install_test_globals(cx);
+        for registers in [false, true] {
+            let settings = crate::settings_with_channels("#a");
+            let id = settings.servers[0].id.clone();
+            let owner = cx.add_window(|window, cx| {
+                ChatWindow::with_settings(settings.clone(), None, window, cx)
+            });
+            let (form, cx) = cx.add_window_view(|window, cx| {
+                crate::SettingsWindow::new(owner, settings.clone(), window, cx)
+            });
+            form.update(cx, |form, cx| {
+                form.complete_avatar_upload(
+                    Completion::InsertLink {
+                        target: id.clone(),
+                        url: URL.to_owned(),
+                    },
+                    registers,
+                    cx,
+                )
+            });
+            let (field, draft) = form.read_with(cx, |form, cx| {
+                (
+                    form.settings.avatar_url.read(cx).text().to_owned(),
+                    form.settings.values.servers[0].avatar_url.clone(),
+                )
+            });
+            assert_eq!(field, URL, "registers={registers}");
+            assert_eq!(draft, URL, "registers={registers}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod avatar_editor_upload_tests {
+    use std::sync::Arc;
+
+    use cayenchat_app::attachments::UploaderReadiness;
+    use cayenchat_model::attachment::{Attachment, AttachmentSource};
+    use cayenchat_upload::{ExternalUploader, testing::FakeUploader};
+    use gpui::TestAppContext;
+
+    use crate::ChatWindow;
+
+    const URL: &str = "https://i.ibb.co/x/new.png";
+
+    /// From the editor's square to the URL field: the cut picture goes to
+    /// the uploader and the returned URL ends up in the avatar URL field,
+    /// from the IRCv3 tab and from the quick icon section.
+    #[gpui::test]
+    fn an_edited_avatar_is_uploaded_and_its_url_shown(cx: &mut TestAppContext) {
+        crate::support::install_test_globals(cx);
+        for registers in [false, true] {
+            let settings = crate::settings_with_channels("#a");
+            let id = settings.servers[0].id.clone();
+            let owner = cx.add_window(|window, cx| {
+                ChatWindow::with_settings(settings.clone(), None, window, cx)
+            });
+            let (form, cx) = cx.add_window_view(|window, cx| {
+                crate::SettingsWindow::new(owner, settings.clone(), window, cx)
+            });
+            let mut png = Vec::new();
+            image::RgbImage::from_pixel(8, 4, image::Rgb([30, 120, 200]))
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .unwrap();
+            form.update(cx, |form, cx| {
+                form.open_avatar_editor(id.clone(), Arc::from(png), AttachmentSource::Drop, cx)
+            });
+            cx.run_until_parked();
+            // The editor's own steps, with a scripted uploader in place of
+            // the configured one.
+            let fake = Arc::new(FakeUploader::succeeding(URL));
+            let uploader: Arc<dyn ExternalUploader> = fake.clone();
+            form.update(cx, |form, cx| {
+                let editor = form.avatar_editor.take().expect("editor open");
+                let encoded = editor.source(cx).encode(editor.crop(cx)).expect("encodes");
+                assert!(!encoded.bytes.is_empty());
+                // The scripted host takes 64 bytes at most; the encoded
+                // picture is checked above, a small stand-in is sent.
+                let attachment = Attachment::image(
+                    Some(&format!("avatar.{}", encoded.extension)),
+                    b"\x89PNG\r\n\x1a\nxx".to_vec(),
+                    editor.source_kind,
+                );
+                let readiness = UploaderReadiness::Ready {
+                    provider: "Fake Host".into(),
+                };
+                form.offer_avatar_upload(
+                    editor.profile.clone(),
+                    attachment.unwrap(),
+                    Ok((readiness, Some(uploader))),
+                    registers,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            let seen = form.read_with(cx, |f, _| f.avatar_feedback.clone());
+            assert_eq!(fake.calls(), 1, "registers={registers} feedback={seen:?}");
+            let (field, draft, feedback) = form.read_with(cx, |form, cx| {
+                (
+                    form.settings.avatar_url.read(cx).text().to_owned(),
+                    form.settings.values.servers[0].avatar_url.clone(),
+                    form.avatar_feedback.clone(),
+                )
+            });
+            assert_eq!(field, URL, "registers={registers} feedback={feedback:?}");
+            assert_eq!(draft, URL, "registers={registers}");
+        }
     }
 }
