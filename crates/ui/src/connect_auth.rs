@@ -444,6 +444,14 @@ impl ChatWindow {
         self.raise_error(Some(network), text, crate::notices::Origin::Background, cx);
     }
 
+    /// Like `follow_credential_note`, for the SASL key the settings window
+    /// saved or deleted.
+    pub(crate) fn follow_key_note(&mut self, profile_id: &str, saved: bool) {
+        if let Some(profile) = self.saved.profile_mut(profile_id) {
+            profile.sasl_key_saved = saved;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // One attempt's state and the read result.
     fn stored_secrets_read(
         &mut self,
