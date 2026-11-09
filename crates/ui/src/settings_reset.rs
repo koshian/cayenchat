@@ -259,9 +259,6 @@ impl SettingsWindow {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
         form.show_fonts(appearance.fonts(form.font_side_dark), cx);
-        form.url_tooltip_opacity.update(cx, |field, cx| {
-            field.set_text(&appearance.url_tooltip_opacity.to_string(), cx)
-        });
     }
 
     /// Asks, then resets: a reset can discard many choices at once, and the
