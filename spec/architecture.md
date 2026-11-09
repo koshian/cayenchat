@@ -2176,6 +2176,13 @@ the order the callbacks arrive, so an older success cannot undo a newer one; a
 failed write changes no note. A note the file refuses stays pending
 (`pending_notes`) for the next save.
 
+A job that lists keys from the notes (the move of the secrets, #1001) is queued
+only when no credential job is outstanding (`secrets::idle`), so a channel key
+saved before it is noted in the file first. A removal of servers also lists the
+keys the file notes for the profiles being removed, and a channel key whose
+save finishes after its profile was removed is deleted when the save is taken
+in (`key_store_written`).
+
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the
 store again; unchanged values are not written back, and failed reads are not

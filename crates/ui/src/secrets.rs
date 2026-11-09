@@ -49,9 +49,10 @@ struct Outstanding {
     /// A write or delete failed (or its job was lost) since the user last
     /// acknowledged it: the quit that waited must not go on by itself.
     failed: AtomicBool,
-    /// The one task waiting for the count to reach zero: a new waiter takes
-    /// the place of the old, so repeated waits do not pile wakers up.
-    waiting: Mutex<Option<Waker>>,
+    /// The tasks waiting for the count to reach zero (a quit, a move of the
+    /// secrets). A task polled again replaces its own waker, so repeated
+    /// polls do not pile wakers up.
+    waiting: Mutex<Vec<Waker>>,
 }
 
 impl Outstanding {
@@ -60,7 +61,7 @@ impl Outstanding {
         Hold(self.clone())
     }
 
-    fn waiting(&self) -> MutexGuard<'_, Option<Waker>> {
+    fn waiting(&self) -> MutexGuard<'_, Vec<Waker>> {
         self.waiting
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -75,10 +76,9 @@ struct Hold(Arc<Outstanding>);
 
 impl Drop for Hold {
     fn drop(&mut self) {
-        if self.0.count.fetch_sub(1, Ordering::SeqCst) == 1
-            && let Some(waker) = self.0.waiting().take()
-        {
-            waker.wake();
+        if self.0.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let wakers = std::mem::take(&mut *self.0.waiting());
+            wakers.into_iter().for_each(Waker::wake);
         }
     }
 }
@@ -96,7 +96,9 @@ impl Future for Idle {
         if self.0.count.load(Ordering::SeqCst) == 0 || self.0.abandoned.load(Ordering::SeqCst) {
             return Poll::Ready(());
         }
-        *waiting = Some(cx.waker().clone());
+        if !waiting.iter().any(|waker| waker.will_wake(cx.waker())) {
+            waiting.push(cx.waker().clone());
+        }
         Poll::Pending
     }
 }
@@ -300,9 +302,8 @@ pub fn idle(cx: &App) -> impl Future<Output = ()> + use<> {
 pub fn abandon(cx: &App) {
     if let Some(worker) = cx.try_global::<Worker>() {
         worker.outstanding.abandoned.store(true, Ordering::SeqCst);
-        if let Some(waker) = worker.outstanding.waiting().take() {
-            waker.wake();
-        }
+        let wakers = std::mem::take(&mut *worker.outstanding.waiting());
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 
@@ -614,6 +615,33 @@ mod tests {
             None,
             "the store in use was not written"
         );
+    }
+
+    #[test]
+    fn every_task_waiting_for_idle_is_woken() {
+        use std::task::Wake;
+        struct Flag(AtomicBool);
+        impl Wake for Flag {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let outstanding: Arc<Outstanding> = Default::default();
+        let hold = outstanding.hold();
+        let flags: Vec<_> = (0..2)
+            .map(|_| Arc::new(Flag(AtomicBool::new(false))))
+            .collect();
+        for flag in &flags {
+            let waker = Waker::from(flag.clone());
+            let mut cx = Context::from_waker(&waker);
+            assert!(
+                Pin::new(&mut Idle(outstanding.clone()))
+                    .poll(&mut cx)
+                    .is_pending()
+            );
+        }
+        drop(hold);
+        assert!(flags.iter().all(|flag| flag.0.load(Ordering::SeqCst)));
     }
 
     #[test]
