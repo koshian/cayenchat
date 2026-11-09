@@ -11,9 +11,38 @@ pub(crate) fn load() -> Result<Option<Settings>, String> {
     cayenchat_storage::load()
 }
 
+/// Orders the read-modify-write of the file inside this process. It is held
+/// only for one small file operation, never across a store copy.
+#[cfg(not(test))]
+static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Writes `settings`, except that the credential backend stays what the file
+/// holds: only `set_credential_backend` changes it (CRED-3). A snapshot taken
+/// before a move of the secrets therefore cannot write the old store back.
 #[cfg(not(test))]
 pub(crate) fn save(settings: &Settings) -> Result<(), String> {
-    cayenchat_storage::save(settings)
+    let _write = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    match cayenchat_storage::load() {
+        Ok(Some(file)) if file.credential_backend != settings.credential_backend => {
+            let mut settings = settings.clone();
+            settings.credential_backend = file.credential_backend;
+            cayenchat_storage::save(&settings)
+        }
+        _ => cayenchat_storage::save(settings),
+    }
+}
+
+/// Records `kind` as the credential backend in the file as it is now,
+/// changing nothing else; `fallback` is written when there is no file yet.
+#[cfg(not(test))]
+pub(crate) fn set_credential_backend(
+    kind: cayenchat_storage::CredentialBackendKind,
+    fallback: &Settings,
+) -> Result<(), String> {
+    let _write = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = cayenchat_storage::load()?.unwrap_or_else(|| fallback.clone());
+    settings.credential_backend = kind;
+    cayenchat_storage::save(&settings)
 }
 
 /// Replaces the file with `settings` after copying the old one beside it;
@@ -92,7 +121,32 @@ pub(crate) fn save(settings: &Settings) -> Result<(), String> {
             return Err("cannot write the settings file".into());
         }
         if state.enabled {
-            state.file = Some(settings.clone());
+            let mut settings = settings.clone();
+            if let Some(file) = &state.file {
+                settings.credential_backend = file.credential_backend;
+            }
+            state.file = Some(settings);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn set_credential_backend(
+    kind: cayenchat_storage::CredentialBackendKind,
+    fallback: &Settings,
+) -> Result<(), String> {
+    with_state(|state| {
+        if state.unreadable {
+            return Err("cannot read the settings file".into());
+        }
+        if state.failing {
+            return Err("cannot write the settings file".into());
+        }
+        if state.enabled {
+            let mut settings = state.file.clone().unwrap_or_else(|| fallback.clone());
+            settings.credential_backend = kind;
+            state.file = Some(settings);
         }
         Ok(())
     })
@@ -1352,6 +1406,43 @@ mod tests {
         let saved = super::load().unwrap().unwrap();
         assert!(!saved.notifications.private_messages, "saved afterwards");
         assert_eq!(saved.credential_backend, CredentialBackendKind::LocalFile);
+        drop(file);
+    }
+
+    /// CRED-3: another window's whole-file save of a snapshot taken before
+    /// the move cannot write the old store back, during or after the move.
+    #[gpui::test]
+    fn a_stale_save_from_another_window_keeps_the_new_backend(cx: &mut TestAppContext) {
+        let settings = upload_settings("imgbb", true);
+        let stale = settings.clone();
+        let file = TestFile::with(&settings);
+        let (release, backend) = cx.update(|cx| Gated::install(false, cx));
+        cayenchat_storage::credentials::CredentialBackend::set(
+            &backend.inner,
+            &cayenchat_storage::SecretKey::uploader_token("imgbb"),
+            &Secret::new("token"),
+        )
+        .unwrap();
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+        });
+        backend.wait_until_held();
+        // Between the file's commit and the deletion of the originals.
+        let mut other = stale.clone();
+        other.notifications.private_messages = false;
+        super::save(&other).unwrap();
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages, "their setting lands");
+        assert_eq!(saved.credential_backend, CredentialBackendKind::LocalFile);
+
+        release.send(()).unwrap();
+        wait_for_store(&form, cx);
+        super::save(&stale).unwrap();
+        assert_eq!(
+            super::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
         drop(file);
     }
 

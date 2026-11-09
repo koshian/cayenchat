@@ -55,14 +55,11 @@ fn move_secrets(
     keys.dedup();
     let copied = credentials::copy_secrets(from, to, &keys)?;
     // The copy can take long (a permission dialog per secret), so the file
-    // is read again only now and written at once: a setting another window
-    // saved during the copy is kept. Only the gap between this read and the
-    // write remains, as for every other read-modify-write of the file.
-    let mut saved = settings_file::load()
-        .map_err(MoveError::Settings)?
-        .unwrap_or_else(|| form.clone());
-    saved.credential_backend = kind;
-    if let Err(error) = settings_file::save(&saved) {
+    // is read only now, and changed in one step that sets nothing but the
+    // backend: a setting another window saved during the copy is kept, and
+    // from here on no whole-file save of an older snapshot can put the old
+    // backend back (`settings_file::save` keeps the file's choice).
+    if let Err(error) = settings_file::set_credential_backend(kind, form) {
         copied.remove_copies(to);
         return Err(MoveError::Settings(error));
     }

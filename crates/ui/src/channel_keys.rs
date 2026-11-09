@@ -33,12 +33,15 @@ const MAX_JOIN_CHANNELS: usize = 32;
 // different destination without changing its `NetworkId`, but that always
 // bumps `ServerSession::generation`, so comparing it alone is enough.
 
-struct KeyStoreWrite {
-    profile: String,
-    generation: u64,
-    revision: u64,
-    channel: String,
-    key: Option<String>,
+pub(super) struct KeyStoreWrite {
+    pub(super) profile: String,
+    pub(super) generation: u64,
+    pub(super) revision: u64,
+    /// Place in the order the writes were queued (`key_write_clock`); the
+    /// store thread runs them in this order.
+    pub(super) order: u64,
+    pub(super) channel: String,
+    pub(super) key: Option<String>,
 }
 
 struct JoinRead {
@@ -462,6 +465,8 @@ impl ChatWindow {
             StoreChange::Save(typed) => Some(typed.expose().to_owned()),
             StoreChange::Forget => None,
         };
+        self.key_write_clock += 1;
+        let order = self.key_write_clock;
         let failure = match &change {
             StoreChange::Save(_) => "channel_key_save_failed",
             StoreChange::Forget => "channel_key_forget_failed",
@@ -485,6 +490,7 @@ impl ChatWindow {
                         profile,
                         generation,
                         revision,
+                        order,
                         channel,
                         key: remembered,
                     },
@@ -497,7 +503,7 @@ impl ChatWindow {
     }
 
     /// The store answered a save or removal.
-    fn key_store_written(
+    pub(super) fn key_store_written(
         &mut self,
         network: NetworkId,
         write: KeyStoreWrite,
@@ -530,22 +536,42 @@ impl ChatWindow {
                 session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
             }
         }
-        if !current {
-            return;
-        }
-        match result {
-            Ok(()) => {
+        // A store write that succeeded is the truth about the store whatever
+        // became of its connection, so the note follows it (CRED-4); only a
+        // newer success that already arrived wins over it. The running
+        // connection is touched only when this is still its write.
+        let mut noted = false;
+        if result.is_ok() {
+            let key = (write.profile.clone(), write.channel.to_ascii_lowercase());
+            if self
+                .key_notes_applied
+                .get(&key)
+                .is_none_or(|&newest| newest < write.order)
+            {
+                self.key_notes_applied.insert(key, write.order);
+                noted = true;
                 // The store holds the key now (or no longer): note it, so
                 // the next connection reads it (or leaves the store alone).
+                // A note the file did not take stays pending for the next
+                // save.
                 self.update_profile_note(&write.profile, |p| {
                     p.note_channel_key(&write.channel, write.key.is_some())
                 });
                 self.write_pending_notes();
+            }
+        }
+        if !current {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(()) => {
                 // Only the connection the key was confirmed on is updated.
-                if self
-                    .sessions
-                    .get(&network)
-                    .is_some_and(|session| session.profile_id == write.profile)
+                if noted
+                    && self
+                        .sessions
+                        .get(&network)
+                        .is_some_and(|session| session.profile_id == write.profile)
                 {
                     self.sync_config_key(network, &write.channel, write.key);
                 }

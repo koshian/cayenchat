@@ -681,3 +681,111 @@ fn a_refusal_that_a_key_cannot_cure_is_still_logged(cx: &mut TestAppContext) {
         assert!(chat.state.channel_id(NET, "#Other").is_some());
     });
 }
+
+fn written(
+    chat: &ChatWindow,
+    order: u64,
+    key: Option<&str>,
+    generation_offset: u64,
+) -> crate::channel_keys::KeyStoreWrite {
+    crate::channel_keys::KeyStoreWrite {
+        profile: chat.sessions[&NET].profile_id.clone(),
+        generation: chat.sessions[&NET]
+            .generation
+            .wrapping_add(generation_offset),
+        revision: u64::MAX,
+        order,
+        channel: "#Secret".into(),
+        key: key.map(str::to_owned),
+    }
+}
+
+fn store_refused() -> Result<(), (&'static str, cayenchat_storage::CredentialError)> {
+    Err((
+        "channel_key_forget_failed",
+        cayenchat_storage::CredentialError::Io("refused".into()),
+    ))
+}
+
+/// CRED-4: a slow write that finishes after a reconnect was stored, so its
+/// note is made, but the new connection is not given its key.
+#[gpui::test]
+fn a_key_write_finished_after_a_reconnect_is_noted_but_not_applied(cx: &mut TestAppContext) {
+    let file = crate::settings_file::TestFile::with(&crate::settings_with_channels("#Secret"));
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+        let write = written(chat, 1, Some("late"), 1);
+        chat.key_store_written(NET, write, Ok(()), cx);
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+        assert!(chat.pending_notes.is_empty(), "the note reached the file");
+        assert!(
+            !chat.sessions[&NET]
+                .active_config
+                .as_ref()
+                .unwrap()
+                .channel_keys
+                .contains_key("#Secret"),
+            "the new connection is not given the old connection's key"
+        );
+        // The next connection and a backend move enumerate it.
+        let profile = chat.saved.profile(&chat.sessions[&NET].profile_id).unwrap();
+        assert_eq!(profile.channel_key_secret_keys().len(), 1);
+    });
+    drop(file);
+}
+
+/// A note the settings file refused stays pending and is written later.
+#[gpui::test]
+fn a_note_the_file_refused_stays_pending(cx: &mut TestAppContext) {
+    let file = crate::settings_file::TestFile::with(&crate::settings_with_channels("#Secret"));
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+        crate::settings_file::fail_saves(true);
+        let write = written(chat, 1, Some("k"), 1);
+        chat.key_store_written(NET, write, Ok(()), cx);
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+        assert_eq!(chat.pending_notes.len(), 1);
+        crate::settings_file::fail_saves(false);
+        chat.write_pending_notes();
+        assert!(chat.pending_notes.is_empty());
+    });
+    drop(file);
+}
+
+/// Completions may arrive in any order; the note follows the write the
+/// store thread ran last.
+#[gpui::test]
+fn an_older_success_arriving_late_does_not_undo_a_newer_note(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+        // Save (1) then forget (2) were queued; the forget is reported first.
+        let forget = written(chat, 2, None, 1);
+        chat.key_store_written(NET, forget, Ok(()), cx);
+        let save = written(chat, 1, Some("k"), 1);
+        chat.key_store_written(NET, save, Ok(()), cx);
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
+        // The other way round, the later one wins as well.
+        let save = written(chat, 3, Some("k"), 1);
+        chat.key_store_written(NET, save, Ok(()), cx);
+        let forget = written(chat, 2, None, 1);
+        chat.key_store_written(NET, forget, Ok(()), cx);
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
+
+/// A forget that failed leaves the key in the store, so the note stays.
+#[gpui::test]
+fn a_failed_forget_after_a_save_keeps_the_note(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+        let save = written(chat, 1, Some("k"), 1);
+        chat.key_store_written(NET, save, Ok(()), cx);
+        let forget = written(chat, 2, None, 0);
+        chat.key_store_written(NET, forget, store_refused(), cx);
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
