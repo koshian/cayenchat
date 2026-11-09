@@ -34,6 +34,9 @@ pub(crate) fn save(settings: &Settings) -> Result<(), String> {
 
 /// Records `kind` as the credential backend in the file as it is now,
 /// changing nothing else; `fallback` is written when there is no file yet.
+/// It returns once the file is on disk: the caller deletes the old store's
+/// secrets next, and a power loss must not leave the old choice with them
+/// gone. Only the store thread calls it, so the wait does not stall the UI.
 #[cfg(not(test))]
 pub(crate) fn set_credential_backend(
     kind: cayenchat_storage::CredentialBackendKind,
@@ -42,7 +45,7 @@ pub(crate) fn set_credential_backend(
     let _write = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = cayenchat_storage::load()?.unwrap_or_else(|| fallback.clone());
     settings.credential_backend = kind;
-    cayenchat_storage::save(&settings)
+    cayenchat_storage::save_durable(&settings)
 }
 
 /// Replaces the file with `settings` after copying the old one beside it;
@@ -1398,6 +1401,7 @@ mod tests {
         });
         // The move has recorded the new store in the file and is deleting
         // the originals; the form still shows the old one.
+        cx.run_until_parked();
         backend.wait_until_held();
         assert_eq!(
             super::load().unwrap().unwrap().credential_backend,
@@ -1449,6 +1453,7 @@ mod tests {
         form.update(cx, |form, cx| {
             form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
         });
+        cx.run_until_parked();
         backend.wait_until_held();
         // Between the file's commit and the deletion of the originals.
         let mut other = stale.clone();

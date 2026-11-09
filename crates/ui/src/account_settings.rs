@@ -160,16 +160,26 @@ impl SettingsWindow {
         // failure before the choice is saved leaves every secret in the
         // backend still in use.
         self.store_wait(cx);
-        let moving = {
-            let to = to.clone();
-            secrets::run_switching(cx, move |from| {
-                let same = from.kind() == kind;
-                let moved = move_secrets(from, &to, kind, &form, keys_of);
-                let switched = (moved.is_ok() && !same).then_some(to);
-                (moved, switched)
-            })
-        };
         cx.spawn(async move |this, cx| {
+            // The move lists the keys from the settings file. A channel key
+            // saved before it is noted there only once the save's result has
+            // been taken in on the UI thread, so the move is queued when no
+            // job is outstanding any more (#1001).
+            let Ok(idle) = this.update(cx, |_, cx| secrets::idle(cx)) else {
+                return;
+            };
+            idle.await;
+            let Ok(moving) = this.update(cx, |_, cx| {
+                let to = to.clone();
+                secrets::run_switching(cx, move |from| {
+                    let same = from.kind() == kind;
+                    let moved = move_secrets(from, &to, kind, &form, keys_of);
+                    let switched = (moved.is_ok() && !same).then_some(to);
+                    (moved, switched)
+                })
+            }) else {
+                return;
+            };
             let moved = moving
                 .await
                 .unwrap_or_else(|| Err(secrets::stopped().into()));
