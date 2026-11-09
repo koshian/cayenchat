@@ -253,10 +253,19 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
                 look.background_opacity,
                 look.wallpaper_fit
             ),
-            // The opacity moved by hand is the channel's own, also at the
-            // default value: it must not fall back to a standard wallpaper's.
-            (None, Some(DEFAULT_BACKGROUND_OPACITY), None)
+            // The blur and the opacity moved by hand are the channel's own,
+            // also at the default value: they must not fall back to a
+            // standard wallpaper's.
+            (
+                Some(DEFAULT_WALLPAPER_BLUR),
+                Some(DEFAULT_BACKGROUND_OPACITY),
+                None
+            )
         );
+        // An explicit 0 stays 0 under a standard blur.
+        view.set_blur(0, cx);
+        view.save_now(window, cx);
+        assert_eq!(view.look(cx).unwrap().wallpaper_blur, Some(0));
         view.reset(cx);
         view.save_now(window, cx);
     });

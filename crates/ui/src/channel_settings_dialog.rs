@@ -241,6 +241,9 @@ struct LookFields {
     wallpaper: Entity<TextInput>,
     /// Blur sigma, 0 to [`MAX_WALLPAPER_BLUR`].
     blur: u8,
+    /// Whether the blur is the channel's own, also at the default value or 0:
+    /// an inherited one follows the standard wallpaper's.
+    blur_own: bool,
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
     /// Whether the opacity is the channel's own, also at the default value:
@@ -304,6 +307,7 @@ impl LookFields {
                 cx,
             ),
             blur: blur_of(&look),
+            blur_own: look.wallpaper_blur.is_some(),
             opacity: background_opacity_of(&look),
             opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit.unwrap_or_default(),
@@ -334,6 +338,7 @@ impl LookFields {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
+        self.blur_own = false;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
         self.opacity_own = false;
         self.fit = WallpaperFit::default();
@@ -342,7 +347,8 @@ impl LookFields {
 
     /// The look the fields hold, or why it cannot be used. A value equal to
     /// its default is stored as unset, so it follows the default later too;
-    /// the opacity is the exception (`opacity_own`).
+    /// the opacity and the blur are the exception (`opacity_own`, `blur_own`):
+    /// a channel can set them equal to, or 0 under, a standard one.
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -399,7 +405,7 @@ impl LookFields {
             alternate: color(&self.alternate, "channel_look_alternate")?,
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
-            wallpaper_blur: (self.blur != DEFAULT_WALLPAPER_BLUR).then_some(self.blur),
+            wallpaper_blur: self.blur_own.then_some(self.blur),
             background_opacity: self.opacity_own.then_some(self.opacity),
             wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
             no_wallpaper: choice == WallpaperChoice::Off,
@@ -773,6 +779,7 @@ impl ChannelSettingsView {
     #[cfg(test)]
     pub(crate) fn set_blur(&mut self, blur: u8, cx: &mut Context<Self>) {
         self.look.blur = blur;
+        self.look.blur_own = true;
         self.edited(cx);
     }
 
@@ -832,6 +839,7 @@ impl ChannelSettingsView {
 
     fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
         self.look.blur = blur.min(u32::from(MAX_WALLPAPER_BLUR)) as u8;
+        self.look.blur_own = true;
         self.edited(cx);
     }
 

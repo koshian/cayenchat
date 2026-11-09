@@ -89,23 +89,17 @@ FRAME_LEFT = Rect(0, 100, 6, 100)
 
 
 def check_wallpaper(app, pane, wallpaper):
-    """The log background has one opacity, the pane's times the wallpaper's:
-    where the "contain" picture leaves the log bare, and in the frame, every
-    pixel is a row color at it once over the window base; on the (black)
-    picture the same over black. At a pane of 100 % the wallpaper's own
-    opacity shows alone, as before the pane had one."""
-    percent = pane * wallpaper // 100
+    """The wallpaper's mix and the pane's opacity are independent (#989). The
+    pane has the opacity `pane` as a whole: where the "contain" picture leaves
+    the log bare, and in the frame, every pixel is a row color at `pane` once
+    over the window base, whatever the mix. On the (black) picture the mix of
+    the color's share `wallpaper` and the picture is made first and `pane`
+    applies to it: the color at pane*wallpaper over the base."""
     background = parse_color(BACKGROUND)
     alternate = parse_color(ALTERNATE)
-    on_base = (over_base(background, percent), over_base(alternate, percent))
-    if pane == 100:
-        # An opaque pane keeps its own color under the rows, as it did before
-        # the pane had an opacity: the plain color, and an alternate row's
-        # color at the wallpaper's opacity over it.
-        on_base = (background,
-                   tuple(round((a * wallpaper + b * (100 - wallpaper)) / 100)
-                         for a, b in zip(alternate, background)))
-    on_picture = tuple(tuple(round(c * percent / 100) for c in color)
+    on_base = (over_base(background, pane), over_base(alternate, pane))
+    # Black picture: p*(black*(1-b) + c*b) + (1-p)*base.
+    on_picture = tuple(over_base(tuple(round(c * wallpaper / 100) for c in color), pane)
                        for color in (background, alternate))
     wanted = {"beside the picture": (BESIDE_PICTURE, on_base),
               "in the frame": (FRAME_LEFT, on_base),
@@ -134,6 +128,44 @@ def check_wallpaper(app, pane, wallpaper):
             print(f"ok wallpaper pane {pane} %, wallpaper {wallpaper} %")
 
 
+# The combined log's rows (right of the text, on the black picture), clear of
+# the channel list and the time column.
+COMBINED_ROWS = Rect(500, 416, 200, 320)
+COMBINED_BACKGROUND = "#3366cc"
+COMBINED_ALTERNATE = "#cc6633"
+
+
+def check_combined(app, pane, wallpaper):
+    """The combined log's alternate rows hold the same mix and the same pane
+    opacity as the others (#989): a row is the color at pane*wallpaper over the
+    black picture, over the window base, with no extra layer of its own."""
+    wanted = [over_base(tuple(round(c * wallpaper / 100) for c in parse_color(color)), pane)
+              for color in (COMBINED_BACKGROUND, COMBINED_ALTERNATE)]
+    with tempfile.TemporaryDirectory(prefix="opacity-combined-") as scratch:
+        picture = os.path.join(scratch, "black.png")
+        black_square(picture)
+        settings = {"appearance": {"alternate_rows": True,
+                                   "combined_log_background": COMBINED_BACKGROUND,
+                                   "combined_log_alternate": COMBINED_ALTERNATE,
+                                   "combined_log_opacity": pane,
+                                   "wallpapers": {"combined_log": {"path": picture,
+                                                                   "opacity": wallpaper}}}}
+        with FixtureSession(app, settings, lines=LINES, channel="#demo,#other") as session:
+            cut = session.screen(f"combined-{pane}-{wallpaper}").cut(COMBINED_ROWS)
+            seen = [False, False]
+            for color in cut.colors():
+                for index, want in enumerate(wanted):
+                    seen[index] |= near(color, want)
+                if not any(near(color, want) for want in wanted):
+                    raise PixelMismatch(
+                        f"combined log at pane {pane} %, mix {wallpaper} %: {hex_color(color)} "
+                        f"is none of {[hex_color(want) for want in wanted]}: {cut.summary(8)}")
+            if not all(seen):
+                raise PixelMismatch(f"combined log at pane {pane} %, mix {wallpaper} %: "
+                                    f"rows seen {seen}, want both {[hex_color(w) for w in wanted]}")
+            print(f"ok combined pane {pane} %, mix {wallpaper} %")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--app", required=True)
@@ -141,8 +173,10 @@ def main():
     try:
         check(args.app, OPACITY)
         check(args.app, 100)
-        for pane, wallpaper in ((100, 80), (40, 80), (40, 100)):
+        for pane, wallpaper in ((100, 80), (40, 80), (40, 100), (40, 0), (40, 50)):
             check_wallpaper(args.app, pane, wallpaper)
+        for pane, wallpaper in ((40, 80), (40, 20), (100, 80)):
+            check_combined(args.app, pane, wallpaper)
     except PixelMismatch as error:
         sys.exit(f"FAIL: {error}")
     print("all passed")

@@ -185,13 +185,42 @@ pub(crate) fn resolve(
     }
 }
 
-/// Lets the picture show through the alternate rows of the combined log. The
-/// pane is opaque under the picture's backdrop, which carries its opacity.
-pub(crate) fn translucent_combined(theme: &mut Theme, standard: &RegionWallpaper) {
-    if standard.path.is_some() {
-        theme.panes.combined_log.a = 1.;
-        theme.panes.combined_alternate.a = 0.5;
+/// The parts of `bounds` the picture placed at `placed` does not cover: up to
+/// four strips around the overlap, or all of `bounds` without one.
+fn gaps(bounds: Bounds<Pixels>, placed: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+    let inner = bounds.intersect(&placed);
+    if inner.size.width <= px(0.) || inner.size.height <= px(0.) {
+        return vec![bounds];
     }
+    let (b, i) = (bounds, inner);
+    [
+        Bounds::from_corners(b.origin, point(b.right(), i.origin.y)),
+        Bounds::from_corners(point(b.origin.x, i.bottom()), b.bottom_right()),
+        Bounds::from_corners(point(b.origin.x, i.origin.y), point(i.origin.x, i.bottom())),
+        Bounds::from_corners(point(i.right(), i.origin.y), point(b.right(), i.bottom())),
+    ]
+    .into_iter()
+    .filter(|gap| gap.size.width > px(0.) && gap.size.height > px(0.))
+    .collect()
+}
+
+/// Paints the picture at `placed` in `bounds`, and `color` where it does not
+/// reach (`contain`, `center`). The caller's opacity applies to both alike,
+/// so the pane shows its opacity also beside the picture, whatever the mix.
+fn paint_picture(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    placed: Bounds<Pixels>,
+    image: Arc<RenderImage>,
+    color: Rgba,
+) {
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        let color = Rgba { a: 1., ..color };
+        for gap in gaps(bounds, placed) {
+            window.paint_quad(fill(gap, color));
+        }
+        let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+    });
 }
 
 /// Where a picture of `image` pixels lies in `bounds` for `fit`. Cover and
@@ -261,7 +290,11 @@ pub(crate) struct Slice {
 /// `row` with `color` as its background. With a `slice` it paints the picture
 /// and the color over it at the pane's opacities; without one (no wallpaper,
 /// or not loaded) the color is as `color` is.
-pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div {
+pub(crate) fn alternate_row<T: Styled + ParentElement>(
+    row: T,
+    color: Rgba,
+    slice: Option<&Slice>,
+) -> T {
     let Some(slice) = slice else {
         return row.bg(color);
     };
@@ -269,9 +302,7 @@ pub(crate) fn alternate_row(row: Div, color: Rgba, slice: Option<&Slice>) -> Div
     let picture = canvas(
         |_, _, _| (),
         move |bounds, (), window, _| {
-            window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                let _ = window.paint_image(placed.get(), Corners::default(), image, 0, false);
-            });
+            paint_picture(window, bounds, placed.get(), image, color);
         },
     )
     .absolute()
@@ -340,7 +371,7 @@ struct Key {
 #[derive(Default)]
 pub(crate) struct Wallpapers {
     pub(crate) channel_log: Wallpaper,
-    combined_log: Wallpaper,
+    pub(crate) combined_log: Wallpaper,
     member_list: Wallpaper,
     channel_tree: Wallpaper,
 }
@@ -492,6 +523,7 @@ impl Wallpaper {
             // rows and filler paint it (`Slice`).
             Some((_, State::Ready(image))) => {
                 let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
+                let color = layers.color;
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
                         |_, _, _| (),
@@ -500,8 +532,7 @@ impl Wallpaper {
                             let placed = fit_bounds(fit, bounds, size);
                             shared.set(placed);
                             if !translucent {
-                                let _ =
-                                    window.paint_image(placed, Corners::default(), image, 0, false);
+                                paint_picture(window, bounds, placed, image, color);
                             }
                         },
                     )
@@ -542,7 +573,7 @@ mod tests {
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
         ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, Layers, RegionWallpaper,
-        Theme, WallpaperFit, region_wallpaper, resolve, translucent_combined,
+        Theme, WallpaperFit, region_wallpaper, resolve,
     };
     use cayenchat_storage::{Appearance, ThemeMode};
     use gpui::{Rgba, WindowAppearance, rgb};
@@ -773,11 +804,27 @@ mod tests {
             background.color.a,
             f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
         );
-        let mut combined = base;
-        translucent_combined(&mut combined, &none());
-        assert_eq!(combined, base);
-        translucent_combined(&mut combined, &standard(Some("/c.png"), None));
-        assert_eq!(combined.panes.combined_alternate.a, 0.5);
+    }
+
+    #[test]
+    fn the_gaps_around_a_picture_tile_the_rest_of_the_box() {
+        use gpui::{Bounds, point, px, size};
+        let b = |x, y, w, h| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let area = |gaps: &[Bounds<gpui::Pixels>]| {
+            gaps.iter()
+                .map(|g| f32::from(g.size.width) * f32::from(g.size.height))
+                .sum::<f32>()
+        };
+        let row = b(0., 0., 100., 20.);
+        // Centered picture: left and right gaps.
+        let gaps = super::gaps(row, b(30., -10., 40., 40.));
+        assert_eq!(area(&gaps), 100. * 20. - 40. * 20.);
+        // Covering picture: no gap.
+        assert!(super::gaps(row, b(-10., -10., 200., 200.)).is_empty());
+        // Picture elsewhere: all of the box.
+        assert_eq!(area(&super::gaps(row, b(0., 50., 10., 10.))), 2000.);
+        // Picture inside: four strips.
+        assert_eq!(area(&super::gaps(row, b(10., 5., 20., 10.))), 2000. - 200.);
     }
 
     /// What the desktop shows through `layers`: the picture, then the color,
@@ -850,6 +897,15 @@ mod tests {
         assert_eq!(
             resolve(Some(&own), &blurred, base).wallpaper.unwrap().blur,
             3
+        );
+        // An explicit 0 is a blur of its own, not "inherit".
+        let none = ChannelLook {
+            wallpaper_blur: Some(0),
+            ..ChannelLook::default()
+        };
+        assert_eq!(
+            resolve(Some(&none), &blurred, base).wallpaper.unwrap().blur,
+            0
         );
     }
 

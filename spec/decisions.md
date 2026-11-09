@@ -3913,15 +3913,21 @@ the start of the session.
   so the picture is drawn with the element opacity. With `p = 1` it is the
   former stack (opaque picture, color at `b`). The channel log paints as D088
   does for a translucent pane (each row, the filler and the frame strips paint
-  the picture at its alpha and their color); the other three areas always use
-  the backdrop layer and paint no background of their own while their picture
-  is on show (the combined log's pane no longer keeps an opaque base under it,
-  so it too lets the desktop through). A test composes the layers against that
-  formula for pane opacities and mixes. The
-  alternate rows of the channel log show the picture again under their own
-  color (D088); those of the combined log are half transparent. The member
-  list and tree draw the picture and their background over it on the pane;
-  the cached views inside no longer paint the tree's background.
+  the picture at its alpha and their color), and so does the combined log, its
+  alternate rows included (they used to add a half-transparent layer over the
+  picture, which broke the pane's opacity). Where a contain or center fit
+  leaves the box bare, the picture's layer carries the pane color (`gaps`,
+  `paint_picture`), so the pane's opacity holds there whatever the mix. The
+  member list and tree always use the backdrop layer and paint no background
+  of their own while their picture is on show. A test composes the layers
+  against that formula for pane opacities and mixes, and
+  `scripts/e2e/opacity_gui.py` checks the pixels of the channel log (picture,
+  beside it, frame) and of the combined log's rows. The alternate rows of
+  the channel log show the picture again under their own color (D088). The
+  member list and tree draw the picture and their background over it on the
+  pane; the cached views inside no longer paint the tree's background.
+  A channel's blur is its own once set, also 0 or the default (as its
+  opacity): an unset one follows the standard wallpaper's.
 - **Per-channel looks (D084) override the channel log's standard.**
   `ChannelLook::no_wallpaper` joins the path: *inherit* (neither), *none*
   (`no_wallpaper`), *own* (a path); the two never coexist. A channel's background
