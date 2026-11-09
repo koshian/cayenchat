@@ -274,6 +274,18 @@ read. Dropping the `Task` cancels the read and closes the pipe. The synchronous
 `read_from_clipboard` is kept. When re-applying, keep these bounds and call the
 async API from CayenChat's paste paths.
 
+The synchronous `read_fd` in `src/platform/linux/platform.rs` is also bounded:
+it delegates to `read_fd_limited` with a 5 second deadline and a 32 MiB limit
+(upstream looped on a blocking read with no limit). Two callers share it, so
+both depend on this patch: the synchronous Wayland clipboard read
+(`DataOffer::read_bytes` in `wayland/clipboard.rs`, behind
+`read_from_clipboard`) and the drag-and-drop file list read
+(`FILE_LIST_MIME_TYPE`, in the `wl_data_device` `Drop` handling in
+`wayland/client.rs`, which runs on the background executor). When re-applying,
+check that `read_fd` still delegates to `read_fd_limited` with these values and
+that both call sites still use `read_fd` (a verbatim upstream `read_fd` would
+silently drop the bound for both).
+
 In `src/platform/mac/metal_renderer.rs`, `update_transparency` sets the Metal
 layer's opaque flag to `!transparent` (CayenChat #930). Upstream leaves it a
 `// todo(mac)?` stub and relies on the layer being created non-opaque; the draw
