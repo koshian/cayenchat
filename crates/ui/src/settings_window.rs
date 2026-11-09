@@ -715,7 +715,7 @@ impl SettingsForm {
             false,
         );
         crate::connect_auth::while_incomplete(&mut config, |config| {
-            crate::channel_keys::use_keys(config, stored.keys);
+            crate::channel_keys::use_keys(config, stored.keys.keys);
             config.validate()
         })?;
         // What the read found corrects the note of stored passwords; the

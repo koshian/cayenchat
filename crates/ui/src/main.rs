@@ -360,7 +360,7 @@ fn saved_connection_secrets(
 /// its saved passwords, and the saved keys of its auto-join channels.
 struct StoredConnection {
     secrets: Result<(Option<Secret>, Option<Secret>), CredentialError>,
-    keys: std::collections::BTreeMap<String, String>,
+    keys: channel_keys::StoredKeys,
     /// The profile the secrets were read for. What was read fits the
     /// mechanism, the saved marks and the channels of that profile only, so
     /// a profile changed while the read was queued needs a new read (the
@@ -633,7 +633,7 @@ fn saved_connection_config_read(
         false,
     );
     connect_auth::while_incomplete(&mut config, |config| {
-        channel_keys::use_keys(config, stored.keys);
+        channel_keys::use_keys(config, stored.keys.keys);
         config.validate()
     })?;
     Ok((config, missing, readable))

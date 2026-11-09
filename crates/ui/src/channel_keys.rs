@@ -107,29 +107,49 @@ pub fn use_keys(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
     }
 }
 
+/// The saved keys read from the store, and whether the read was complete.
+#[derive(Default)]
+pub struct StoredKeys {
+    pub keys: BTreeMap<String, String>,
+    /// False when some read failed: a channel missing from `keys` may still
+    /// have a saved key, so `keys` must not be taken as all there is.
+    pub complete: bool,
+}
+
 /// The saved keys of the auto-join channels `profile` notes as keyed, read on
-/// the store thread. A store that cannot be read means no keys. The store is
-/// not touched when no channel is noted (#643).
+/// the store thread. The store is not touched when no channel is noted (#643).
 pub fn read_stored_keys(
     cx: &App,
     profile: &ServerProfile,
-) -> impl Future<Output = BTreeMap<String, String>> + use<> {
+) -> impl Future<Output = StoredKeys> + use<> {
     let profile = profile.clone();
     let reading = (!profile.channels_to_read_keys_for().is_empty())
         .then(|| secrets::run(cx, move |store| stored_channel_keys(&profile, store)));
     async move {
         match reading {
             Some(reading) => reading.await.unwrap_or_default(),
-            None => BTreeMap::new(),
+            None => StoredKeys {
+                keys: BTreeMap::new(),
+                complete: true,
+            },
         }
     }
 }
 
-/// Swaps in `keys` for a running connection's keys, unless the new set does
-/// not validate: then the keys it had stay. A running connection's copy has
-/// no SASL password, so it is validated as if it had one.
-fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
-    let before = std::mem::replace(&mut config.channel_keys, keys);
+/// Gives a running connection's keys the `stored` ones, unless the result
+/// does not validate: then the keys it had stay. A complete read replaces
+/// the keys; an incomplete one only adds what it found, so a store that
+/// could not be read does not take the keys away. A running connection's
+/// copy has no SASL password, so it is validated as if it had one.
+pub(crate) fn update_keys_if_valid(config: &mut ConnectionConfig, stored: StoredKeys) {
+    let new = if stored.complete {
+        stored.keys
+    } else {
+        let mut merged = config.channel_keys.clone();
+        merged.extend(stored.keys);
+        merged
+    };
+    let before = std::mem::replace(&mut config.channel_keys, new);
     if crate::connect_auth::while_incomplete(config, |config| config.validate()).is_err() {
         config.channel_keys = before;
     }
@@ -169,20 +189,21 @@ pub fn keyed_channel_added(before: &[String], profile: &ServerProfile) -> bool {
 
 /// The saved keys of the channels `profile` notes as keyed. The store is not
 /// touched when there are none (#643).
-pub(crate) fn stored_channel_keys(
-    profile: &ServerProfile,
-    store: &CredentialStore,
-) -> BTreeMap<String, String> {
-    profile
-        .channels_to_read_keys_for()
-        .into_iter()
-        .filter_map(|channel| {
-            let key = store
-                .get(&SecretKey::channel_key(&profile.id, &channel))
-                .ok()??;
-            valid_channel_key(key.expose()).then(|| (channel, key.expose().to_owned()))
-        })
-        .collect()
+pub(crate) fn stored_channel_keys(profile: &ServerProfile, store: &CredentialStore) -> StoredKeys {
+    let mut stored = StoredKeys {
+        keys: BTreeMap::new(),
+        complete: true,
+    };
+    for channel in profile.channels_to_read_keys_for() {
+        match store.get(&SecretKey::channel_key(&profile.id, &channel)) {
+            Ok(Some(key)) if valid_channel_key(key.expose()) => {
+                stored.keys.insert(channel, key.expose().to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => stored.complete = false,
+        }
+    }
+    stored
 }
 
 /// The saved key of each channel flagged as noted; the store is not read for
@@ -633,7 +654,7 @@ impl ChatWindow {
         read: &[String],
         generation: u64,
         revision: u64,
-        keys: BTreeMap<String, String>,
+        stored: StoredKeys,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.get_mut(&network) else {
@@ -646,10 +667,11 @@ impl ChatWindow {
         {
             return;
         }
+        let found = stored.keys.clone();
         if let Some(config) = session.active_config.as_mut() {
-            replace_keys_if_valid(config, keys.clone());
+            update_keys_if_valid(config, stored);
         }
-        self.correct_key_notes(network, read, &keys, cx);
+        self.correct_key_notes(network, read, &found, cx);
     }
 
     /// Corrects the notes of which of `read` (channels whose key was looked
@@ -1107,7 +1129,44 @@ enum StoreChange {
 
 #[cfg(test)]
 mod refresh_tests {
-    use super::{BTreeMap, ConnectionConfig, replace_keys_if_valid};
+    use super::{BTreeMap, ConnectionConfig, StoredKeys, update_keys_if_valid};
+
+    fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
+        update_keys_if_valid(
+            config,
+            StoredKeys {
+                keys,
+                complete: true,
+            },
+        );
+    }
+
+    #[test]
+    fn an_incomplete_read_keeps_the_keys_it_did_not_find() {
+        let mut config = config_with("old");
+        update_keys_if_valid(
+            &mut config,
+            StoredKeys {
+                keys: BTreeMap::new(),
+                complete: false,
+            },
+        );
+        assert_eq!(config.channel_keys["#a"], "old");
+    }
+
+    #[test]
+    fn an_incomplete_read_adds_what_it_found() {
+        let mut config = config_with("old");
+        update_keys_if_valid(
+            &mut config,
+            StoredKeys {
+                keys: BTreeMap::from([("#b".to_owned(), "kb".to_owned())]),
+                complete: false,
+            },
+        );
+        assert_eq!(config.channel_keys["#a"], "old");
+        assert_eq!(config.channel_keys["#b"], "kb");
+    }
 
     fn config_with(key: &str) -> ConnectionConfig {
         let mut config =

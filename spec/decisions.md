@@ -2194,7 +2194,11 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   change). It is set when a key is saved after our JOIN and
   removed when a refused saved key is deleted. Connecting, and refreshing the
   running connection's keys, read only the enabled auto-join channels on the
-  list; with none, the store is not touched. A settings save refreshes only when
+  list; with none, the store is not touched. A read that fails for some channel
+  is incomplete: a refresh then only adds the keys it found and never removes
+  one the running connection holds, and every reconnect reads the noted keys
+  again and adds them, so a store that was unreadable at connect time does not
+  leave the connection without keys (#995). A settings save refreshes only when
   the auto-join list gained a noted channel, so editing a display name, a quit
   message or the IRCv3 choices never reads. The note is a hint: what the
   connection was configured with is written back as the note for the channels
