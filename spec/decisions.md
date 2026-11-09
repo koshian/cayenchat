@@ -3995,3 +3995,39 @@ the start of the session.
   queue.
 - **Not done.** Settings file reads and writes stay on the UI thread (the
   move to another backend is the one place that does it on the store thread).
+
+## D090 — Changing a server's host deletes the passwords sent to it (#973)
+
+Passwords are stored under the server profile's ID, so a changed host would
+otherwise be sent the old host's passwords.
+
+- **What goes.** The server password, the SASL password and the channel keys:
+  the values sent to the server as they are (`ServerProfile::host_bound_secret_keys`).
+  The SASL ECDSA private key stays: only signatures leave, and a new key
+  would have to be registered with the network again.
+- **What counts as a change.** `ServerProfile::host_differs`: the host after
+  trimming and lower-casing. The port, TLS and every other field never delete.
+- **Where.** `save_settings` (autosave and the Save button alike) and Connect
+  (after the marked passwords are written, before anything is read for the
+  connection) compare the settings with the saved ones. All go through
+  `start_host_change`; Connect goes on once the old passwords are deleted, and
+  a cancel or a failure starts no connection. A change with passwords noted
+  as saved (`has_host_bound_secrets`) asks in an OS dialog. For a profile whose
+  channel key scan is still pending (`channel_key_scan_pending`) the notes do
+  not say, so the store thread looks for the possible entries first and the
+  dialog is shown when one exists (an entry that cannot be read counts as
+  existing); none, no dialog. Either way the possible entries are deleted.
+  The possible entries include the disabled auto-join channels, which the
+  scan skips but a key may be stored for (`host_bound_secret_keys`).
+- **Order.** Confirm, delete the entries on the store thread, clear the notes
+  (`server_saved`, `sasl_saved`, the keyed channels; written to the settings
+  file at once), and only then save the new host. Cancelling, or an entry that
+  cannot be deleted, saves nothing: the form goes back to the old host and
+  says why. The old passwords are therefore never stored next to the new host.
+- **Connections.** A session keeps the configuration it connected with.
+  `connect_auth::matches_profile` compares the host exactly, so a reconnect
+  or dialog after the change neither reuses the passwords held in memory nor
+  reads the store for the changed profile; it asks to connect again.
+- **Accepted limitation.** If some of the entries were deleted before another
+  one failed, the notes are not changed; the entries that are gone are
+  reported missing at the next connection, as after any outside change.
