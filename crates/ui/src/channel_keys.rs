@@ -123,10 +123,11 @@ pub fn read_stored_keys(
 }
 
 /// Swaps in `keys` for a running connection's keys, unless the new set does
-/// not validate: then the keys it had stay.
+/// not validate: then the keys it had stay. A running connection's copy has
+/// no SASL password, so it is validated as if it had one.
 fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
     let before = std::mem::replace(&mut config.channel_keys, keys);
-    if config.validate().is_err() {
+    if crate::connect_auth::while_incomplete(config, |config| config.validate()).is_err() {
         config.channel_keys = before;
     }
 }
@@ -1097,6 +1098,22 @@ mod refresh_tests {
             BTreeMap::from([("#a".to_owned(), "new".to_owned())]),
         );
         assert_eq!(config.channel_keys["#a"], "new");
+    }
+
+    #[test]
+    fn a_sasl_configuration_without_its_password_takes_the_new_keys() {
+        let mut config = config_with("old");
+        config.sasl = Some(cayenchat_irc_core::SaslCredentials {
+            mechanism: Default::default(),
+            username: "acct".into(),
+            password: String::new(),
+        });
+        replace_keys_if_valid(
+            &mut config,
+            BTreeMap::from([("#a".to_owned(), "new".to_owned())]),
+        );
+        assert_eq!(config.channel_keys["#a"], "new");
+        assert!(config.sasl.unwrap().password.is_empty());
     }
 
     #[test]
