@@ -515,7 +515,7 @@ iCCP and text chunks are removed before decoding because their metadata is not
 used. Before making the filtered PNG copy, its full input length is
 conservatively reserved, as is twice the length of any eXIf chunk (which is
 kept, and which `png` holds twice while its decoder lives under an allocation
-limit it fixes at construction); the source raster is charged against the same
+limit it fixes at construction), and for PNG the raster declared by IHDR (overflow-safe; tRNS counted) is also taken off that fixed limit. A PNG whose first chunk is not a valid IHDR is rejected before metadata is stripped (so a chunk placed ahead of IHDR cannot skip the raster reservation), and 512 KiB is kept aside for buffers `png` allocates outside its limit (measured 283–299 KiB at 4096 × 3070 RGBA, plain and Adam7; the raster can therefore use the budget less 512 KiB for PNG). The source raster is charged against the same
 budget, and decoder-owned intermediate buffers use only the remainder. Dimensions (at most 8192 px a side and 16.7
 megapixels) are checked before pixel decoding, and that same decoder supplies
 the pixels. The decoded source image is charged against the budget before
