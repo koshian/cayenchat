@@ -10,6 +10,7 @@
 //! never joins or parts the channel.
 
 mod wallpaper_crop;
+mod wallpaper_preview;
 
 use std::time::Duration;
 
@@ -516,6 +517,8 @@ pub(crate) struct ChannelSettingsView {
     look: LookFields,
     /// The wallpaper image being chosen and its range.
     crop: CropState,
+    /// The miniature's picture, loaded like the chat window's.
+    miniature: crate::channel_look::Wallpaper,
     /// What was last written (or read), so an edit that changes nothing
     /// writes nothing.
     saved: Option<(Choices, ChannelLook)>,
@@ -606,6 +609,7 @@ impl ChannelSettingsView {
             error: None,
             controls: Controls::new(cx),
             crop: CropState::new(),
+            miniature: Default::default(),
             saved,
             base,
             autosave: None,
@@ -1051,6 +1055,7 @@ impl Render for ChannelSettingsView {
                     .child(self.i18n.text("iso2022jp_char_refs_hint")),
             );
 
+        let preview = self.render_wallpaper_preview(window, cx);
         let row = |key: &str, input: &Entity<TextInput>| {
             settings_field(&self.i18n.text(key), input.clone())
         };
@@ -1165,6 +1170,7 @@ impl Render for ChannelSettingsView {
                     .child(self.i18n.text("channel_look_wallpaper_choice")),
             )
             .child(wallpaper_choices)
+            .child(preview)
             .child(
                 div()
                     .flex()

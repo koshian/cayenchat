@@ -25,7 +25,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{Appearance, DEFAULT_BACKGROUND_OPACITY, clamp_font_size, color_value, private_file};
+use crate::{
+    Appearance, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR,
+    clamp_font_size, color_value, private_file,
+};
 
 /// The file name extension of a theme file, without the dot.
 pub const THEME_EXTENSION: &str = "cayentheme";
@@ -86,11 +89,21 @@ pub struct RegionWallpaper {
     /// [`DEFAULT_BACKGROUND_OPACITY`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
+    /// Blur sigma of the picture in tenths of a pixel (0 to
+    /// [`MAX_WALLPAPER_BLUR`]); unset is [`DEFAULT_WALLPAPER_BLUR`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<u8>,
 }
 
 impl RegionWallpaper {
     pub fn opacity_percent(&self) -> u8 {
         self.opacity.unwrap_or(DEFAULT_BACKGROUND_OPACITY).min(100)
+    }
+
+    pub fn blur_tenths(&self) -> u8 {
+        self.blur
+            .unwrap_or(DEFAULT_WALLPAPER_BLUR)
+            .min(MAX_WALLPAPER_BLUR)
     }
 }
 
@@ -134,6 +147,7 @@ impl RegionWallpapers {
                 wallpaper.path = None;
             }
             wallpaper.opacity = wallpaper.opacity.map(|p| p.min(100));
+            wallpaper.blur = wallpaper.blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
         }
     }
 }
@@ -225,6 +239,8 @@ pub struct ThemeWallpaper {
     pub data: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<u8>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +393,7 @@ impl ThemeFile {
             *wallpapers.slot(region) = Some(ThemeWallpaper {
                 data: STANDARD.encode(bytes),
                 opacity: wallpaper.opacity,
+                blur: wallpaper.blur,
             });
         }
         Ok(Self {
@@ -455,6 +472,9 @@ impl ThemeFile {
                 if wallpaper.opacity.is_some_and(|o| o > 100) {
                     return Err("A wallpaper opacity is out of range.".into());
                 }
+                if wallpaper.blur.is_some_and(|b| b > MAX_WALLPAPER_BLUR) {
+                    return Err("A wallpaper blur is out of range.".into());
+                }
                 wallpaper_bytes(wallpaper, check_image)?;
             }
         }
@@ -525,6 +545,7 @@ impl ThemeFile {
             *wallpapers.get_mut(region) = RegionWallpaper {
                 path: Some(path.to_string_lossy().into_owned()),
                 opacity: theme_wallpaper.opacity,
+                blur: theme_wallpaper.blur,
             };
         }
         let dark = self.mode.is_dark();
@@ -908,15 +929,21 @@ impl Appearance {
         ] {
             value.make_ascii_uppercase();
         }
-        let wallpapers: Vec<(&str, Option<&str>, u8)> = WallpaperRegion::ALL
+        // A blur is listed only when set, so the fingerprint of a theme
+        // applied before blur existed still matches.
+        let wallpapers: Vec<Value> = WallpaperRegion::ALL
             .iter()
             .map(|region| {
                 let wallpaper = self.wallpapers(dark).get(*region);
-                (
-                    region.key(),
-                    wallpaper.path.as_deref(),
-                    wallpaper.opacity_percent(),
-                )
+                let mut entry = vec![
+                    Value::from(region.key()),
+                    Value::from(wallpaper.path.as_deref()),
+                    Value::from(wallpaper.opacity_percent()),
+                ];
+                if wallpaper.blur_tenths() != DEFAULT_WALLPAPER_BLUR {
+                    entry.push(Value::from(wallpaper.blur_tenths()));
+                }
+                Value::Array(entry)
             })
             .collect();
         let document = serde_json::json!({

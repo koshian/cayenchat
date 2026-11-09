@@ -53,6 +53,11 @@ pub(crate) struct WallpaperUi {
     /// (`channel_look::Wallpaper`: size limit, decode gate, released when an
     /// area has none).
     preview: channel_look::Wallpapers,
+    /// The sliders of the selected area's strength and blur.
+    strength_track: crate::slider::TrackBounds,
+    strength_focus: FocusHandle,
+    blur_track: crate::slider::TrackBounds,
+    blur_focus: FocusHandle,
 }
 
 impl WallpaperUi {
@@ -97,7 +102,7 @@ struct ExportPrompt {
 impl ThemeUi {
     /// `dark`: the theme in use, which the wallpaper section edits first, so
     /// what is set there is what the chat window shows.
-    pub(crate) fn new(dark: bool) -> Self {
+    pub(crate) fn new(dark: bool, cx: &mut Context<SettingsWindow>) -> Self {
         Self {
             wallpaper: WallpaperUi {
                 dark,
@@ -105,6 +110,10 @@ impl ThemeUi {
                 status: None,
                 task: None,
                 preview: channel_look::Wallpapers::default(),
+                strength_track: Default::default(),
+                strength_focus: cx.focus_handle().tab_stop(true),
+                blur_track: Default::default(),
+                blur_focus: cx.focus_handle().tab_stop(true),
             },
             library: crate::settings_file::library_directory()
                 .map(|directory| theme_file::library_list(&directory))
@@ -115,9 +124,6 @@ impl ThemeUi {
         }
     }
 }
-
-/// The step of the wallpaper strength buttons, in percent.
-const OPACITY_STEP: i16 = 5;
 
 /// The check that makes an image fit to be a wallpaper.
 fn check_image(bytes: &[u8]) -> Result<&'static str, String> {
@@ -532,26 +538,42 @@ impl SettingsWindow {
             .get_mut(region);
         wallpaper.path = None;
         wallpaper.opacity = None;
+        wallpaper.blur = None;
         cx.notify();
     }
 
-    pub(crate) fn wallpaper_step_opacity(
+    /// Sets the strength of the picture, in percent. The stored opacity is the
+    /// background's over the picture; the strength shown is the rest.
+    pub(crate) fn wallpaper_set_strength(
         &mut self,
         dark: bool,
         region: WallpaperRegion,
-        delta: i16,
+        strength: u8,
         cx: &mut Context<Self>,
     ) {
-        let wallpaper = self
-            .settings
+        self.settings
             .values
             .appearance
             .wallpapers_mut(dark)
-            .get_mut(region);
-        // The stored opacity is the background's over the picture; the picture's
-        // strength shown to the user is the rest.
-        let next = (i16::from(wallpaper.opacity_percent()) - delta).clamp(0, 100);
-        wallpaper.opacity = Some(next as u8);
+            .get_mut(region)
+            .opacity = Some(100 - strength.min(100));
+        cx.notify();
+    }
+
+    /// Sets the blur of the picture, in tenths of a pixel.
+    pub(crate) fn wallpaper_set_blur(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        tenths: u8,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings
+            .values
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(region)
+            .blur = Some(tenths.min(cayenchat_storage::MAX_WALLPAPER_BLUR));
         cx.notify();
     }
 
@@ -732,11 +754,17 @@ impl SettingsWindow {
             WindowAppearance::Light,
             &appearance,
         );
-        let pane_of = |region: WallpaperRegion| match region {
-            WallpaperRegion::ChannelLog => theme.panes.channel_log,
-            WallpaperRegion::CombinedLog => theme.panes.combined_log,
-            WallpaperRegion::MemberList => theme.panes.member_list,
-            WallpaperRegion::ChannelTree => theme.panes.channel_tree,
+        // Opaque: the miniature shows the mix of picture and color, which the
+        // pane's opacity (the desktop showing through) does not change, on
+        // the settings window instead of the desktop.
+        let pane_of = |region: WallpaperRegion| {
+            let pane = match region {
+                WallpaperRegion::ChannelLog => theme.panes.channel_log,
+                WallpaperRegion::CombinedLog => theme.panes.combined_log,
+                WallpaperRegion::MemberList => theme.panes.member_list,
+                WallpaperRegion::ChannelTree => theme.panes.channel_tree,
+            };
+            Rgba { a: 1., ..pane }
         };
         // The pictures: the chat window's loading and its layers over them.
         let layers = AREAS.map(|(region, _)| {
@@ -754,6 +782,7 @@ impl SettingsWindow {
         let area =
             |region: WallpaperRegion, key: &str, layer: Option<Div>, cx: &mut Context<Self>| {
                 let pane = pane_of(region);
+                let has_layer = layer.is_some();
                 let wallpaper = appearance.wallpapers(dark).get(region);
                 let id = AREAS.iter().position(|(r, _)| *r == region).unwrap_or(0);
                 let chosen = region == selected;
@@ -769,7 +798,7 @@ impl SettingsWindow {
                     .p_1()
                     .border_2()
                     .border_color(if chosen { ring } else { palette.border })
-                    .bg(Rgba { a: 1., ..pane })
+                    .when(!has_layer, |d| d.bg(pane))
                     .text_color(theme.text)
                     .text_size(px(12.))
                     .cursor_pointer()
@@ -903,24 +932,68 @@ impl SettingsWindow {
                             this.wallpaper_clear(dark, region, cx)
                         })),
                 )
-                .child(
-                    settings_theme::button("wallpaper-weaker", false, cx)
-                        .child("−")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                            this.wallpaper_step_opacity(dark, region, -OPACITY_STEP, cx)
-                        })),
-                )
-                .child(format!("{}%", 100 - wallpaper.opacity_percent()))
-                .child(
-                    settings_theme::button("wallpaper-stronger", false, cx)
-                        .child("+")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                            this.wallpaper_step_opacity(dark, region, OPACITY_STEP, cx)
-                        })),
-                )
             });
+        let primary = settings_theme::primary_color(cx);
+        let colors = crate::slider::SliderColors {
+            track: palette.border,
+            fill: primary.into(),
+            knob: palette.surface,
+            ring: primary.into(),
+        };
+        let strength = 100 - wallpaper.opacity_percent();
+        let blur = wallpaper.blur_tenths();
+        let sliders = wallpaper.path.is_some().then(|| {
+            let row = |label: String, slider: Stateful<Div>| {
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(230.)).flex_shrink_0().child(label))
+                    .child(div().w(px(220.)).flex_shrink_0().child(slider))
+            };
+            let ui = &self.themes.wallpaper;
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(row(
+                    self.i18n
+                        .format("wallpaper_strength", &[("value", &strength.to_string())]),
+                    crate::slider::slider(
+                        "wallpaper-strength",
+                        u32::from(strength),
+                        100,
+                        &ui.strength_track,
+                        &ui.strength_focus,
+                        colors,
+                        cx,
+                        move |this, value, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_set_strength(dark, region, value as u8, cx)
+                        },
+                    ),
+                ))
+                .child(row(
+                    self.i18n.format(
+                        "channel_look_blur",
+                        &[("value", &format!("{}.{}", blur / 10, blur % 10))],
+                    ),
+                    crate::slider::slider(
+                        "wallpaper-blur",
+                        u32::from(blur),
+                        u32::from(cayenchat_storage::MAX_WALLPAPER_BLUR),
+                        &ui.blur_track,
+                        &ui.blur_focus,
+                        colors,
+                        cx,
+                        move |this, value, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_set_blur(dark, region, value as u8, cx)
+                        },
+                    ),
+                ))
+        });
         div()
             .flex()
             .flex_col()
@@ -946,6 +1019,7 @@ impl SettingsWindow {
             )
             .child(preview)
             .child(controls)
+            .children(sliders)
             .when_some(self.themes.wallpaper.status.clone(), |d, (text, failed)| {
                 d.child(
                     div()
@@ -968,8 +1042,8 @@ mod tests {
 
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        AttachmentSource, OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion,
-        channel_look, check_image, export_file_name, theme_file,
+        AttachmentSource, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion, channel_look,
+        check_image, export_file_name, theme_file,
     };
     use crate::{secrets, settings_file::TestFile, settings_with_channels};
     use gpui::{Entity, VisualTestContext, WindowAppearance};
@@ -1177,13 +1251,13 @@ mod tests {
             assert!(
                 preview
                     .get_mut(WallpaperRegion::ChannelTree)
-                    .slice(gpui::rgba(0xffffffff))
+                    .slice(channel_look::Layers::plain(gpui::rgba(0xffffffff)))
                     .is_some()
             );
             assert!(
                 preview
                     .get_mut(WallpaperRegion::ChannelLog)
-                    .slice(gpui::rgba(0xffffffff))
+                    .slice(channel_look::Layers::plain(gpui::rgba(0xffffffff)))
                     .is_none()
             );
         });
@@ -1305,22 +1379,29 @@ mod tests {
         };
         // The picture's strength is the rest of the background's opacity.
         assert_eq!(100 - strength(&form, cx), 20);
+        // One percent at a time, and the blur in tenths up to its limit.
         form.update(cx, |form, cx| {
-            form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx)
+            form.wallpaper_set_strength(false, WallpaperRegion::MemberList, 21, cx);
+            form.wallpaper_set_blur(false, WallpaperRegion::MemberList, 12, cx)
         });
-        assert_eq!(100 - strength(&form, cx), 25);
+        assert_eq!(100 - strength(&form, cx), 21);
         form.update(cx, |form, cx| {
-            for _ in 0..30 {
-                form.wallpaper_step_opacity(false, WallpaperRegion::MemberList, OPACITY_STEP, cx);
-            }
+            form.wallpaper_set_strength(false, WallpaperRegion::MemberList, 250, cx);
+            form.wallpaper_set_blur(false, WallpaperRegion::MemberList, 250, cx)
         });
         assert_eq!(100 - strength(&form, cx), 100);
+        form.read_with(cx, |form, _| {
+            let wallpaper = &form.settings.values.appearance.wallpapers.member_list;
+            assert_eq!(wallpaper.blur, Some(cayenchat_storage::MAX_WALLPAPER_BLUR));
+        });
         form.update(cx, |form, cx| {
             form.wallpaper_clear(false, WallpaperRegion::MemberList, cx)
         });
         form.read_with(cx, |form, _| {
             let wallpaper = &form.settings.values.appearance.wallpapers.member_list;
-            assert!(wallpaper.path.is_none() && wallpaper.opacity.is_none());
+            assert!(
+                wallpaper.path.is_none() && wallpaper.opacity.is_none() && wallpaper.blur.is_none()
+            );
         });
     }
 

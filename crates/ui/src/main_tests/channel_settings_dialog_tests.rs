@@ -560,6 +560,42 @@ fn an_edit_taken_back_before_the_save_restores_the_chat_window(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn opening_and_editing_a_channel_keeps_the_standard_wallpapers_saved_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    // The settings window saved a standard wallpaper after this window
+    // started: only the appearance changed.
+    chat.update_in(cx, |chat, window, cx| {
+        let previous = chat.saved.clone();
+        let mut saved = previous.clone();
+        saved.appearance.wallpapers.channel_log.path = Some("/standard.png".into());
+        saved.appearance.dark.wallpapers.channel_tree.path = Some("/tree.png".into());
+        chat.apply_settings_change(&previous, saved, false, window, cx);
+    });
+    let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);
+    let wallpapers = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+        chat.read_with(cx, |chat, _| {
+            (
+                chat.appearance.wallpapers.channel_log.path.clone(),
+                chat.appearance.dark.wallpapers.channel_tree.path.clone(),
+            )
+        })
+    };
+    let kept = (
+        Some("/standard.png".to_owned()),
+        Some("/tree.png".to_owned()),
+    );
+    assert_eq!(wallpapers(&chat, cx), kept);
+    // A preview and taking it back both start from the saved appearance.
+    view.update(wcx, |view, cx| view.set_opacity(60, cx));
+    assert_eq!(wallpapers(&chat, cx), kept);
+    chat.update(cx, |chat, cx| chat.discard_look_preview(cx));
+    assert_eq!(wallpapers(&chat, cx), kept);
+    drop(file);
+}
+
+#[gpui::test]
 fn quitting_the_application_saves_an_edit_still_waiting(cx: &mut TestAppContext) {
     let (chat, app, cx, file) = new_chat(cx, "#a");
     let (view, wcx) = open_channel_window(&chat, &app, "#a", cx);

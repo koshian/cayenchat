@@ -1600,7 +1600,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
-            themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark),
+            themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             line_height_tracks: Default::default(),
             opacity_tracks: Default::default(),
             opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
@@ -2632,6 +2632,12 @@ impl ChatWindow {
                 cx.notify();
             }
             if appearance_changed {
+                // The channel settings dialog previews and takes back looks
+                // from the saved appearance: it must be the one just saved,
+                // or opening that dialog would show the older appearance
+                // (without the standard wallpapers set since) (#989).
+                owner.saved.appearance = saved.appearance.clone();
+                owner.saved.theme = saved.theme;
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
             }
             if language_changed {

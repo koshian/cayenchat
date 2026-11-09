@@ -8184,6 +8184,13 @@ impl ChatWindow {
             window,
             cx,
         );
+        // A pane whose picture is on show paints its whole background in the
+        // backdrop (`channel_look::Layers`), none of its own under it.
+        let (combined_shown, members_shown, tree_shown) = (
+            combined_wallpaper.is_some(),
+            members_wallpaper.is_some(),
+            tree_wallpaper.is_some(),
+        );
         let appearance = &self.appearance;
         let fonts = appearance.fonts(theme.dark);
         let translucent = appearance.has_translucent_pane() && self.window_compositing;
@@ -8256,6 +8263,9 @@ impl ChatWindow {
             .flex_1()
             .min_h_0()
             .map(|d| log_surface(d, combined_bg))
+            // The picture's backdrop carries the whole background, also the
+            // pane's see-through part: nothing opaque under it.
+            .when(combined_shown, |d| d.bg(gpui::transparent_black()))
             .children(log_frame(combined_bg, None))
             .when(!fonts.combined_log_font.is_empty(), |d| {
                 d.font_family(fonts.combined_log_font.clone())
@@ -8287,7 +8297,7 @@ impl ChatWindow {
             .flex_1()
             .min_h_0()
             .w_full()
-            .bg(theme.panes.member_list)
+            .when(!members_shown, |d| d.bg(theme.panes.member_list))
             .when(!fonts.member_list_font.is_empty(), |d| {
                 d.font_family(fonts.member_list_font.clone())
             })
@@ -8509,7 +8519,7 @@ impl ChatWindow {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .bg(theme.panes.channel_tree)
+                    .when(!tree_shown, |d| d.bg(theme.panes.channel_tree))
                     .children(tree_wallpaper)
                     .child(self.input_to_draft(&self.tree_focus, cx))
                     .child(panes.channel_tree.clone().cached(pane_style().w_full())),

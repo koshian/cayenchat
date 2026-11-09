@@ -30,6 +30,7 @@ fn sample() -> Appearance {
     appearance.dark.wallpapers.channel_tree = RegionWallpaper {
         path: Some("/home/me/secret-name/tree.png".into()),
         opacity: Some(55),
+        blur: Some(12),
     };
     appearance.channel_looks.push(ChannelLook {
         server: "libera".into(),
@@ -74,6 +75,7 @@ fn export_import_apply_round_trips_the_dark_side() {
     );
     let tree = &target.dark.wallpapers.channel_tree;
     assert_eq!(tree.opacity, Some(55));
+    assert_eq!(tree.blur, Some(12));
     let path = tree.path.clone().unwrap();
     assert!(path.starts_with(dir.path().to_str().unwrap()));
     assert_eq!(std::fs::read(&path).unwrap(), b"IMG-tree-bytes");
@@ -235,6 +237,7 @@ fn bad_files_are_refused_without_touching_the_appearance() {
     theme.wallpapers.channel_log = Some(ThemeWallpaper {
         data: text,
         opacity: None,
+        blur: None,
     });
     let mut appearance = Appearance::default();
     assert!(theme.apply(&mut appearance, dir.path(), &check).is_err());
@@ -398,6 +401,7 @@ fn hostile_settings_values_are_cleaned_on_load() {
     appearance.wallpapers.member_list = RegionWallpaper {
         path: Some("x".repeat(5000)),
         opacity: Some(250),
+        blur: Some(250),
     };
     appearance.origin.name = Some("\u{202E}  ".into());
     appearance.origin.fingerprint = Some("abc".into());
