@@ -103,6 +103,11 @@ pub struct ServerSession {
     /// Prevents a refresh from applying a snapshot while a key write is in
     /// flight.
     pub channel_key_writes_pending: usize,
+    /// Lowercased channels whose key the store failed to read while
+    /// correcting the notes. They are not read again for this session, so a
+    /// refused OS prompt does not return at every registration; a key saved
+    /// for the channel clears the entry.
+    pub key_read_failed: HashSet<String>,
     /// Our own avatar as this server confirmed it on the current
     /// connection; the draft URL lives in the settings profile.
     pub own_avatar: OwnAvatar,
@@ -160,6 +165,7 @@ impl ServerSession {
             channel_key_revision: 0,
             channel_key_write_revisions: HashMap::new(),
             channel_key_writes_pending: 0,
+            key_read_failed: HashSet::new(),
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),
