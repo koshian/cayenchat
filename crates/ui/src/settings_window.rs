@@ -3367,6 +3367,9 @@ impl SettingsWindow {
                     server.sasl_key_saved = saved;
                     let _ = settings_file::save(&file);
                 }
+                let _ = self
+                    .owner
+                    .update(cx, |owner, _, _| owner.follow_key_note(profile, saved));
                 self.schedule_autosave(cx);
                 self.feedback = Some(self.i18n.text(if saved {
                     "sasl_key_saved_done"
