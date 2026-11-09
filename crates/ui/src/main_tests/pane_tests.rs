@@ -600,7 +600,7 @@ fn member_keys_scroll_only_when_the_row_leaves_the_view(cx: &mut TestAppContext)
     let mut settings = crate::settings_with_channels("#a");
     settings.menu_bar_auto_hide = true;
     // The test measures 22 px rows: a 13 px text (the list standard is smaller).
-    settings.appearance.member_list_font_size = 13;
+    settings.appearance.fonts.member_list_font_size = 13;
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
     });

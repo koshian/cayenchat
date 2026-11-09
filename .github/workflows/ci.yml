@@ -279,6 +279,9 @@ jobs:
       - name: Run log colors pixel test
         run: python3 scripts/e2e/log_colors_gui.py --app target/debug/cayenchat
 
+      - name: Run translucent log pixel test
+        run: python3 scripts/e2e/opacity_gui.py --app target/debug/cayenchat
+
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

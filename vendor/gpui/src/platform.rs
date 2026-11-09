@@ -550,6 +550,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn window_decorations(&self) -> Decorations {
         Decorations::Server
     }
+    /// Whether a transparent window shows what is behind it (CayenChat #930).
+    /// Only X11 can lack a compositor; elsewhere the platform always composites.
+    fn is_compositing(&self) -> bool {
+        true
+    }
     fn set_app_id(&mut self, _app_id: &str) {}
     fn map_window(&mut self) -> anyhow::Result<()> {
         Ok(())

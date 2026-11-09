@@ -253,7 +253,9 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
                 look.background_opacity,
                 look.wallpaper_fit
             ),
-            (None, None, None)
+            // The opacity moved by hand is the channel's own, also at the
+            // default value: it must not fall back to a standard wallpaper's.
+            (None, Some(DEFAULT_BACKGROUND_OPACITY), None)
         );
         view.reset(cx);
         view.save_now(window, cx);
@@ -406,12 +408,61 @@ fn the_window_opens_with_auto_join_focused(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_window_tells_inheriting_no_wallpaper_and_its_own_apart(cx: &mut TestAppContext) {
+    use crate::channel_settings_dialog::WallpaperChoice;
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let picture = std::env::temp_dir().join(format!("cayen-look-{}.png", std::process::id()));
+    std::fs::write(&picture, b"x").unwrap();
+    let (view, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    let saved_look = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+        chat.read_with(cx, |chat, _| {
+            chat.saved.appearance.channel_looks.first().cloned()
+        })
+    };
+
+    // Nothing chosen is inheriting: no override is stored at all.
+    view.update(wcx, |view, cx| {
+        assert_eq!(view.look(cx).unwrap().wallpaper, None);
+        assert!(!view.look(cx).unwrap().no_wallpaper);
+    });
+    // "No wallpaper" is stored apart from "inherit", and drops a typed file.
+    view.update_in(wcx, |view, window, cx| {
+        view.set_look_field(4, &picture.to_string_lossy(), cx);
+        view.set_wallpaper_choice(WallpaperChoice::Off, cx);
+        view.save_now(window, cx);
+    });
+    let look = saved_look(&chat, cx).unwrap();
+    assert!(look.no_wallpaper && look.wallpaper.is_none());
+    // Its own file replaces it, and needs a file.
+    view.update_in(wcx, |view, window, cx| {
+        view.set_look_field(4, "", cx);
+        view.set_wallpaper_choice(WallpaperChoice::Own, cx);
+        assert!(view.look(cx).is_err());
+        view.set_look_field(4, &picture.to_string_lossy(), cx);
+        view.save_now(window, cx);
+    });
+    let look = saved_look(&chat, cx).unwrap();
+    assert!(!look.no_wallpaper);
+    assert_eq!(look.wallpaper.as_deref(), picture.to_str());
+    // Back to the standard removes the override.
+    view.update_in(wcx, |view, window, cx| {
+        view.set_wallpaper_choice(WallpaperChoice::Inherit, cx);
+        view.set_look_field(4, "", cx);
+        view.save_now(window, cx);
+    });
+    assert!(saved_look(&chat, cx).is_none());
+    std::fs::remove_file(&picture).unwrap();
+    drop(file);
+}
+
+#[gpui::test]
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_app, view, _file, cx) = open_window_for_b(cx);
     // Auto-join, decode, encode, four character references, the five log
     // look fields with the wallpaper's Browse button, the two sliders, four
-    // fit buttons and reset: twenty stops. Twenty Tabs make a full circle.
-    for _ in 0..20 {
+    // fit buttons and reset, with the wallpaper's three choices: twenty-three
+    // stops. Twenty-three Tabs make a full circle.
+    for _ in 0..23 {
         tab(cx);
     }
     press(cx, "space");
@@ -503,8 +554,8 @@ fn an_edit_taken_back_before_the_save_restores_the_chat_window(cx: &mut TestAppC
     view.update(wcx, |view, cx| {
         view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx)
     });
-    // Back at the opened value: the saved one (the default) is shown again.
-    assert_eq!(shown(&chat, cx), None);
+    // Moved by hand to the default value: it is the channel's own now.
+    assert_eq!(shown(&chat, cx), Some(DEFAULT_BACKGROUND_OPACITY));
     drop(file);
 }
 

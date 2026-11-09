@@ -223,7 +223,8 @@ pub(crate) fn merge_look(
         wallpaper,
         wallpaper_blur,
         background_opacity,
-        wallpaper_fit
+        wallpaper_fit,
+        no_wallpaper
     );
     merged
 }
@@ -241,9 +242,32 @@ struct LookFields {
     blur: u8,
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
+    /// Whether the opacity is the channel's own, also at the default value:
+    /// an inherited one follows the standard wallpaper's (#962).
+    opacity_own: bool,
     fit: WallpaperFit,
     blur_track: TrackBounds,
     opacity_track: TrackBounds,
+    wallpaper_choice: WallpaperChoice,
+}
+
+/// What the channel does about the wallpaper (#962).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WallpaperChoice {
+    /// Follow the standard wallpaper of the channel log.
+    Inherit,
+    /// None, even where the standard has one.
+    Off,
+    /// The picture named in the file field.
+    Own,
+}
+
+impl WallpaperChoice {
+    const ALL: [(Self, &'static str); 3] = [
+        (Self::Inherit, "channel_look_wallpaper_inherit"),
+        (Self::Off, "channel_look_wallpaper_off"),
+        (Self::Own, "channel_look_wallpaper_own"),
+    ];
 }
 
 /// The wallpaper fits, with their label keys.
@@ -262,7 +286,15 @@ impl LookFields {
         };
         let look = look.cloned().unwrap_or_default();
         let color = |value: Option<String>| value.unwrap_or_default();
+        let wallpaper_choice = if look.no_wallpaper {
+            WallpaperChoice::Off
+        } else if look.wallpaper.is_some() {
+            WallpaperChoice::Own
+        } else {
+            WallpaperChoice::Inherit
+        };
         Self {
+            wallpaper_choice,
             font_size: field(
                 match look.font_size {
                     0 => String::new(),
@@ -272,6 +304,7 @@ impl LookFields {
             ),
             blur: blur_of(&look),
             opacity: background_opacity_of(&look),
+            opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit.unwrap_or_default(),
             background: field(color(look.background), cx),
             alternate: field(color(look.alternate), cx),
@@ -294,18 +327,21 @@ impl LookFields {
     }
 
     /// Back to the defaults: the text fields empty, the sliders and the fit
-    /// at their default values.
+    /// at their default values, the wallpaper inherited.
     fn clear(&mut self, cx: &mut App) {
         for field in self.fields() {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
+        self.opacity_own = false;
         self.fit = WallpaperFit::default();
+        self.wallpaper_choice = WallpaperChoice::Inherit;
     }
 
     /// The look the fields hold, or why it cannot be used. A value equal to
-    /// its default is stored as unset, so it follows the default later too.
+    /// its default is stored as unset, so it follows the default later too;
+    /// the opacity is the exception (`opacity_own`).
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -335,9 +371,23 @@ impl LookFields {
                     )
                 })?
         };
-        let wallpaper = text(&self.wallpaper);
+        // A file typed into the field is the channel's own picture even
+        // when "inherit" is still marked; "no wallpaper" ignores the field.
+        let typed = text(&self.wallpaper);
+        let choice = match self.wallpaper_choice {
+            WallpaperChoice::Inherit if !typed.is_empty() => WallpaperChoice::Own,
+            choice => choice,
+        };
+        let wallpaper = if choice == WallpaperChoice::Own {
+            typed
+        } else {
+            String::new()
+        };
         if wallpaper.len() > MAX_WALLPAPER_PATH_BYTES {
             return Err(i18n.text("channel_look_wallpaper_long"));
+        }
+        if choice == WallpaperChoice::Own && wallpaper.is_empty() {
+            return Err(i18n.text("channel_look_wallpaper_empty"));
         }
         if !wallpaper.is_empty() && !std::path::Path::new(&wallpaper).is_file() {
             return Err(i18n.text("channel_look_wallpaper_missing"));
@@ -349,9 +399,9 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_blur: (self.blur != DEFAULT_WALLPAPER_BLUR).then_some(self.blur),
-            background_opacity: (self.opacity != DEFAULT_BACKGROUND_OPACITY)
-                .then_some(self.opacity),
+            background_opacity: self.opacity_own.then_some(self.opacity),
             wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
+            no_wallpaper: choice == WallpaperChoice::Off,
             ..ChannelLook::default()
         })
     }
@@ -368,6 +418,7 @@ struct Controls {
     decode: FocusHandle,
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
+    wallpaper_choice: [FocusHandle; 3],
     browse: FocusHandle,
     /// The range editor's buttons, reachable while it is open.
     crop_use: FocusHandle,
@@ -387,6 +438,7 @@ impl Controls {
             decode: handle(),
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
+            wallpaper_choice: std::array::from_fn(|_| handle()),
             browse: handle(),
             crop_use: handle(),
             crop_whole: handle(),
@@ -418,7 +470,14 @@ impl Controls {
                 .map(|handle| (handle.clone(), Some(4))),
         );
         let field = |input: &Entity<TextInput>| (input.read(cx).focus_handle(cx), Some(5));
-        order.extend(look.fields().map(field));
+        let fields = look.fields();
+        order.extend(fields[..4].iter().map(|input| field(input)));
+        order.extend(
+            self.wallpaper_choice
+                .iter()
+                .map(|handle| (handle.clone(), Some(5))),
+        );
+        order.push(field(fields[4]));
         order.push((self.browse.clone(), Some(5)));
         if crop_open {
             order.extend(
@@ -674,6 +733,19 @@ impl ChannelSettingsView {
         }
     }
 
+    /// Marks how the channel treats the wallpaper. Inheriting or none
+    /// leaves no stale file name behind in the field.
+    pub(crate) fn set_wallpaper_choice(&mut self, choice: WallpaperChoice, cx: &mut Context<Self>) {
+        self.look.wallpaper_choice = choice;
+        if choice != WallpaperChoice::Own {
+            self.look
+                .wallpaper
+                .update(cx, |field, cx| field.set_text("", cx));
+        }
+        self.error = None;
+        cx.notify();
+    }
+
     /// Reset to default: the encodings, the reference mode and the log look
     /// follow the server and the global appearance again, and the sliders and
     /// the fit return to their defaults. The auto-join choice is not one of
@@ -761,6 +833,7 @@ impl ChannelSettingsView {
 
     pub(crate) fn set_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
         self.look.opacity = opacity.min(100) as u8;
+        self.look.opacity_own = true;
         self.edited(cx);
     }
 
@@ -986,6 +1059,24 @@ impl Render for ChannelSettingsView {
             .focus(move |style| style.border_color(ring))
             .child(self.i18n.text("channel_look_browse"))
             .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
+        let mut wallpaper_choices = div().flex().flex_wrap().gap_1();
+        let shown = match self.look.wallpaper_choice {
+            WallpaperChoice::Inherit if !self.look.wallpaper.read(cx).text().trim().is_empty() => {
+                WallpaperChoice::Own
+            }
+            choice => choice,
+        };
+        for (index, (choice, key)) in WallpaperChoice::ALL.into_iter().enumerate() {
+            wallpaper_choices = wallpaper_choices.child(
+                settings_theme::button(("channel-look-wallpaper", index), shown == choice, cx)
+                    .track_focus(&self.controls.wallpaper_choice[index])
+                    .focus(move |style| style.border_color(ring))
+                    .child(self.i18n.text(key))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_wallpaper_choice(choice, cx)),
+                    ),
+            );
+        }
         let mut fits = div().flex().flex_wrap().gap_1();
         for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
             fits = fits.child(
@@ -1068,6 +1159,12 @@ impl Render for ChannelSettingsView {
             .child(row("channel_look_background", &self.look.background))
             .child(row("channel_look_alternate", &self.look.alternate))
             .child(row("channel_look_text", &self.look.text))
+            .child(
+                div()
+                    .text_color(palette.text)
+                    .child(self.i18n.text("channel_look_wallpaper_choice")),
+            )
+            .child(wallpaper_choices)
             .child(
                 div()
                     .flex()

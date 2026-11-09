@@ -934,9 +934,11 @@ dependencies = [
 name = "cayenchat-storage"
 version = "1.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cayenchat-model",
  "chrono",
  "dirs 5.0.1",
+ "flate2",
  "keyring",
  "libc",
  "security-framework",
