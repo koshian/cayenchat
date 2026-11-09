@@ -66,6 +66,23 @@ fn check_image(bytes: &[u8]) -> Result<&'static str, String> {
     })
 }
 
+/// Why a file chosen as a standard wallpaper was refused.
+enum WallpaperRefusal {
+    Read(String),
+    Image(cayenchat_media::LoadError),
+}
+
+/// The localization key explaining why an image cannot be a wallpaper.
+fn wallpaper_refusal_key(error: &cayenchat_media::LoadError) -> &'static str {
+    match error {
+        cayenchat_media::LoadError::NotImage | cayenchat_media::LoadError::Unsupported => {
+            "wallpaper_not_supported"
+        }
+        cayenchat_media::LoadError::TooLarge => "wallpaper_too_large",
+        _ => "wallpaper_damaged",
+    }
+}
+
 /// Reads at most `limit` bytes of `path`; a longer file is an error.
 fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
@@ -381,7 +398,13 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("wallpaper_choose").into()),
-            filter: None,
+            filter: Some(PathPromptFilter {
+                name: self.i18n.text("upload_image_files").into(),
+                extensions: wallpaper::FILE_EXTENSIONS
+                    .iter()
+                    .map(|extension| SharedString::from(*extension))
+                    .collect(),
+            }),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = chosen.await else {
@@ -395,8 +418,11 @@ impl SettingsWindow {
                 let checking = cx.background_spawn({
                     let path = path.clone();
                     async move {
-                        let bytes = read_limited(&path, wallpaper::MAX_FILE_BYTES)?;
-                        check_image(&bytes).map(|_| ())
+                        let bytes = read_limited(&path, wallpaper::MAX_FILE_BYTES)
+                            .map_err(WallpaperRefusal::Read)?;
+                        wallpaper::validate(&bytes)
+                            .map(|_| ())
+                            .map_err(WallpaperRefusal::Image)
                     }
                 });
                 cx.spawn(async move |this, cx| {
@@ -419,7 +445,11 @@ impl SettingsWindow {
                                 let message = this.i18n.text("channel_look_wallpaper_long");
                                 this.theme_message(message, cx);
                             }
-                            Err(error) => this.theme_error(&error, cx),
+                            Err(WallpaperRefusal::Read(error)) => this.theme_error(&error, cx),
+                            Err(WallpaperRefusal::Image(error)) => {
+                                let message = this.i18n.text(wallpaper_refusal_key(&error));
+                                this.theme_message(message, cx);
+                            }
                         }
                     });
                 })
