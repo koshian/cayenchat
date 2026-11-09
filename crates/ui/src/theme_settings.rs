@@ -330,9 +330,15 @@ impl SettingsWindow {
                 let writing = cx.background_spawn({
                     let path = path.clone();
                     async move {
-                        let theme = ThemeFile::capture(&appearance, dark, &name, |wallpaper| {
-                            read_limited(Path::new(wallpaper), MAX_THEME_WALLPAPER_BYTES as u64)
-                        })?;
+                        let theme = ThemeFile::capture(
+                            &appearance,
+                            dark,
+                            &name,
+                            &check_image,
+                            |wallpaper| {
+                                read_limited(Path::new(wallpaper), MAX_THEME_WALLPAPER_BYTES as u64)
+                            },
+                        )?;
                         std::fs::write(&path, theme.to_gzip()?).map_err(|error| error.to_string())
                     }
                 });
@@ -712,8 +718,8 @@ mod tests {
 
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion, export_file_name,
-        theme_file,
+        OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion, check_image,
+        export_file_name, theme_file,
     };
     use crate::{secrets, settings_file::TestFile, settings_with_channels};
     use gpui::{Entity, VisualTestContext, WindowAppearance};
@@ -807,7 +813,8 @@ mod tests {
         source.dark.channel_log_background = "#102030".into();
         source.dark.wallpapers.channel_tree.path = Some("tree.png".into());
         source.dark.wallpapers.channel_tree.opacity = Some(70);
-        let theme = ThemeFile::capture(&source, true, "Night", |_| Ok(png())).unwrap();
+        let theme =
+            ThemeFile::capture(&source, true, "Night", &check_image, |_| Ok(png())).unwrap();
         let library = root.path().join("themes");
         let entry = theme_file::library_add(&library, &theme).unwrap();
 

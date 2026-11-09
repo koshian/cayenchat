@@ -226,3 +226,113 @@ fn retained_exif_is_charged_to_the_decode_budget() {
     });
     assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
 }
+
+fn png_raster(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![7; width as usize * height as usize * 4])
+        .unwrap();
+    drop(writer);
+    bytes
+}
+
+#[test]
+fn png_raster_declared_by_ihdr_leaves_less_for_png_internal_buffers() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // Rasters of 2 MiB under, and just over, a 4 MiB budget. `png`'s own
+    // allocation limit is fixed when the decoder is built, so it must already
+    // exclude the raster: the sum of both may not exceed the budget.
+    let budget = 4 * 1024 * 1024;
+    let limits = Limits {
+        max_decode_bytes: budget as u64,
+        ..Limits::default()
+    };
+    let near = png_raster(1024, 700);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&near, &limits, &CancelFlag::default())
+    });
+    assert!(result.is_ok());
+    let over = png_raster(1024, 1100);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&over, &limits, &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+}
+
+/// Inserts a valid tEXt chunk between the signature and IHDR.
+fn with_text_before_ihdr(png: &[u8]) -> Vec<u8> {
+    let (kind, body) = (b"tEXt", b"Comment\0x");
+    let mut crc = 0xffff_ffffu32;
+    for &byte in kind.iter().chain(body.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    let mut out = png[..8].to_vec();
+    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+    out.extend_from_slice(&(!crc).to_be_bytes());
+    out.extend_from_slice(&png[8..]);
+    out
+}
+
+#[test]
+fn chunk_before_ihdr_does_not_skip_the_raster_reservation() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // 8192 × 100 RGBA (3.1 MiB) in a 3.2 MiB budget leaves no room for the
+    // headroom, so the ordinary file is refused. Moving a tEXt chunk ahead of
+    // IHDR must not turn the estimate into 0 and let the stripped file in.
+    let budget = 3_281_237usize;
+    let limits = Limits {
+        max_decode_bytes: budget as u64,
+        ..Limits::default()
+    };
+    let plain = png_raster(8192, 100);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&plain, &limits, &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+    let tricky = with_text_before_ihdr(&plain);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&tricky, &limits, &CancelFlag::default())
+    });
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
+fn png_decode_peak_stays_within_the_default_budget_near_the_limit() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    let budget = Limits::default().max_decode_bytes as usize;
+    // 4096 × 3070 RGBA is 50,298,880 B: within the budget by 32 KiB, so the
+    // headroom for `png`'s unreserved buffers makes it TooLarge.
+    let plain = png_raster(4096, 3070);
+    let adam7 = include_bytes!("adam7-4096x3070.png");
+    for bytes in [&plain[..], &adam7[..]] {
+        let result = within_budget(budget, || {
+            decode::thumbnail(bytes, &Limits::default(), &CancelFlag::default())
+        });
+        assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+    }
+    // The edge is the budget less 512 KiB of headroom (49,807,360 B), less
+    // what `png` itself reserves. 4096 × 3030 RGBA (49,643,520 B) decodes with
+    // a peak under the budget (the unreserved buffers measured 282,616 B
+    // plain and 299,000 B Adam7, so 512 KiB leaves about 1.7×); 4096 × 3041
+    // is past the edge.
+    let fits = png_raster(4096, 3030);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&fits, &Limits::default(), &CancelFlag::default())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let over = png_raster(4096, 3041);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&over, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+}

@@ -346,11 +346,14 @@ impl ThemeFile {
     /// The light or dark half of `appearance` as a theme called `name`.
     /// `read` returns the bytes of a wallpaper file; one that cannot be read
     /// or is too large fails the export, so a theme never silently loses a
-    /// picture.
+    /// picture. A file `check_image` refuses fails it too: the path comes
+    /// from settings that may not be the user's own, and a file that is not
+    /// an image must not end up inside a shared theme.
     pub fn capture(
         appearance: &Appearance,
         dark: bool,
         name: &str,
+        check_image: ImageCheck,
         mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
     ) -> Result<Self, ThemeError> {
         let name = clean_theme_name(name);
@@ -370,6 +373,7 @@ impl ThemeFile {
                     MAX_THEME_WALLPAPER_BYTES / (1024 * 1024)
                 ));
             }
+            check_image(&bytes)?;
             *wallpapers.slot(region) = Some(ThemeWallpaper {
                 data: STANDARD.encode(bytes),
                 opacity: wallpaper.opacity,
