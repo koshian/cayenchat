@@ -365,6 +365,12 @@ impl ChatWindow {
         });
         cx.spawn(async move |this, cx| {
             let Some(read) = read.await else {
+                // The store thread is gone or the job panicked. Only the
+                // attempt this read belongs to hears of it, and nothing is
+                // retried.
+                let _ = this.update(cx, |this, cx| {
+                    this.stored_secrets_unavailable(network, token, cx);
+                });
                 return;
             };
             let _ = this.update(cx, |this, cx| {
@@ -414,6 +420,35 @@ impl ChatWindow {
     ) {
         if let Some(profile) = self.saved.profile_mut(profile_id) {
             which.note(profile, saved);
+        }
+    }
+
+    /// The read of the stored passwords failed as a whole (`secrets::stopped`).
+    /// The reconnect ends here with the error shown on its network, if it is
+    /// still the current attempt; a stale one changes nothing.
+    fn stored_secrets_unavailable(
+        &mut self,
+        network: NetworkId,
+        token: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .sessions
+            .get(&network)
+            .is_some_and(|session| session.retry_token == token && !session.manual_disconnect);
+        if !current {
+            return;
+        }
+        let text = secrets::error_text(&self.i18n, &secrets::stopped());
+        self.state.append_server_message(network, text.clone());
+        self.raise_error(Some(network), text, crate::notices::Origin::Background, cx);
+    }
+
+    /// Like `follow_credential_note`, for the SASL key the settings window
+    /// saved or deleted.
+    pub(crate) fn follow_key_note(&mut self, profile_id: &str, saved: bool) {
+        if let Some(profile) = self.saved.profile_mut(profile_id) {
+            profile.sasl_key_saved = saved;
         }
     }
 

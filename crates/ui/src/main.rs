@@ -990,6 +990,11 @@ struct ChatWindow {
     /// settings window writes them, or a first scan after a restart
     /// corrects them again.
     pending_notes: std::collections::BTreeSet<String>,
+    /// Channel key store writes, counted in the order they were queued, and
+    /// per (profile, lowercase channel) the order of the newest one whose
+    /// success was noted. An older success arriving later does not undo it.
+    key_write_clock: u64,
+    key_notes_applied: std::collections::BTreeMap<(String, String), u64>,
     server_menu: Option<ServerMenu>,
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
@@ -1726,6 +1731,8 @@ impl ChatWindow {
             search: None,
             saved,
             pending_notes: Default::default(),
+            key_write_clock: 0,
+            key_notes_applied: Default::default(),
             i18n,
             log_focus: cx.focus_handle(),
             tree_focus: cx.focus_handle(),
@@ -5645,7 +5652,7 @@ impl ChatWindow {
                     // Connected, so a password dialog left open is stale.
                     self.credential_prompts
                         .retain(|prompt| prompt.network != network);
-                    self.start_key_tracking(network);
+                    self.start_key_tracking(network, cx);
                 }
                 Event::Joined { channel } | Event::JoinedReplayed { channel } => {
                     self.key_join_succeeded(network, channel, cx)

@@ -243,12 +243,17 @@ fn the_first_connection_of_an_old_file_writes_the_notes_down(cx: &mut TestAppCon
             .channel_keys
             .insert("#b".into(), "secret".into());
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, cx| {
         assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
         // Later registrations (reconnects) change nothing.
         registered(chat, cx);
         assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
     });
-    assert_eq!(opened.reads.load(Ordering::SeqCst), 0);
+    cx.run_until_parked();
+    // Only "#a", which the connection found no key for, is read again.
+    assert_eq!(opened.reads.load(Ordering::SeqCst), 1);
 }
 
 #[gpui::test]
@@ -261,6 +266,9 @@ fn a_note_without_a_key_is_corrected_when_connecting(cx: &mut TestAppContext) {
             .channel_keys
             .insert("#b".into(), "secret".into());
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, _| {
         // "#gone" is not in the list, so it was not read and stays.
         assert_eq!(noted(chat), Some(vec!["#b".to_owned(), "#gone".to_owned()]));
     });
@@ -394,6 +402,9 @@ fn a_corrected_note_still_lets_the_connection_use_the_key(cx: &mut TestAppContex
             .channel_keys
             .extend(first.channel_keys);
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, _| {
         assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
         // The reconnect, which reads the corrected note, finds the same key.
         let again = connect(&chat.saved, &opened.store);
@@ -417,6 +428,9 @@ fn reading_the_store_does_not_save_the_settings_file(cx: &mut TestAppContext) {
             .channel_keys
             .insert("#b".into(), "secret".into());
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, _| {
         // Corrected here, not in the file.
         assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
         assert_eq!(
@@ -442,6 +456,9 @@ fn corrected_notes_are_written_with_the_next_settings_save(cx: &mut TestAppConte
             .channel_keys
             .insert("#b".into(), "secret".into());
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, _| {
         // What the settings window does when it saves.
         let mut file = settings_file::load().unwrap().unwrap();
         chat.overlay_pending_notes(&mut file);
@@ -483,6 +500,9 @@ fn notes_converge_on_the_first_scan_after_a_restart(cx: &mut TestAppContext) {
             .channel_keys
             .insert("#b".into(), "secret".into());
         registered(chat, cx);
+    });
+    cx.run_until_parked();
+    restarted.update(cx, |chat, _| {
         assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
     });
 }

@@ -117,8 +117,6 @@ pub(crate) struct SettingsForm {
     pub(crate) dark_url_tooltip_link_color: Entity<TextInput>,
     pub(crate) url_tooltip_text_color: Entity<TextInput>,
     pub(crate) dark_url_tooltip_text_color: Entity<TextInput>,
-    /// Percent, as typed.
-    pub(crate) url_tooltip_opacity: Entity<TextInput>,
     pub(crate) channel_log_font: Entity<TextInput>,
     pub(crate) combined_log_font: Entity<TextInput>,
     pub(crate) member_list_font: Entity<TextInput>,
@@ -368,12 +366,6 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            url_tooltip_opacity: field(
-                "80",
-                &values.appearance.url_tooltip_opacity.to_string(),
-                false,
-                cx,
-            ),
             channel_log_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.fonts(false).channel_log_font,
@@ -547,13 +539,7 @@ impl SettingsForm {
             link_background: value(&self.link_background),
             url_tooltip_link_color: value(&self.url_tooltip_link_color),
             url_tooltip_text_color: value(&self.url_tooltip_text_color),
-            url_tooltip_opacity: value(&self.url_tooltip_opacity)
-                .parse()
-                .ok()
-                .filter(|percent| {
-                    (cayenchat_storage::MIN_URL_TOOLTIP_OPACITY..=100).contains(percent)
-                })
-                .ok_or_else(|| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
+            url_tooltip_opacity: self.values.appearance.url_tooltip_opacity,
             member_list_opacity: self.values.appearance.member_list_opacity,
             channel_tree_opacity: self.values.appearance.channel_tree_opacity,
             channel_log_opacity: self.values.appearance.channel_log_opacity,
@@ -727,7 +713,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 56] {
         [
             &self.custom_host,
             &self.port,
@@ -770,7 +756,6 @@ impl SettingsForm {
             &self.dark_url_tooltip_link_color,
             &self.url_tooltip_text_color,
             &self.dark_url_tooltip_text_color,
-            &self.url_tooltip_opacity,
             &self.channel_log_font,
             &self.combined_log_font,
             &self.member_list_font,
@@ -1147,6 +1132,28 @@ fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) 
     }
 }
 
+/// A saved server whose host the settings change (#973).
+struct HostChange {
+    id: String,
+    old: String,
+    new: String,
+    /// The store entries sent to the server as they are.
+    keys: Vec<SecretKey>,
+    /// Some of them are noted as saved, so the change is asked about.
+    ask: bool,
+}
+
+/// What follows once a host change's old passwords are deleted (#973).
+#[derive(Clone, Copy)]
+enum AfterHostChange {
+    /// Save the new host in the background.
+    Autosave,
+    /// Save the servers as shown (the Save button).
+    Save,
+    /// Connect with the new host.
+    Connect,
+}
+
 /// Which of a server's two passwords.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Credential {
@@ -1310,10 +1317,10 @@ pub(crate) struct SettingsWindow {
     /// Where the log line height slider's track was last painted, to turn
     /// the pointer position into a value (#953).
     line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
-    /// The pane opacity sliders (member list, channel tree, channel log,
-    /// combined log): their painted tracks and keyboard focus.
-    opacity_tracks: [crate::slider::TrackBounds; 4],
-    opacity_focus: [FocusHandle; 4],
+    /// The opacity sliders (member list, channel tree, channel log,
+    /// combined log, hover popup): their painted tracks and keyboard focus.
+    opacity_tracks: [crate::slider::TrackBounds; 5],
+    opacity_focus: [FocusHandle; 5],
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1336,6 +1343,9 @@ pub(crate) struct SettingsWindow {
     /// Secrets of removed servers that could not be deleted yet; every save
     /// tries them again.
     forget_pending: Vec<SecretKey>,
+    /// A host change waits for its confirmation or for the deletion of the
+    /// passwords that belong to the old host (#973).
+    host_change_open: bool,
     /// Connect was pressed and the store thread is still reading.
     connecting: bool,
     /// Credential writes, deletions and moves of the store thread that this
@@ -1607,6 +1617,7 @@ impl SettingsWindow {
             autosave: None,
             autosave_error: None,
             forget_pending: Vec::new(),
+            host_change_open: false,
             connecting: false,
             store_waits: 0,
             field_error: None,
@@ -1909,6 +1920,200 @@ impl SettingsWindow {
         Ok(settings)
     }
 
+    /// The saved servers whose host `settings` changes while passwords sent
+    /// as they are may still be stored for the old one (#973).
+    fn host_changes(&self, settings: &Settings) -> Vec<HostChange> {
+        settings
+            .servers
+            .iter()
+            .filter_map(|server| {
+                let saved = self.saved.profile(&server.id)?;
+                (saved.host_differs(&server.host)
+                    && (saved.has_host_bound_secrets() || saved.channel_key_scan_pending()))
+                .then(|| HostChange {
+                    id: saved.id.clone(),
+                    old: saved.host.clone(),
+                    new: server.host.clone(),
+                    keys: saved.host_bound_secret_keys(),
+                    ask: saved.has_host_bound_secrets(),
+                })
+            })
+            .collect()
+    }
+
+    /// Asks (when passwords are saved), deletes the old host's passwords and
+    /// then saves again, which writes the new host. Cancelling, or a password
+    /// that cannot be deleted, keeps the old host.
+    fn start_host_change(
+        &mut self,
+        changes: Vec<HostChange>,
+        then: AfterHostChange,
+        cx: &mut Context<Self>,
+    ) {
+        if std::mem::replace(&mut self.host_change_open, true) {
+            return;
+        }
+        let window = self.window;
+        let title = self.i18n.text("host_change_title");
+        let confirm = self.i18n.text("host_change_confirm");
+        let cancel = self.i18n.text("cancel");
+        // A change whose notes do not tell yet (first channel key scan
+        // pending) is asked about when the store holds one of its entries.
+        let probe: Vec<Vec<SecretKey>> = changes
+            .iter()
+            .filter(|change| !change.ask)
+            .map(|change| change.keys.clone())
+            .collect();
+        let detail_of = |i18n: &Localizer, change: &HostChange| {
+            i18n.format(
+                "host_change_detail",
+                &[("old", &change.old), ("new", &change.new)],
+            )
+        };
+        let asked = changes
+            .iter()
+            .find(|change| change.ask)
+            .map(|change| detail_of(&self.i18n, change));
+        let probed_detail: Vec<String> = changes
+            .iter()
+            .filter(|change| !change.ask)
+            .map(|change| detail_of(&self.i18n, change))
+            .collect();
+        self.store_wait(cx);
+        cx.spawn(async move |this, cx| {
+            let mut detail = asked;
+            if detail.is_none() && !probe.is_empty() {
+                let found = this
+                    .update(cx, |_, cx| {
+                        secrets::run(cx, move |store| {
+                            probe.into_iter().position(|keys| {
+                                // A key that cannot be read counts as saved.
+                                keys.iter().any(|key| !matches!(store.get(key), Ok(None)))
+                            })
+                        })
+                    })
+                    .ok();
+                if let Some(found) = found {
+                    // The store thread stopped: nothing is deleted, so ask.
+                    let at = found.await.unwrap_or(Some(0));
+                    detail = at.and_then(|at| probed_detail.get(at).cloned());
+                }
+            }
+            let confirmed = match detail {
+                None => true,
+                Some(detail) => {
+                    let answer = cx
+                        .update_window(window, |_, window, cx| {
+                            window.os_prompt(
+                                PromptLevel::Warning,
+                                &title,
+                                Some(&detail),
+                                &[PromptButton::ok(confirm), PromptButton::cancel(cancel)],
+                                cx,
+                            )
+                        })
+                        .ok();
+                    match answer {
+                        Some(answer) => answer.await == Ok(0),
+                        None => false,
+                    }
+                }
+            };
+            let keys: Vec<SecretKey> = changes
+                .iter()
+                .flat_map(|change| change.keys.clone())
+                .collect();
+            let deleting = if confirmed {
+                this.update(cx, |_, cx| {
+                    secrets::run(cx, move |store| delete_secrets(keys, store))
+                })
+                .ok()
+            } else {
+                None
+            };
+            let failed =
+                match deleting {
+                    Some(deleting) => Some(deleting.await.unwrap_or_else(|| {
+                        vec![(SecretKey::server_password(""), secrets::stopped())]
+                    })),
+                    None => None,
+                };
+            let _ = cx.update_window(window, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.store_done(cx);
+                    this.host_change_done(&changes, confirmed, failed, then, window, cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    /// The end of [`Self::start_host_change`].
+    fn host_change_done(
+        &mut self,
+        changes: &[HostChange],
+        confirmed: bool,
+        failed: Option<Vec<(SecretKey, cayenchat_storage::CredentialError)>>,
+        then: AfterHostChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.host_change_open = false;
+        let failure = failed.and_then(|failed| failed.into_iter().next());
+        if confirmed && failure.is_none() {
+            for change in changes {
+                let forget = |profile: &mut ServerProfile| profile.forget_host_bound_secrets();
+                if let Some(profile) = self.settings.values.profile_mut(&change.id) {
+                    forget(profile);
+                }
+                if let Some(profile) = self.saved.profile_mut(&change.id) {
+                    forget(profile);
+                }
+                let _ = self.owner.update(cx, |owner, _, _| {
+                    owner.update_profile_note(&change.id, |profile| {
+                        forget(profile);
+                        true
+                    });
+                });
+            }
+            // Written at once: a restart must not find notes of passwords
+            // that are gone.
+            let _ = self
+                .owner
+                .update(cx, |owner, _, _| owner.write_pending_notes());
+            self.autosave_error = None;
+            match then {
+                AfterHostChange::Save => self.save_servers(cx),
+                AfterHostChange::Autosave => {
+                    self.autosave_committed(cx);
+                }
+                // The passwords are gone, so this finds no change left.
+                AfterHostChange::Connect => self.connect_from_settings(window, cx),
+            }
+            return;
+        }
+        // The old host stays, in the form too.
+        for change in changes {
+            if let Some(profile) = self.settings.values.profile_mut(&change.id) {
+                profile.host.clone_from(&change.old);
+            }
+            if self.settings.values.selected_server == change.id {
+                self.settings
+                    .custom_host
+                    .update(cx, |field, cx| field.set_text(&change.old, cx));
+            }
+        }
+        self.autosave_error = None;
+        self.feedback = Some(match failure {
+            Some((_, error)) => self.i18n.format(
+                "host_change_failed",
+                &[("error", &secrets::error_text(&self.i18n, &error))],
+            ),
+            None => self.i18n.text("host_change_cancelled"),
+        });
+        cx.notify();
+    }
+
     /// Queues the deletion of the secrets of removed servers (and those a
     /// earlier deletion failed for) on the store thread.
     fn forget_removed(&mut self, keys: Vec<SecretKey>, cx: &mut Context<Self>) {
@@ -1959,9 +2164,11 @@ impl SettingsWindow {
                 cx.notify();
                 return;
             }
+            let mut host_changes = Vec::new();
             let read = written.and_then(|()| {
                 let mut settings = this.settings.snapshot(cx)?;
                 this.drop_other_drafts(&mut settings);
+                host_changes = this.host_changes(&settings);
                 let profile = settings
                     .selected_profile()
                     .cloned()
@@ -1977,6 +2184,13 @@ impl SettingsWindow {
                     return;
                 }
             };
+            if !host_changes.is_empty() {
+                // The old host's passwords are deleted before anything is
+                // read for the connection; it goes on afterwards (#973).
+                this.connecting = false;
+                this.start_host_change(host_changes, AfterHostChange::Connect, cx);
+                return;
+            }
             this.read_for_connect(profile, cx);
         });
     }
@@ -2032,6 +2246,11 @@ impl SettingsWindow {
                 stored.ok_or_else(|| secrets::error_text(&self.i18n, &secrets::stopped()))?;
             let mut settings = self.settings.snapshot(cx)?;
             self.drop_other_drafts(&mut settings);
+            // The host was edited while the read was queued: what was read
+            // belongs to the old one. Connect again to be asked.
+            if !self.host_changes(&settings).is_empty() {
+                return Err(self.i18n.text("host_change_title"));
+            }
             let (config, missing) =
                 self.settings
                     .connection_config(&mut settings, stored, &self.i18n, cx)?;
@@ -2277,6 +2496,17 @@ impl SettingsWindow {
                     .map(|server| server.id.clone())
                     .unwrap_or_default();
             }
+        }
+        let host_changes = self.host_changes(&settings);
+        if !host_changes.is_empty() {
+            // The old host's passwords go first; the host is written after.
+            let then = if explicit {
+                AfterHostChange::Save
+            } else {
+                AfterHostChange::Autosave
+            };
+            self.start_host_change(host_changes, then, cx);
+            return Err(self.i18n.text("host_change_title"));
         }
         if settings == self.saved && !(explicit && self.servers_unsaved(cx)) {
             // Nothing to write: registering the same URL again still asks
@@ -3122,6 +3352,9 @@ impl SettingsWindow {
                     server.sasl_key_saved = saved;
                     let _ = settings_file::save(&file);
                 }
+                let _ = self
+                    .owner
+                    .update(cx, |owner, _, _| owner.follow_key_note(profile, saved));
                 self.schedule_autosave(cx);
                 self.feedback = Some(self.i18n.text(if saved {
                     "sasl_key_saved_done"
@@ -4845,10 +5078,16 @@ impl SettingsWindow {
         }
     }
 
-    /// A labelled slider for a pane's background opacity, `index` in the
-    /// order member list, channel tree, channel log, combined log.
+    /// A labelled slider for a background opacity, `index` in the order
+    /// member list, channel tree, channel log, combined log, hover popup.
     fn opacity_slider(&self, index: usize, label_key: &str, cx: &mut Context<Self>) -> Div {
-        use cayenchat_storage::MIN_PANE_OPACITY;
+        use cayenchat_storage::{MIN_PANE_OPACITY, MIN_URL_TOOLTIP_OPACITY};
+        // The hover popup has its own lower limit.
+        let min = if index == 4 {
+            MIN_URL_TOOLTIP_OPACITY
+        } else {
+            MIN_PANE_OPACITY
+        };
         let theme = settings_theme::palette(cx);
         let primary = settings_theme::primary_color(cx);
         let appearance = &self.settings.values.appearance;
@@ -4857,8 +5096,9 @@ impl SettingsWindow {
             appearance.channel_tree_opacity,
             appearance.channel_log_opacity,
             appearance.combined_log_opacity,
+            appearance.url_tooltip_opacity,
         ][index]
-            .clamp(MIN_PANE_OPACITY, 100);
+            .clamp(min, 100);
         let colors = crate::slider::SliderColors {
             track: theme.border,
             fill: primary.into(),
@@ -4867,20 +5107,21 @@ impl SettingsWindow {
         };
         let slider = crate::slider::slider(
             ("pane-opacity", index),
-            u32::from(percent - MIN_PANE_OPACITY),
-            u32::from(100 - MIN_PANE_OPACITY),
+            u32::from(percent - min),
+            u32::from(100 - min),
             &self.opacity_tracks[index],
             &self.opacity_focus[index],
             colors,
             cx,
             move |this, value, _, _| {
                 let appearance = &mut this.settings.values.appearance;
-                let value = MIN_PANE_OPACITY + value as u8;
+                let value = min + value as u8;
                 match index {
                     0 => appearance.member_list_opacity = value,
                     1 => appearance.channel_tree_opacity = value,
                     2 => appearance.channel_log_opacity = value,
-                    _ => appearance.combined_log_opacity = value,
+                    3 => appearance.combined_log_opacity = value,
+                    _ => appearance.url_tooltip_opacity = value,
                 }
             },
         );
@@ -5314,10 +5555,7 @@ impl SettingsWindow {
                 &self.settings.dark_url_tooltip_text_color,
                 cx,
             ))
-            .child(settings_field(
-                &self.i18n.text("url_tooltip_opacity"),
-                self.settings.url_tooltip_opacity.clone(),
-            ))
+            .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
             .child(
                 div()
                     .id("alternate-rows")
@@ -6549,7 +6787,7 @@ mod escape_tests {
         );
     }
 
-    fn open(
+    pub(super) fn open(
         cx: &mut TestAppContext,
         settings: cayenchat_storage::Settings,
     ) -> (
@@ -7064,5 +7302,322 @@ mod escape_tests {
         let result = form.update(cx, |form, cx| form.commit_settings(&previous, next, cx));
         assert!(result.is_ok());
         assert!(!store.contains(&removed.server_password_key()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod host_change_tests {
+    use super::{Settings, SettingsWindow};
+    use cayenchat_storage::{Secret, SecretKey};
+    use gpui::TestAppContext;
+
+    /// A saved server with every kind of secret stored, and its settings.
+    fn saved_secrets(cx: &mut TestAppContext) -> (Settings, String) {
+        let mut settings = crate::settings_with_channels("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.host = "irc.old.example".into();
+        profile.set_server_password_saved(true);
+        profile.set_sasl_password_saved(true);
+        profile.sasl_key_saved = true;
+        profile.note_channel_key("#a", true);
+        let id = profile.id.clone();
+        let _ = cx;
+        (settings, id)
+    }
+
+    fn fill_store(
+        cx: &mut gpui::VisualTestContext,
+        id: &str,
+    ) -> cayenchat_storage::CredentialStore {
+        let store = cx.update(|_, cx| crate::secrets::store(cx));
+        for key in [
+            SecretKey::server_password(id),
+            SecretKey::sasl_password(id),
+            SecretKey::sasl_key(id),
+            SecretKey::channel_key(id, "#a"),
+        ] {
+            store.set(&key, &Secret::new("secret")).unwrap();
+        }
+        store
+    }
+
+    fn edit_host(
+        form: &gpui::Entity<SettingsWindow>,
+        cx: &mut gpui::VisualTestContext,
+        host: &str,
+    ) {
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text(host, cx));
+            form.autosave_now(None, cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn saved_host(form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext) -> String {
+        form.read_with(cx, |form, _| {
+            form.saved.selected_profile().unwrap().host.clone()
+        })
+    }
+
+    #[gpui::test]
+    fn changing_the_host_asks_then_deletes_what_is_sent_as_is(cx: &mut TestAppContext) {
+        let (settings, id) = saved_secrets(cx);
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = fill_store(cx, &id);
+
+        // Cancelling changes neither the host nor the passwords.
+        edit_host(&form, cx, "irc.new.example");
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        assert_eq!(
+            form.read_with(cx, |form, cx| form
+                .settings
+                .custom_host
+                .read(cx)
+                .text()
+                .to_owned()),
+            "irc.old.example"
+        );
+        assert!(store.contains(&SecretKey::server_password(&id)).unwrap());
+        assert!(store.contains(&SecretKey::channel_key(&id, "#a")).unwrap());
+
+        // Confirming deletes them, keeps the SASL key and notes it all.
+        edit_host(&form, cx, "irc.new.example");
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
+        for key in [
+            SecretKey::server_password(&id),
+            SecretKey::sasl_password(&id),
+            SecretKey::channel_key(&id, "#a"),
+        ] {
+            assert!(!store.contains(&key).unwrap());
+        }
+        assert!(store.contains(&SecretKey::sasl_key(&id)).unwrap());
+        let file = crate::settings_file::load().unwrap().unwrap();
+        let profile = file.profile(&id).unwrap();
+        assert_eq!(profile.host, "irc.new.example");
+        assert!(!profile.has_host_bound_secrets());
+        assert!(profile.sasl_key_saved);
+        form.read_with(cx, |form, _| {
+            assert!(!form.saved.profile(&id).unwrap().has_host_bound_secrets());
+            assert!(
+                !form
+                    .settings
+                    .values
+                    .profile(&id)
+                    .unwrap()
+                    .has_host_bound_secrets()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_password_that_cannot_be_deleted_keeps_the_old_host(cx: &mut TestAppContext) {
+        use cayenchat_storage::{
+            CredentialBackendKind, CredentialStore, credentials::MemoryBackend,
+        };
+        let (settings, id) = saved_secrets(cx);
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        cx.update(|_, cx| {
+            cx.set_global(crate::secrets::Credentials(CredentialStore::with_backend(
+                std::sync::Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+
+        edit_host(&form, cx, "irc.new.example");
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        form.read_with(cx, |form, cx| {
+            assert_eq!(form.settings.custom_host.read(cx).text(), "irc.old.example");
+            assert!(form.saved.profile(&id).unwrap().has_host_bound_secrets());
+            assert!(form.feedback.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn spaces_case_and_a_port_change_keep_the_passwords(cx: &mut TestAppContext) {
+        let (settings, id) = saved_secrets(cx);
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = fill_store(cx, &id);
+
+        edit_host(&form, cx, "  IRC.Old.Example ");
+        assert!(!cx.has_pending_prompt());
+        form.update(cx, |form, cx| {
+            form.settings
+                .port
+                .update(cx, |field, cx| field.set_text("6670", cx));
+            form.autosave_now(None, cx);
+        });
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert!(store.contains(&SecretKey::server_password(&id)).unwrap());
+        assert!(store.contains(&SecretKey::sasl_password(&id)).unwrap());
+        assert!(store.contains(&SecretKey::channel_key(&id, "#a")).unwrap());
+        assert_eq!(
+            form.read_with(cx, |form, _| form.saved.selected_profile().unwrap().port),
+            6670
+        );
+    }
+
+    fn type_host(
+        form: &gpui::Entity<SettingsWindow>,
+        cx: &mut gpui::VisualTestContext,
+        host: &str,
+    ) {
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text(host, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn connecting_with_a_changed_host_asks_first_and_cancelling_does_not_connect(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut settings, id) = saved_secrets(cx);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "nick".into();
+        profile.username = "user".into();
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = fill_store(cx, &id);
+
+        // No autosave in between: Connect itself must ask.
+        type_host(&form, cx, "127.0.0.1");
+        form.update_in(cx, |form, window, cx| {
+            form.connect_from_settings(window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        assert_eq!(
+            crate::settings_file::load()
+                .unwrap()
+                .unwrap()
+                .profile(&id)
+                .unwrap()
+                .host,
+            "irc.old.example"
+        );
+        assert!(store.contains(&SecretKey::server_password(&id)).unwrap());
+        assert!(store.contains(&SecretKey::channel_key(&id, "#a")).unwrap());
+
+        // Confirming deletes them before the connection is made.
+        type_host(&form, cx, "127.0.0.1");
+        form.update_in(cx, |form, window, cx| {
+            form.connect_from_settings(window, cx)
+        });
+        cx.run_until_parked();
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        for key in [
+            SecretKey::server_password(&id),
+            SecretKey::sasl_password(&id),
+            SecretKey::channel_key(&id, "#a"),
+        ] {
+            assert!(!store.contains(&key).unwrap());
+        }
+        assert!(store.contains(&SecretKey::sasl_key(&id)).unwrap());
+    }
+
+    #[gpui::test]
+    fn an_unscanned_profile_asks_when_a_channel_key_is_stored(cx: &mut TestAppContext) {
+        let (mut settings, id) = saved_secrets(cx);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.set_server_password_saved(false);
+        profile.set_sasl_password_saved(false);
+        profile.keyed_channels = None;
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = fill_store(cx, &id);
+
+        edit_host(&form, cx, "irc.new.example");
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        assert!(store.contains(&SecretKey::channel_key(&id, "#a")).unwrap());
+
+        edit_host(&form, cx, "irc.new.example");
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
+        assert!(!store.contains(&SecretKey::channel_key(&id, "#a")).unwrap());
+    }
+
+    #[gpui::test]
+    fn an_unscanned_profile_covers_a_disabled_auto_join_channel(cx: &mut TestAppContext) {
+        let (mut settings, id) = saved_secrets(cx);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.set_server_password_saved(false);
+        profile.set_sasl_password_saved(false);
+        profile.channels = "-#b".into();
+        profile.keyed_channels = None;
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = cx.update(|_, cx| crate::secrets::store(cx));
+        let key = SecretKey::channel_key(&id, "#b");
+        store.set(&key, &Secret::new("secret")).unwrap();
+
+        edit_host(&form, cx, "irc.new.example");
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        assert!(store.contains(&key).unwrap());
+
+        edit_host(&form, cx, "irc.new.example");
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
+        assert!(!store.contains(&key).unwrap());
+    }
+
+    #[gpui::test]
+    fn an_unscanned_profile_with_nothing_stored_asks_nothing(cx: &mut TestAppContext) {
+        let (mut settings, _id) = saved_secrets(cx);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.set_server_password_saved(false);
+        profile.set_sasl_password_saved(false);
+        profile.keyed_channels = None;
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+
+        edit_host(&form, cx, "irc.new.example");
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
+    }
+
+    #[gpui::test]
+    fn a_host_change_without_saved_passwords_asks_nothing(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().host = "irc.old.example".into();
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+
+        edit_host(&form, cx, "irc.new.example");
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
     }
 }
