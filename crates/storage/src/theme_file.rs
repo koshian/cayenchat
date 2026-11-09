@@ -93,6 +93,13 @@ pub struct RegionWallpaper {
     /// [`MAX_WALLPAPER_BLUR`]); unset is [`DEFAULT_WALLPAPER_BLUR`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blur: Option<u8>,
+    /// How the picture fits the area; unset is [`WallpaperFit::default`]. A
+    /// name this version does not know reads as unset.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::lenient_fit"
+    )]
+    pub fit: Option<crate::WallpaperFit>,
 }
 
 impl RegionWallpaper {
@@ -241,6 +248,12 @@ pub struct ThemeWallpaper {
     pub opacity: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur: Option<u8>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::lenient_fit"
+    )]
+    pub fit: Option<crate::WallpaperFit>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -394,6 +407,7 @@ impl ThemeFile {
                 data: STANDARD.encode(bytes),
                 opacity: wallpaper.opacity,
                 blur: wallpaper.blur,
+                fit: wallpaper.fit,
             });
         }
         Ok(Self {
@@ -546,6 +560,7 @@ impl ThemeFile {
                 path: Some(path.to_string_lossy().into_owned()),
                 opacity: theme_wallpaper.opacity,
                 blur: theme_wallpaper.blur,
+                fit: theme_wallpaper.fit,
             };
         }
         let dark = self.mode.is_dark();
@@ -942,6 +957,12 @@ impl Appearance {
                 ];
                 if wallpaper.blur_tenths() != DEFAULT_WALLPAPER_BLUR {
                     entry.push(Value::from(wallpaper.blur_tenths()));
+                }
+                if let Some(fit) = wallpaper
+                    .fit
+                    .filter(|fit| *fit != crate::WallpaperFit::default())
+                {
+                    entry.push(Value::from(format!("{fit:?}")));
                 }
                 Value::Array(entry)
             })

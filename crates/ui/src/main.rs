@@ -77,6 +77,7 @@ mod theme_settings;
 mod toolbar;
 mod tooltip;
 mod wake;
+mod wallpaper_crop;
 mod whois;
 mod window_layout;
 

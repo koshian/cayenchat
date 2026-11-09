@@ -19,7 +19,9 @@ use cayenchat_model::attachment::{AttachmentError, AttachmentSource};
 use cayenchat_storage::theme_file::{
     self, LibraryEntry, MAX_THEME_FILE_BYTES, MAX_THEME_WALLPAPER_BYTES, THEME_EXTENSION,
 };
-use cayenchat_storage::{Appearance, ThemeFile, ThemeKind, ThemeMode, WallpaperRegion};
+use cayenchat_storage::{
+    Appearance, ThemeFile, ThemeKind, ThemeMode, WallpaperFit, WallpaperRegion,
+};
 use gpui::{prelude::*, *};
 
 use crate::{
@@ -27,6 +29,7 @@ use crate::{
     image_upload::{acceptable_attachment, read_in_background},
     input::TextInput,
     settings_theme,
+    wallpaper_crop::CropState,
 };
 
 /// The four areas in the order of the chat window's panes: the label key of
@@ -58,6 +61,15 @@ pub(crate) struct WallpaperUi {
     strength_focus: FocusHandle,
     blur_track: crate::slider::TrackBounds,
     blur_focus: FocusHandle,
+    /// Whether the details (range editor, fit) of the selected area are open.
+    detail: bool,
+    /// The image whose range is being chosen, and the side and area it was
+    /// started for: fixed there, so it never lands on whatever is selected
+    /// by the time it is used.
+    crop: CropState,
+    crop_target: (bool, WallpaperRegion),
+    crop_focus: [FocusHandle; 3],
+    fit_focus: [FocusHandle; 4],
 }
 
 impl WallpaperUi {
@@ -65,8 +77,18 @@ impl WallpaperUi {
         self.dark = dark;
         self.region = region;
         self.status = None;
+        self.crop.close();
     }
 }
+
+/// The ways a picture can fit an area, with their label keys (the same as
+/// the channel settings').
+const FIT_CHOICES: [(WallpaperFit, &str); 4] = [
+    (WallpaperFit::Stretch, "channel_look_fit_stretch"),
+    (WallpaperFit::Cover, "channel_look_fit_cover"),
+    (WallpaperFit::Contain, "channel_look_fit_contain"),
+    (WallpaperFit::Center, "channel_look_fit_center"),
+];
 
 /// Keeps `bytes` (already checked) as a file named by its content in
 /// `directory` and returns its path, so the wallpaper no longer depends on
@@ -114,6 +136,11 @@ impl ThemeUi {
                 strength_focus: cx.focus_handle().tab_stop(true),
                 blur_track: Default::default(),
                 blur_focus: cx.focus_handle().tab_stop(true),
+                detail: false,
+                crop: CropState::new(),
+                crop_target: (dark, WallpaperRegion::ChannelLog),
+                crop_focus: crate::wallpaper_crop::button_handles(cx),
+                fit_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             },
             library: crate::settings_file::library_directory()
                 .map(|directory| theme_file::library_list(&directory))
@@ -449,12 +476,15 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Asks for an image for the area of the light or dark theme. The file
-    /// dialog and a drop on the area end in the same `wallpaper_offer`.
+    /// Asks for an image for the area of the light or dark theme: set as it
+    /// is, or (`ranged`) opened in the range editor first. The file dialog
+    /// and a drop on the area end in the same `wallpaper_offer`; the range
+    /// editor ends in the same kept file as the channel settings'.
     pub(crate) fn wallpaper_choose(
         &mut self,
         dark: bool,
         region: WallpaperRegion,
+        ranged: bool,
         cx: &mut Context<Self>,
     ) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
@@ -475,10 +505,73 @@ impl SettingsWindow {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                this.wallpaper_offer(dark, region, paths, None, AttachmentSource::Chooser, cx)
+                if ranged {
+                    this.wallpaper_offer_range(dark, region, paths, cx)
+                } else {
+                    this.wallpaper_offer(dark, region, paths, None, AttachmentSource::Chooser, cx)
+                }
             });
         })
         .detach();
+    }
+
+    /// Opens the range editor on the image named by `paths` for `region`.
+    fn wallpaper_offer_range(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        paths: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let ui = &mut self.themes.wallpaper;
+        ui.select(dark, region);
+        ui.crop_target = (dark, region);
+        ui.crop.offer(
+            |this: &mut Self| &mut this.themes.wallpaper.crop,
+            &self.i18n,
+            paths,
+            None,
+            AttachmentSource::Chooser,
+            cx,
+        );
+    }
+
+    /// Cuts the chosen range out and makes it the wallpaper of the area the
+    /// editor was opened for.
+    fn wallpaper_use_range(&mut self, cx: &mut Context<Self>) {
+        self.themes.wallpaper.crop.use_range(
+            |this: &mut Self| &mut this.themes.wallpaper.crop,
+            &self.i18n,
+            |this, path, _| {
+                let (dark, region) = this.themes.wallpaper.crop_target;
+                if path.len() <= cayenchat_storage::MAX_WALLPAPER_PATH_BYTES {
+                    this.settings
+                        .values
+                        .appearance
+                        .wallpapers_mut(dark)
+                        .get_mut(region)
+                        .path = Some(path);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Sets how the picture fits the area.
+    pub(crate) fn wallpaper_set_fit(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        fit: WallpaperFit,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings
+            .values
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(region)
+            .fit = (fit != WallpaperFit::default()).then_some(fit);
+        cx.notify();
     }
 
     /// Reads the image named by `paths` (one file; `keep` holds a macOS file
@@ -560,6 +653,7 @@ impl SettingsWindow {
         wallpaper.path = None;
         wallpaper.opacity = None;
         wallpaper.blur = None;
+        wallpaper.fit = None;
         cx.notify();
     }
 
@@ -862,14 +956,31 @@ impl SettingsWindow {
                                 )
                             })
                             .child(
-                                settings_theme::button(("wallpaper-choose", id), false, cx)
-                                    .text_size(px(11.))
-                                    .child(self.i18n.text("wallpaper_choose"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let dark = this.themes.wallpaper.dark;
-                                        this.themes.wallpaper.select(dark, region);
-                                        this.wallpaper_choose(dark, region, cx)
-                                    })),
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_1()
+                                    .child(
+                                        settings_theme::button(("wallpaper-choose", id), false, cx)
+                                            .text_size(px(11.))
+                                            .child(self.i18n.text("wallpaper_choose"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let dark = this.themes.wallpaper.dark;
+                                                this.themes.wallpaper.select(dark, region);
+                                                this.wallpaper_choose(dark, region, false, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        settings_theme::button(("wallpaper-detail", id), false, cx)
+                                            .text_size(px(11.))
+                                            .child(self.i18n.text("wallpaper_detail"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let dark = this.themes.wallpaper.dark;
+                                                this.themes.wallpaper.select(dark, region);
+                                                this.themes.wallpaper.detail = true;
+                                                cx.notify();
+                                            })),
+                                    ),
                             ),
                     )
             };
@@ -941,7 +1052,7 @@ impl SettingsWindow {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let dark = this.themes.wallpaper.dark;
                         let region = this.themes.wallpaper.region;
-                        this.wallpaper_choose(dark, region, cx)
+                        this.wallpaper_choose(dark, region, false, cx)
                     })),
             )
             .when(wallpaper.path.is_some(), |d| {
@@ -997,7 +1108,7 @@ impl SettingsWindow {
                 ))
                 .child(row(
                     self.i18n.format(
-                        "channel_look_blur",
+                        "wallpaper_blur",
                         &[("value", &format!("{}.{}", blur / 10, blur % 10))],
                     ),
                     crate::slider::slider(
@@ -1014,6 +1125,75 @@ impl SettingsWindow {
                         },
                     ),
                 ))
+        });
+        // The details of the selected area: the range editor and the fit,
+        // the same as the channel settings offer.
+        let detail = self.themes.wallpaper.detail.then(|| {
+            let ui = &self.themes.wallpaper;
+            let ring: Rgba = primary.into();
+            let current_fit = wallpaper.fit.unwrap_or_default();
+            let mut fits = div().flex().flex_wrap().gap_1();
+            for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
+                fits = fits.child(
+                    settings_theme::button(("wallpaper-fit", index), current_fit == fit, cx)
+                        .track_focus(&ui.fit_focus[index])
+                        .focus(move |style| style.border_color(ring))
+                        .child(self.i18n.text(key))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_set_fit(dark, region, fit, cx)
+                        })),
+                );
+            }
+            let [crop_use, crop_whole, crop_cancel] = &ui.crop_focus;
+            div()
+                .ml(settings_theme::LABEL_INDENT)
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .border_1()
+                .border_color(palette.border)
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(format!(
+                            "{} ({})",
+                            self.i18n.text(area_name),
+                            self.theme_kind_label(dark)
+                        ))
+                        .child(
+                            settings_theme::button("wallpaper-range", false, cx)
+                                .child(self.i18n.text("wallpaper_range"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                                    this.wallpaper_choose(dark, region, true, cx)
+                                })),
+                        )
+                        .child(
+                            settings_theme::button("wallpaper-detail-close", false, cx)
+                                .child(self.i18n.text("wallpaper_detail_close"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.themes.wallpaper.detail = false;
+                                    this.themes.wallpaper.crop.close();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children(ui.crop.render(
+                    |this: &mut Self| &mut this.themes.wallpaper.crop,
+                    |this, cx| this.wallpaper_use_range(cx),
+                    &self.i18n,
+                    &palette,
+                    ring,
+                    [crop_use, crop_whole, crop_cancel],
+                    cx,
+                ))
+                .child(div().child(self.i18n.text("channel_look_fit")))
+                .child(fits)
         });
         div()
             .flex()
@@ -1041,6 +1221,7 @@ impl SettingsWindow {
             .child(preview)
             .child(controls)
             .children(sliders)
+            .children(detail)
             .when_some(self.themes.wallpaper.status.clone(), |d, (text, failed)| {
                 d.child(
                     div()
@@ -1063,8 +1244,8 @@ mod tests {
 
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        AttachmentSource, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion, channel_look,
-        check_image, export_file_name, theme_file,
+        AttachmentSource, PathBuf, SettingsWindow, ThemeFile, WallpaperFit, WallpaperRegion,
+        channel_look, check_image, export_file_name, theme_file,
     };
     use crate::{secrets, settings_file::TestFile, settings_with_channels};
     use gpui::{Entity, VisualTestContext, WindowAppearance};
@@ -1423,6 +1604,64 @@ mod tests {
             assert!(
                 wallpaper.path.is_none() && wallpaper.opacity.is_none() && wallpaper.blur.is_none()
             );
+        });
+    }
+
+    #[gpui::test]
+    fn the_details_set_the_fit_and_a_chosen_range_lands_on_the_area_it_was_opened_for(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        crate::settings_file::use_theme_root(root.path());
+        let (form, cx) = open(&settings, cx);
+        let source = root.path().join("original.png");
+        std::fs::write(&source, png()).unwrap();
+
+        // The fit of one area; the default is stored as unset.
+        form.update(cx, |form, cx| {
+            form.wallpaper_set_fit(true, WallpaperRegion::MemberList, WallpaperFit::Contain, cx)
+        });
+        let fit = |form: &Entity<SettingsWindow>, cx: &mut VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                form.settings
+                    .values
+                    .appearance
+                    .dark
+                    .wallpapers
+                    .member_list
+                    .fit
+            })
+        };
+        assert_eq!(fit(&form, cx), Some(WallpaperFit::Contain));
+        form.update(cx, |form, cx| {
+            form.wallpaper_set_fit(true, WallpaperRegion::MemberList, WallpaperFit::Cover, cx)
+        });
+        assert_eq!(fit(&form, cx), None);
+
+        // The range editor opens on the image, and "use" sets the kept cut
+        // as the wallpaper of the area it was opened for, even after another
+        // area was selected meanwhile.
+        form.update(cx, |form, cx| {
+            form.themes.wallpaper.crop.directory = Some(root.path().join("wallpapers"));
+            form.wallpaper_offer_range(true, WallpaperRegion::ChannelTree, vec![source], cx)
+        });
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            assert!(form.themes.wallpaper.crop.is_open());
+            // Nothing is set before "use".
+            let wallpapers = &form.settings.values.appearance.dark.wallpapers;
+            assert!(wallpapers.channel_tree.path.is_none());
+        });
+        form.update(cx, |form, cx| form.wallpaper_use_range(cx));
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            let wallpapers = &form.settings.values.appearance.dark.wallpapers;
+            let kept = PathBuf::from(wallpapers.channel_tree.path.clone().unwrap());
+            assert!(kept.starts_with(root.path().join("wallpapers")) && kept.is_file());
+            assert!(wallpapers.member_list.path.is_none());
+            assert!(!form.themes.wallpaper.crop.is_open());
         });
     }
 

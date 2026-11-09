@@ -103,7 +103,7 @@ pub(crate) fn background_opacity_of(look: &ChannelLook) -> u8 {
 }
 
 /// The wallpaper and the pane background over it for one area, from its
-/// standard wallpaper `standard`: its picture, blur, the default fit, and its
+/// standard wallpaper `standard`: its picture, blur, fit, and its
 /// share for the background color. Just the pane color without a picture.
 pub(crate) fn region_wallpaper(
     standard: &RegionWallpaper,
@@ -115,7 +115,7 @@ pub(crate) fn region_wallpaper(
     let request = WallpaperRequest {
         path: path.clone(),
         blur: standard.blur_tenths(),
-        fit: WallpaperFit::default(),
+        fit: standard.fit.unwrap_or_default(),
     };
     (
         Some(request),
@@ -583,6 +583,7 @@ mod tests {
             path: path.map(Into::into),
             opacity,
             blur: None,
+            fit: None,
         }
     }
 
@@ -877,6 +878,29 @@ mod tests {
         assert_eq!((opaque.picture, opaque.color.a), (1., 0.8));
         // A hidden picture draws nothing.
         assert_eq!(Layers::mixed(rgb(0x102030), 100).picture, 0.);
+    }
+
+    #[test]
+    fn a_standard_wallpaper_carries_its_fit_and_a_channel_may_override_it() {
+        let contained = RegionWallpaper {
+            fit: Some(WallpaperFit::Contain),
+            ..standard(Some("/pic.png"), None)
+        };
+        let base = theme(false);
+        let (request, _) = region_wallpaper(&contained, base.panes.channel_tree);
+        assert_eq!(request.unwrap().fit, WallpaperFit::Contain);
+        assert_eq!(
+            resolve(None, &contained, base).wallpaper.unwrap().fit,
+            WallpaperFit::Contain
+        );
+        let own = ChannelLook {
+            wallpaper_fit: Some(WallpaperFit::Center),
+            ..ChannelLook::default()
+        };
+        assert_eq!(
+            resolve(Some(&own), &contained, base).wallpaper.unwrap().fit,
+            WallpaperFit::Center
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ fn sample() -> Appearance {
         path: Some("/home/me/secret-name/tree.png".into()),
         opacity: Some(55),
         blur: Some(12),
+        fit: Some(crate::WallpaperFit::Contain),
     };
     appearance.channel_looks.push(ChannelLook {
         server: "libera".into(),
@@ -238,6 +239,7 @@ fn bad_files_are_refused_without_touching_the_appearance() {
         data: text,
         opacity: None,
         blur: None,
+        fit: None,
     });
     let mut appearance = Appearance::default();
     assert!(theme.apply(&mut appearance, dir.path(), &check).is_err());
@@ -402,6 +404,7 @@ fn hostile_settings_values_are_cleaned_on_load() {
         path: Some("x".repeat(5000)),
         opacity: Some(250),
         blur: Some(250),
+        fit: None,
     };
     appearance.origin.name = Some("\u{202E}  ".into());
     appearance.origin.fingerprint = Some("abc".into());

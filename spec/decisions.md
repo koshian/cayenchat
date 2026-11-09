@@ -3982,8 +3982,17 @@ the start of the session.
   area (border and fill) apart from the selected area's ring. The
   miniature shows the standard values only, never a channel's own. The
   selected area's strength (100 − the stored opacity) and blur are sliders;
-  the former ±5 % buttons are gone. Not done: fit is not previewed (the
-  default), no range editor for standard wallpapers.
+  the former ±5 % buttons are gone.
+  **Details (#989).** Each area has a "Details…" button that opens a panel for
+  the selected area: the same range editor as the channel settings
+  (`wallpaper_crop::CropState`, shared by both screens; "Choose a range…"
+  cuts the range out and keeps it as `wallpapers/wallpaper-<hash>.png`, set on
+  the area it was opened for) and the fit (`RegionWallpaper.fit`, also in
+  `.cayentheme`; unset is cover; a channel's own fit still wins). The
+  miniature does not preview the fit. The strength and blur sliders and
+  their labels (`wallpaper_strength`, `wallpaper_blur`) are the same keys on
+  both screens; the channel's strength slider shows 100 − its background
+  opacity.
 - **The channel settings show the same miniature for the channel log
   (#989).** `channel_settings_dialog/wallpaper_preview.rs`: the picture the
   channel shows (its own, the standard one or none, resolved by
@@ -3992,7 +4001,8 @@ the start of the session.
   (marked while dragging), "Choose image…" button and "No wallpaper" label.
   Its own `channel_look::Wallpaper` slot loads the picture like the chat
   window's. A drop or choice ends in `offer_wallpaper` as before (the range
-  editor).
+  editor). The old path field, Browse button and drop hint are gone; the
+  path is kept as state only.
 - **The chat window keeps `saved.appearance` current.** An appearance saved
   by the settings window is applied to the chat window (`apply_settings_change`)
   and now also copied into `ChatWindow::saved`. The channel settings window

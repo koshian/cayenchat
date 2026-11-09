@@ -468,11 +468,10 @@ fn the_window_tells_inheriting_no_wallpaper_and_its_own_apart(cx: &mut TestAppCo
 #[gpui::test]
 fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_app, view, _file, cx) = open_window_for_b(cx);
-    // Auto-join, decode, encode, four character references, the five log
-    // look fields with the wallpaper's Browse button, the two sliders, four
-    // fit buttons and reset, with the wallpaper's three choices: twenty-three
-    // stops. Twenty-three Tabs make a full circle.
-    for _ in 0..23 {
+    // Auto-join, decode, encode, four character references, the four log
+    // look fields, the wallpaper's three choices, the two sliders, four fit
+    // buttons and reset: twenty-one stops. Twenty-one Tabs make a full circle.
+    for _ in 0..21 {
         tab(cx);
     }
     press(cx, "space");

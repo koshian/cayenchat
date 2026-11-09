@@ -14,7 +14,7 @@ mod wallpaper_preview;
 
 use std::time::Duration;
 
-use wallpaper_crop::CropState;
+use crate::wallpaper_crop::CropState;
 
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
@@ -426,7 +426,6 @@ struct Controls {
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
     wallpaper_choice: [FocusHandle; 3],
-    browse: FocusHandle,
     /// The range editor's buttons, reachable while it is open.
     crop_use: FocusHandle,
     crop_whole: FocusHandle,
@@ -446,7 +445,6 @@ impl Controls {
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
             wallpaper_choice: std::array::from_fn(|_| handle()),
-            browse: handle(),
             crop_use: handle(),
             crop_whole: handle(),
             crop_cancel: handle(),
@@ -484,8 +482,6 @@ impl Controls {
                 .iter()
                 .map(|handle| (handle.clone(), Some(5))),
         );
-        order.push(field(fields[4]));
-        order.push((self.browse.clone(), Some(5)));
         if crop_open {
             order.extend(
                 [&self.crop_use, &self.crop_whole, &self.crop_cancel]
@@ -1099,11 +1095,6 @@ impl Render for ChannelSettingsView {
         let row = |key: &str, input: &Entity<TextInput>| {
             settings_field(&self.i18n.text(key), input.clone())
         };
-        let browse = settings_theme::button("channel-look-browse", false, cx)
-            .track_focus(&self.controls.browse)
-            .focus(move |style| style.border_color(ring))
-            .child(self.i18n.text("channel_look_browse"))
-            .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
         let mut wallpaper_choices = div().flex().flex_wrap().gap_1();
         let shown = match self.look.wallpaper_choice {
             WallpaperChoice::Inherit if !self.look.wallpaper.read(cx).text().trim().is_empty() => {
@@ -1142,7 +1133,7 @@ impl Render for ChannelSettingsView {
         let (shown_blur, shown_opacity) = self.shown_strengths(cx);
         let blur = Self::field(
             self.i18n.format(
-                "channel_look_blur",
+                "wallpaper_blur",
                 &[("value", &format!("{}.{}", shown_blur / 10, shown_blur % 10))],
             ),
             &palette,
@@ -1157,29 +1148,24 @@ impl Render for ChannelSettingsView {
             cx,
             |this, value, _, cx| this.set_blur_value(value, cx),
         ));
+        // The same "strength" as the Appearance tab: the share of the picture,
+        // the rest of the background color's opacity.
+        let strength = 100 - shown_opacity.min(100);
         let opacity = Self::field(
-            self.i18n.format(
-                "channel_look_opacity",
-                &[("value", &shown_opacity.to_string())],
-            ),
+            self.i18n
+                .format("wallpaper_strength", &[("value", &strength.to_string())]),
             &palette,
         )
         .child(slider::slider(
             "channel-look-opacity",
-            u32::from(shown_opacity),
+            u32::from(strength),
             100,
             &self.look.opacity_track,
             &self.controls.opacity,
             colors,
             cx,
-            |this, value, _, cx| this.set_opacity(value, cx),
-        ))
-        .child(
-            div()
-                .text_sm()
-                .text_color(palette.text_secondary)
-                .child(self.i18n.text("channel_look_opacity_hint")),
-        );
+            |this, value, _, cx| this.set_opacity(100 - value.min(100), cx),
+        ));
         let look = div()
             .id("channel-look")
             .debug_selector(|| "channel-look".into())
@@ -1209,26 +1195,7 @@ impl Render for ChannelSettingsView {
             )
             .child(wallpaper_choices)
             .child(preview)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(row("channel_look_wallpaper", &self.look.wallpaper)),
-                    )
-                    .child(browse),
-            )
             .children(self.render_crop(&palette, ring, cx))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(palette.text_secondary)
-                    .child(self.i18n.text("channel_look_drop_hint")),
-            )
             .child(blur)
             .child(opacity)
             .child(fit);
