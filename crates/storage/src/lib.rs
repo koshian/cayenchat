@@ -1664,6 +1664,49 @@ impl ServerProfile {
         }
     }
 
+    /// Whether `host` names another server than this profile does. Spaces
+    /// around it and letter case do not make it another one.
+    pub fn host_differs(&self, host: &str) -> bool {
+        self.host.trim().to_lowercase() != host.trim().to_lowercase()
+    }
+
+    /// The store entries that are sent to the server as they are, and so
+    /// belong to its host: the server and SASL passwords and the channel
+    /// keys (the SASL signing key is not one: only signatures leave).
+    /// Every entry that may exist, so a deletion also covers a note that
+    /// is out of date.
+    pub fn host_bound_secret_keys(&self) -> Vec<SecretKey> {
+        let mut keys = vec![self.server_password_key(), self.sasl_password_key()];
+        keys.extend(self.channel_key_secret_keys());
+        if self.keyed_channels.is_none() {
+            // The first scan skips disabled channels, but a key may still
+            // be stored for one.
+            keys.extend(
+                self.auto_join_entries()
+                    .into_iter()
+                    .filter(|entry| !entry.enabled)
+                    .map(|entry| SecretKey::channel_key(&self.id, &entry.name)),
+            );
+        }
+        keys
+    }
+
+    /// Whether the notes say that such an entry is saved. Not true for a
+    /// profile whose first channel key scan is still pending: the notes do
+    /// not tell yet.
+    pub fn has_host_bound_secrets(&self) -> bool {
+        self.server_password_saved()
+            || self.sasl_password_saved()
+            || self.keyed_channels.as_ref().is_some_and(|k| !k.is_empty())
+    }
+
+    /// Notes that the entries of [`Self::host_bound_secret_keys`] are gone.
+    pub fn forget_host_bound_secrets(&mut self) {
+        self.set_server_password_saved(false);
+        self.set_sasl_password_saved(false);
+        self.keyed_channels = Some(Vec::new());
+    }
+
     /// Drops notes a settings file should not hold: an unusable name, a
     /// repeated name or more than the limit.
     fn clean_keyed_channels(&mut self) {
@@ -2583,6 +2626,31 @@ mod tests {
         profile.set_auto_join_entries(&entries);
         assert_eq!(profile.channels, "#c,-#xyz,#a");
         assert_eq!(profile.channels(), ["#c", "#a"]);
+    }
+
+    #[test]
+    fn a_host_change_ignores_spaces_and_case_and_forgets_only_what_is_sent_as_is() {
+        let mut profile = ServerProfile {
+            host: "Irc.Example.org".into(),
+            server_saved: true,
+            sasl_saved: true,
+            sasl_key_saved: true,
+            ..Default::default()
+        };
+        profile.note_channel_key("#a", true);
+        assert!(!profile.host_differs("  irc.example.ORG "));
+        assert!(profile.host_differs("irc.other.org"));
+        let keys = profile.host_bound_secret_keys();
+        assert!(keys.contains(&profile.server_password_key()));
+        assert!(keys.contains(&profile.sasl_password_key()));
+        assert!(keys.contains(&SecretKey::channel_key(&profile.id, "#a")));
+        assert!(!keys.contains(&profile.sasl_key_key()));
+        assert!(profile.has_host_bound_secrets());
+        profile.forget_host_bound_secrets();
+        assert!(!profile.has_host_bound_secrets());
+        assert!(profile.sasl_key_saved);
+        assert!(!profile.channel_key_scan_pending());
+        assert_eq!(profile.host_bound_secret_keys().len(), 2);
     }
 
     #[test]
