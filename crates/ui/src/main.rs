@@ -360,7 +360,7 @@ fn saved_connection_secrets(
 /// its saved passwords, and the saved keys of its auto-join channels.
 struct StoredConnection {
     secrets: Result<(Option<Secret>, Option<Secret>), CredentialError>,
-    keys: std::collections::BTreeMap<String, String>,
+    keys: channel_keys::StoredKeys,
     /// The profile the secrets were read for. What was read fits the
     /// mechanism, the saved marks and the channels of that profile only, so
     /// a profile changed while the read was queued needs a new read (the
@@ -633,7 +633,7 @@ fn saved_connection_config_read(
         false,
     );
     connect_auth::while_incomplete(&mut config, |config| {
-        channel_keys::use_keys(config, stored.keys);
+        channel_keys::use_keys(config, stored.keys.keys);
         config.validate()
     })?;
     Ok((config, missing, readable))
@@ -2424,7 +2424,7 @@ impl ChatWindow {
     /// Makes the networks follow the saved server profiles: new servers
     /// appear disconnected, removed ones are disconnected and dropped, and a
     /// changed host renames the server.
-    fn apply_servers(&mut self, settings: Settings, cx: &mut Context<Self>) {
+    fn apply_servers(&mut self, mut settings: Settings, cx: &mut Context<Self>) {
         let mut networks = Vec::new();
         let mut realname_errors = Vec::new();
         let mut key_refreshes = Vec::new();
@@ -2579,8 +2579,10 @@ impl ChatWindow {
         // for the cache is shared by URL), and all off cancels everything.
         self.avatars
             .set_enabled(settings.servers.iter().any(|profile| profile.user_avatars));
-        // `saved` is replaced by what was written: no correction is pending.
-        self.pending_notes.clear();
+        // `saved` is replaced by what was written. A correction not written
+        // yet is newer than that and stays pending (a save clears it through
+        // `notes_written`), so a reload cannot drop it.
+        self.overlay_pending_notes(&mut settings);
         self.saved = settings;
         self.refresh_whois_avatars(cx);
         cx.notify();
@@ -5250,6 +5252,7 @@ impl ChatWindow {
     /// be operated.
     fn dialog_open(&self) -> bool {
         self.quit_prompt_open
+            || self.quit_dialog.is_waiting()
             || self.part_prompt.is_some()
             || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
@@ -10737,9 +10740,25 @@ fn settings_block_quit(cx: &mut App) -> bool {
 /// Quits unless the settings save check blocks it. The system's shutdown and
 /// signals call `cx.quit()` themselves and never reach this.
 pub(crate) fn quit_app(cx: &mut App) {
-    if !settings_block_quit(cx) {
-        cx.quit();
+    if settings_block_quit(cx) {
+        return;
     }
+    // The chat window decides (store jobs and notes still out, #982) and
+    // says what it waits for. Deferred: this may run inside its own update.
+    cx.defer(|cx| {
+        let held = cx
+            .windows()
+            .into_iter()
+            .find_map(|w| w.downcast::<ChatWindow>())
+            .is_some_and(|chat| {
+                chat.update(cx, |this, window, cx| this.quit_checked(window, cx))
+                    .is_ok()
+            });
+        // With no chat window nothing could say what is awaited.
+        if !held {
+            cx.quit();
+        }
+    });
 }
 
 /// The chat window cannot be updated while it is handling an event, which is

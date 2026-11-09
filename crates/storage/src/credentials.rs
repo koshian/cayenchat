@@ -18,7 +18,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -197,6 +200,8 @@ pub trait CredentialBackend: Send + Sync {
 #[derive(Clone)]
 pub struct CredentialStore {
     backend: Arc<dyn CredentialBackend>,
+    /// Writes and deletes through this store (and its clones) that failed.
+    write_failures: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for CredentialStore {
@@ -219,7 +224,24 @@ impl CredentialStore {
     }
 
     pub fn with_backend(backend: Arc<dyn CredentialBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            write_failures: Arc::default(),
+        }
+    }
+
+    /// How many writes and deletes through this store, or a clone of it,
+    /// have failed so far. A caller that cannot see each result compares the
+    /// count before and after (the quit that waits for them, #982).
+    pub fn write_failures(&self) -> usize {
+        self.write_failures.load(Ordering::SeqCst)
+    }
+
+    fn counted(&self, result: Result<(), CredentialError>) -> Result<(), CredentialError> {
+        if result.is_err() {
+            self.write_failures.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
 
     pub fn kind(&self) -> CredentialBackendKind {
@@ -242,15 +264,15 @@ impl CredentialStore {
 
     /// Stores `value`, or deletes the secret when `value` is empty.
     pub fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
-        if value.is_empty() {
+        self.counted(if value.is_empty() {
             self.backend.delete(key)
         } else {
             self.backend.set(key, value)
-        }
+        })
     }
 
     pub fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
-        self.backend.delete(key)
+        self.counted(self.backend.delete(key))
     }
 }
 

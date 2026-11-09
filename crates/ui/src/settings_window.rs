@@ -701,7 +701,7 @@ impl SettingsForm {
             false,
         );
         crate::connect_auth::while_incomplete(&mut config, |config| {
-            crate::channel_keys::use_keys(config, stored.keys);
+            crate::channel_keys::use_keys(config, stored.keys.keys);
             config.validate()
         })?;
         // What the read found corrects the note of stored passwords; the
@@ -1128,6 +1128,9 @@ fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) 
             server.sasl_saved = theirs.sasl_saved;
             server.sasl_key_saved = theirs.sasl_key_saved;
             server.remember_passwords = theirs.remember_passwords;
+            // The channels whose keys are stored: a join that saved one wrote
+            // the note, and an older copy would hide the key from later reads.
+            server.keyed_channels.clone_from(&theirs.keyed_channels);
         }
     }
 }
@@ -7276,6 +7279,19 @@ mod escape_tests {
             .read_with(cx, |owner, _| owner.pending_notes.is_empty())
             .unwrap();
         assert!(pending, "nothing is left to write");
+    }
+
+    #[test]
+    fn password_notes_followed_include_the_keyed_channels() {
+        let mut file = crate::settings_with_channels("#a");
+        file.selected_profile_mut().unwrap().keyed_channels = Some(vec!["#a".into()]);
+        let mut form = file.clone();
+        form.selected_profile_mut().unwrap().keyed_channels = Some(Vec::new());
+        super::follow_password_notes(&mut form.servers, &file.servers);
+        assert_eq!(
+            form.selected_profile().unwrap().keyed_channels,
+            Some(vec!["#a".to_owned()])
+        );
     }
 
     #[gpui::test]

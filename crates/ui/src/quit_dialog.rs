@@ -8,6 +8,8 @@
 //! so Enter, Space and Escape cancel on every OS. Quitting needs a click, or
 //! Tab to the confirm button and Enter.
 
+use std::time::Duration;
+
 use gpui::{prelude::*, *};
 
 use crate::{ChatWindow, button_order, dialog, theme};
@@ -16,12 +18,30 @@ const QUIT_BOX_MAX_WIDTH: Pixels = px(360.);
 /// Padding and border on both sides of the text inside the box.
 const QUIT_BOX_CHROME: Pixels = px(26.);
 
+/// How long a quit waits for the credential store before it offers to quit
+/// anyway (the wait it used to make silently, #982).
+const SECRETS_PATIENCE: Duration = Duration::from_secs(2);
+
 /// Focus handles of the two buttons, and where the focus was before.
 pub(crate) struct QuitDialog {
     cancel: FocusHandle,
     confirm: FocusHandle,
     previous: Option<FocusHandle>,
     focus_pending: bool,
+    /// An ordinary quit that is held back because the credential store still
+    /// owes a result; the quit goes on by itself when it is in.
+    waiting: Option<SecretsWait>,
+}
+
+struct SecretsWait {
+    /// The store did not answer within `SECRETS_PATIENCE`: the user may now
+    /// choose between waiting on and quitting anyway.
+    slow: bool,
+    /// The store is done but a save or delete failed, or its note could not
+    /// be written: the quit does not go on by itself (#982). The user may
+    /// quit anyway or stay.
+    trouble: bool,
+    task: Task<()>,
 }
 
 impl QuitDialog {
@@ -31,11 +51,260 @@ impl QuitDialog {
             confirm: cx.focus_handle().tab_stop(true),
             previous: None,
             focus_pending: false,
+            waiting: None,
         }
+    }
+
+    /// Whether the choice to quit anyway is on offer.
+    #[cfg(test)]
+    pub(crate) fn offers_force(&self) -> bool {
+        self.waiting.as_ref().is_some_and(|wait| wait.slow)
+    }
+
+    /// Whether the held-back quit stopped on a failed save.
+    #[cfg(test)]
+    pub(crate) fn shows_trouble(&self) -> bool {
+        self.waiting.as_ref().is_some_and(|wait| wait.trouble)
+    }
+
+    pub(crate) fn is_waiting(&self) -> bool {
+        self.waiting.is_some()
     }
 }
 
 impl ChatWindow {
+    /// The decision of an ordinary quit, run by `quit_app` (#982). Nothing
+    /// is decided while the wait dialog is up, so a second quit request
+    /// cannot end a failure the user has not answered. Otherwise: a store job
+    /// still out is waited for; a note not yet written is written again; if
+    /// it still cannot be, the dialog says so; else the app quits.
+    pub(crate) fn quit_checked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_dialog.waiting.is_some() {
+            return;
+        }
+        if crate::secrets::pending(cx) {
+            window.activate_window();
+            // Failures from before this wait were shown where they happened.
+            crate::secrets::acknowledge_failure(cx);
+            self.begin_quit_dialog(window, cx);
+            self.watch_secrets(window, cx);
+            return;
+        }
+        if !self.pending_notes.is_empty() {
+            self.write_pending_notes();
+            if !self.pending_notes.is_empty() {
+                window.activate_window();
+                self.begin_quit_dialog(window, cx);
+                self.show_trouble(cx);
+                return;
+            }
+        }
+        cx.quit();
+    }
+
+    /// Remembers where the focus was, unless a question already has.
+    fn begin_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_dialog.previous.is_none() {
+            self.quit_dialog.previous = window.focused(cx);
+        }
+        self.quit_dialog.focus_pending = true;
+        cx.notify();
+    }
+
+    /// The held-back quit stops: the user chooses to quit anyway or stay.
+    fn show_trouble(&mut self, cx: &mut Context<Self>) {
+        let wait = self.quit_dialog.waiting.get_or_insert_with(|| SecretsWait {
+            slow: false,
+            trouble: false,
+            task: Task::ready(()),
+        });
+        wait.slow = false;
+        wait.trouble = true;
+        self.quit_dialog.focus_pending = true;
+        cx.notify();
+    }
+
+    /// Waits for the store with no polling: the release of the last job wakes
+    /// the task. After `SECRETS_PATIENCE` the dialog offers the choice.
+    fn watch_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let Ok(idle) = this.update(cx, |_, cx| crate::secrets::idle(cx)) else {
+                return;
+            };
+            let idle = Box::pin(idle);
+            let timer = cx.background_executor().timer(SECRETS_PATIENCE);
+            match futures_util::future::select(idle, Box::pin(timer)).await {
+                futures_util::future::Either::Left(_) => {}
+                futures_util::future::Either::Right((_, still)) => {
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(wait) = this.quit_dialog.waiting.as_mut() {
+                            wait.slow = true;
+                        }
+                        cx.notify();
+                    });
+                    still.await;
+                }
+            }
+            let _ = this.update_in(cx, |this, window, cx| this.secrets_settled(window, cx));
+        });
+        self.quit_dialog.waiting = Some(SecretsWait {
+            slow: false,
+            trouble: false,
+            task,
+        });
+    }
+
+    /// The store is idle. A failed save or delete stops the quit for the
+    /// user to answer; otherwise the quit is decided again, which also writes
+    /// the notes of what the store saved.
+    fn secrets_settled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::secrets::failed(cx) {
+            self.show_trouble(cx);
+            return;
+        }
+        if let Some(wait) = self.quit_dialog.waiting.take() {
+            wait.task.detach();
+        }
+        if let Some(handle) = self.quit_dialog.previous.take() {
+            window.focus(&handle);
+        }
+        cx.notify();
+        crate::quit_app(cx);
+    }
+
+    /// Gives up the quit; the saves go on in the background.
+    fn cancel_secrets_wait(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.quit_dialog.waiting = None;
+        // Shown to the user now; a later quit is not held for it again.
+        crate::secrets::acknowledge_failure(cx);
+        if let Some(handle) = self.quit_dialog.previous.take() {
+            window.focus(&handle);
+        }
+        cx.notify();
+    }
+
+    /// "Keep waiting": the question goes away and comes back after another
+    /// `SECRETS_PATIENCE` if the store is still busy.
+    fn keep_waiting_for_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.quit_dialog.focus_pending = true;
+        self.watch_secrets(window, cx);
+        cx.notify();
+    }
+
+    /// "Quit anyway": the explicit forced quit. A save or delete still
+    /// waiting for the store may be lost or left undone.
+    fn quit_without_secrets(&mut self, cx: &mut Context<Self>) {
+        crate::secrets::abandon(cx);
+        cx.quit();
+    }
+
+    fn render_secrets_wait(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let slow = self.quit_dialog.waiting.as_ref().is_some_and(|w| w.slow);
+        let trouble = self.quit_dialog.waiting.as_ref().is_some_and(|w| w.trouble);
+        if self.quit_dialog.focus_pending {
+            self.quit_dialog.focus_pending = false;
+            window.focus(&self.quit_dialog.cancel);
+        }
+        let theme = theme::current(cx);
+        let box_width = dialog::box_width(QUIT_BOX_MAX_WIDTH, window);
+        let buttons = if trouble {
+            button_order::row(div().flex().gap_2())
+                .child(dialog::confirm_button(
+                    "quit-wait-force",
+                    self.i18n.text("quit_wait_force"),
+                    &self.quit_dialog.confirm,
+                    &theme,
+                    |this, _, cx| this.quit_without_secrets(cx),
+                    cx,
+                ))
+                .child(dialog::cancel_button(
+                    "quit-wait-cancel",
+                    self.i18n.text("cancel"),
+                    &self.quit_dialog.cancel,
+                    &theme,
+                    |this, window, cx| this.cancel_secrets_wait(window, cx),
+                    cx,
+                ))
+        } else if slow {
+            button_order::row(div().flex().gap_2())
+                .child(dialog::confirm_button(
+                    "quit-wait-force",
+                    self.i18n.text("quit_wait_force"),
+                    &self.quit_dialog.confirm,
+                    &theme,
+                    |this, _, cx| this.quit_without_secrets(cx),
+                    cx,
+                ))
+                .child(dialog::cancel_button(
+                    "quit-wait-keep",
+                    self.i18n.text("quit_wait_keep"),
+                    &self.quit_dialog.cancel,
+                    &theme,
+                    |this, window, cx| this.keep_waiting_for_secrets(window, cx),
+                    cx,
+                ))
+        } else {
+            button_order::row(div().flex().gap_2()).child(dialog::cancel_button(
+                "quit-wait-cancel",
+                self.i18n.text("cancel"),
+                &self.quit_dialog.cancel,
+                &theme,
+                |this, window, cx| this.cancel_secrets_wait(window, cx),
+                cx,
+            ))
+        };
+        dialog::overlay("quit-wait-dialog", &theme)
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" if slow && !trouble => this.keep_waiting_for_secrets(window, cx),
+                    "escape" => this.cancel_secrets_wait(window, cx),
+                    "tab" if slow || trouble => {
+                        let (cancel, confirm) =
+                            (&this.quit_dialog.cancel, &this.quit_dialog.confirm);
+                        window.focus(if cancel.is_focused(window) {
+                            confirm
+                        } else {
+                            cancel
+                        });
+                    }
+                    _ => {}
+                }
+                cx.stop_propagation();
+            }))
+            .child(
+                dialog::dialog_box(&theme)
+                    .debug_selector(|| "quit-wait-box".into())
+                    .max_w(box_width)
+                    .h_auto()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(self.i18n.text(if trouble {
+                                "quit_wait_failed_title"
+                            } else {
+                                "quit_wait_title"
+                            })),
+                    )
+                    // The width is given: a box sized by its content measures
+                    // wrapped text at the one-line width and the lines would
+                    // overflow it.
+                    .child(
+                        div()
+                            .debug_selector(|| "quit-wait-detail".into())
+                            .w(box_width - QUIT_BOX_CHROME)
+                            .child(self.i18n.text(if trouble {
+                                "quit_wait_failed"
+                            } else if slow {
+                                "quit_wait_slow"
+                            } else {
+                                "quit_wait_detail"
+                            })),
+                    )
+                    .child(buttons),
+            )
+            .into_any_element()
+    }
+
     pub(crate) fn open_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.quit_prompt_open = true;
         self.quit_dialog.previous = window.focused(cx);
@@ -55,10 +324,10 @@ impl ChatWindow {
             return;
         }
         self.quit_prompt_open = false;
-        let previous = self.quit_dialog.previous.take();
         if quit {
+            // The focus to restore stays for the wait the quit may start.
             crate::quit_app(cx);
-        } else if let Some(handle) = previous {
+        } else if let Some(handle) = self.quit_dialog.previous.take() {
             window.focus(&handle);
         }
         cx.notify();
@@ -69,6 +338,9 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if self.quit_dialog.is_waiting() {
+            return Some(self.render_secrets_wait(window, cx));
+        }
         if !self.quit_prompt_open {
             return None;
         }

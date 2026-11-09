@@ -96,7 +96,13 @@ fn button(
                 cx.stop_propagation();
             }
         }))
-        .on_click(cx.listener(move |this, _, window, cx| on_press(this, window, cx)))
+        // Enter and Space act on the key press above; the click GPUI also
+        // sends on their release would land on whatever took the focus.
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            if !event.is_keyboard() {
+                on_press(this, window, cx);
+            }
+        }))
 }
 
 /// The filled button that accepts the question.

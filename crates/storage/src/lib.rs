@@ -1434,6 +1434,13 @@ pub struct ServerProfile {
     /// what it finds. Added without a version change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyed_channels: Option<Vec<String>>,
+    /// Keys saved while the first scan (`keyed_channels` `None`) was still
+    /// pending, for channels the scan does not read (not an enabled
+    /// auto-join channel). The scan reads them too and then folds them into
+    /// `keyed_channels` (#997). Always empty once the scan is done. Added
+    /// without a version change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub early_keyed_channels: Vec<String>,
 }
 
 /// An empty profile, for forms shown before any server exists.
@@ -1477,6 +1484,7 @@ impl ServerProfile {
             peer_avatar_url: String::new(),
             channel_charsets: Vec::new(),
             keyed_channels: Some(Vec::new()),
+            early_keyed_channels: Vec::new(),
         }
     }
 
@@ -1606,10 +1614,18 @@ impl ServerProfile {
     /// connecting: the enabled auto-join channels noted as keyed, or all of
     /// them once for a file from before the note existed.
     pub fn channels_to_read_keys_for(&self) -> Vec<String> {
-        self.channels()
+        let mut read: Vec<String> = self
+            .channels()
             .into_iter()
             .filter(|channel| self.channel_key_noted(channel))
-            .collect()
+            .collect();
+        // Keys saved during the pending scan are read by the scan too (#997).
+        for channel in &self.early_keyed_channels {
+            if !read.iter().any(|name| name.eq_ignore_ascii_case(channel)) {
+                read.push(channel.clone());
+            }
+        }
+        read
     }
 
     /// The store entries that may hold this profile's channel keys: the noted
@@ -1618,7 +1634,7 @@ impl ServerProfile {
     pub fn channel_key_secret_keys(&self) -> Vec<SecretKey> {
         let channels = match &self.keyed_channels {
             Some(noted) => noted.clone(),
-            None => self.channels(),
+            None => self.channels_to_read_keys_for(),
         };
         channels
             .iter()
@@ -1641,12 +1657,34 @@ impl ServerProfile {
     }
 
     /// Notes `channel` as keyed or not. False when nothing changed, when
-    /// there is no room for one more, or while the first scan is pending: the
-    /// scan reads this channel too, and a note made before it would hide the
-    /// other saved keys from it.
+    /// there is no room for one more. While the first scan is pending a note
+    /// would hide the other saved keys from it, so a channel the scan does
+    /// not read is kept apart in `early_keyed_channels` for the scan to read
+    /// (#997).
     pub fn note_channel_key(&mut self, channel: &str, saved: bool) -> bool {
         let Some(noted) = &mut self.keyed_channels else {
-            return false;
+            if self
+                .channels()
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(channel))
+            {
+                return false;
+            }
+            let early = &mut self.early_keyed_channels;
+            let at = early
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(channel));
+            return match (at, saved) {
+                (Some(at), false) => {
+                    early.remove(at);
+                    true
+                }
+                (None, true) if early.len() < MAX_KEYED_CHANNELS => {
+                    early.push(channel.to_owned());
+                    true
+                }
+                _ => false,
+            };
         };
         let at = noted
             .iter()
@@ -1698,6 +1736,7 @@ impl ServerProfile {
         self.server_password_saved()
             || self.sasl_password_saved()
             || self.keyed_channels.as_ref().is_some_and(|k| !k.is_empty())
+            || !self.early_keyed_channels.is_empty()
     }
 
     /// Notes that the entries of [`Self::host_bound_secret_keys`] are gone.
@@ -1705,14 +1744,21 @@ impl ServerProfile {
         self.set_server_password_saved(false);
         self.set_sasl_password_saved(false);
         self.keyed_channels = Some(Vec::new());
+        self.early_keyed_channels.clear();
     }
 
     /// Drops notes a settings file should not hold: an unusable name, a
     /// repeated name or more than the limit.
     fn clean_keyed_channels(&mut self) {
+        let mut seen = HashSet::new();
+        self.early_keyed_channels
+            .retain(|name| valid_note_name(name) && seen.insert(name.to_ascii_lowercase()));
+        self.early_keyed_channels.truncate(MAX_KEYED_CHANNELS);
         let Some(noted) = &mut self.keyed_channels else {
             return;
         };
+        // Once the scan is done there is nothing left to read early.
+        self.early_keyed_channels.clear();
         let mut seen = HashSet::new();
         noted.retain(|name| valid_note_name(name) && seen.insert(name.to_ascii_lowercase()));
         noted.truncate(MAX_KEYED_CHANNELS);
@@ -2678,6 +2724,35 @@ mod tests {
         );
         assert!(profile.channel_key_scan_pending());
         assert_eq!(profile.channels_to_read_keys_for(), ["#a", "#b"]);
+    }
+
+    #[test]
+    fn key_saved_during_pending_scan_is_read_by_it() {
+        let mut profile = ServerProfile {
+            channels: "#a".into(),
+            keyed_channels: None,
+            ..Default::default()
+        };
+        // A channel the scan reads anyway needs no early note.
+        assert!(!profile.note_channel_key("#A", true));
+        // One outside the auto-join list is kept for the scan (#997).
+        assert!(profile.note_channel_key("#Other", true));
+        assert!(!profile.note_channel_key("#other", true), "no change");
+        assert!(profile.channel_key_scan_pending());
+        assert_eq!(profile.channels_to_read_keys_for(), ["#a", "#Other"]);
+        assert!(
+            profile
+                .channel_key_secret_keys()
+                .contains(&SecretKey::channel_key(&profile.id, "#Other"))
+        );
+        assert!(profile.has_host_bound_secrets());
+        // A removal before the scan drops it again.
+        assert!(profile.note_channel_key("#OTHER", false));
+        assert_eq!(profile.channels_to_read_keys_for(), ["#a"]);
+        // It survives a round trip and is dropped with the server's secrets.
+        profile.note_channel_key("#Other", true);
+        profile.forget_host_bound_secrets();
+        assert!(profile.early_keyed_channels.is_empty());
     }
 
     #[test]

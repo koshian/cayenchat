@@ -111,6 +111,18 @@ fn a_file_without_notes_is_scanned_once_so_saved_keys_survive() {
     assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
+#[test]
+fn a_key_saved_outside_the_auto_join_list_before_the_scan_is_read_by_it() {
+    let (store, _) = counting_store();
+    let mut settings = settings("#a", None);
+    save_key(&store, &settings, "#other", "secret");
+    // The note made while the first scan was pending (#997).
+    let profile = settings.selected_profile_mut().unwrap();
+    assert!(profile.note_channel_key("#other", true));
+    let config = connect(&settings, &store);
+    assert_eq!(config.channel_keys["#other"], "secret");
+}
+
 struct Opened {
     chat: gpui::Entity<ChatWindow>,
     store: CredentialStore,
@@ -466,6 +478,32 @@ fn corrected_notes_are_written_with_the_next_settings_save(cx: &mut TestAppConte
         chat.notes_written();
         assert_eq!(noted_on_file(chat), Some(vec!["#b".to_owned()]));
         assert!(chat.pending_notes.is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_reload_keeps_the_notes_not_written_yet(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(
+        settings("#a,#b", Some(&["#a", "#b"])),
+        &[("#b", "secret")],
+        cx,
+    );
+    opened.chat.update(cx, |chat, cx| {
+        let config = chat.sessions.get_mut(&NET).unwrap().active_config.as_mut();
+        config
+            .unwrap()
+            .channel_keys
+            .insert("#b".into(), "secret".into());
+        registered(chat, cx);
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, cx| {
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        // The settings window reloads the file, which lacks the correction.
+        let file = settings_file::load().unwrap().unwrap();
+        chat.apply_servers(file, cx);
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        assert!(!chat.pending_notes.is_empty());
     });
 }
 
