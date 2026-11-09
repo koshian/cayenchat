@@ -125,6 +125,39 @@ fn a_reconnect_after_the_settings_changed_does_not_use_the_new_secrets(cx: &mut 
     });
 }
 
+/// The other direction (#976): a session made with ECDSA, a profile changed
+/// to PLAIN with a saved password. The stored password is not put into the
+/// ECDSA configuration, and the reconnect does not start.
+#[gpui::test]
+fn a_reconnect_of_an_ecdsa_session_after_a_change_to_plain_uses_no_stored_secret(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        let mut session_config = config(true);
+        session_config.sasl.as_mut().unwrap().mechanism =
+            cayenchat_irc_core::SaslMechanism::EcdsaNist256pChallenge;
+        chat.sessions.get_mut(&NET).unwrap().active_config = Some(session_config);
+        let profile = &mut chat.saved.servers[0];
+        profile.sasl_mechanism = cayenchat_storage::SaslMechanism::Plain;
+        profile.set_sasl_password_saved(true);
+        store
+            .set(&profile.sasl_password_key(), &Secret::new("plain-secret"))
+            .unwrap();
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty(), "no dialog either");
+        let session = &chat.sessions[&NET];
+        assert!(
+            session.irc.is_none(),
+            "nothing connects with mixed settings"
+        );
+        assert!(!session.retry_pending);
+    });
+}
+
 // #723: the typed password goes only to the server saved when it is sent, and
 // nothing is written to the store unless the box was checked.
 #[gpui::test]
