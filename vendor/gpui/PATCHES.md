@@ -305,3 +305,12 @@ mere window manager, so it is not used.) Without a compositor the X server
 composes a window's see-through pixels over black. CayenChat uses it to keep the
 window opaque in that case. To re-apply: add the trait method, the `Window`
 wrapper and the X11 override.
+
+In `src/platform.rs`, `src/window.rs`, `src/platform/linux/x11/window.rs` and
+`src/platform/linux/wayland/window.rs`, `Window::supports_background_blur`
+tells whether `WindowBackgroundAppearance::Blurred` blurs what lies behind the
+window (CayenChat #1018). The new `PlatformWindow::supports_background_blur`
+defaults to `true` (macOS, Windows); X11 answers `false`; Wayland answers
+whether the KDE blur manager global was bound. CayenChat uses it to disable
+its background blur switch. To re-apply: add the trait method, the `Window`
+wrapper and the two Linux overrides.

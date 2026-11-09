@@ -555,6 +555,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_compositing(&self) -> bool {
         true
     }
+    /// Whether `WindowBackgroundAppearance::Blurred` blurs what lies behind
+    /// the window (CayenChat #1018). macOS and Windows always can; X11 has no
+    /// such request, and Wayland needs the KDE blur protocol.
+    fn supports_background_blur(&self) -> bool {
+        true
+    }
     fn set_app_id(&mut self, _app_id: &str) {}
     fn map_window(&mut self) -> anyhow::Result<()> {
         Ok(())
