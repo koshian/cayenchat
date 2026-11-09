@@ -3919,7 +3919,24 @@ the start of the session.
   applied appearance depends on neither the distributed file nor the library:
   deleting a theme changes nothing applied. Applying then removes files there
   that neither the saved nor the new settings use (only names of that form).
-  A wallpaper the user picks by hand stays where it is, as with channels.
+  A wallpaper the user picks or drops (#989) is copied, after
+  `media::wallpaper::validate`, to `wallpapers/wallpaper-<hash>.<ext>` (named
+  by content, never pruned by theme applying, whose names are 32 hex digits),
+  so the original or a Photos file promise may vanish.
+- **Editing the standard wallpapers (#989).** The Appearance tab shows a
+  miniature of the chat window (channel log over combined log on the left,
+  member list over channel tree on the right) for one side at a time, chosen
+  by light/dark buttons. Each of the four areas is its own drop target
+  (`ExternalPaths`, with the file promise kept alive until read) with its own
+  "Choose image…" button; the file dialog and a drop both end in
+  `SettingsWindow::wallpaper_offer`, whose target (side, area) is fixed when
+  it starts. A failure shows its reason and keeps the earlier wallpaper. The
+  selected area's change / clear / strength controls sit below. Each area
+  shows its picture (GPUI `img`, cover) under the pane color at the opacity
+  `channel_look::region_wallpaper` resolves, the chat window's own rule; the
+  miniature shows the standard values only, never a channel's own. Not done:
+  blur and fit are not previewed (defaults), no range editor for standard
+  wallpapers.
 - **Export** writes only the edited light or dark half, under a name asked for
   first (the origin's name is the default) and a file name and place from the
   OS save dialog; it changes no setting, origin or modified state, and fails

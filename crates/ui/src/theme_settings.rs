@@ -8,21 +8,74 @@
 //! current light or dark appearance can be exported.
 
 use std::{
+    hash::{Hash, Hasher},
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use cayenchat_media::wallpaper;
+use cayenchat_model::attachment::AttachmentSource;
 use cayenchat_storage::theme_file::{
     self, LibraryEntry, MAX_THEME_FILE_BYTES, MAX_THEME_WALLPAPER_BYTES, THEME_EXTENSION,
 };
-use cayenchat_storage::{Appearance, ThemeFile, ThemeKind, WallpaperRegion};
+use cayenchat_storage::{Appearance, ThemeFile, ThemeKind, ThemeMode, WallpaperRegion};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsWindow, input::TextInput, settings_theme};
+use crate::{
+    SettingsWindow, channel_look,
+    image_upload::{acceptable_attachment, image_file_filter, read_in_background},
+    input::TextInput,
+    settings_theme,
+};
+
+/// The four areas in the order of the chat window's panes: the label key of
+/// each.
+const AREAS: [(WallpaperRegion, &str); 4] = [
+    (WallpaperRegion::ChannelLog, "channel_log"),
+    (WallpaperRegion::CombinedLog, "combined_log"),
+    (WallpaperRegion::MemberList, "member_list"),
+    (WallpaperRegion::ChannelTree, "channel_tree"),
+];
+
+/// What the wallpaper section edits and how the last image went.
+pub(crate) struct WallpaperUi {
+    /// The side being edited: light or dark.
+    pub(crate) dark: bool,
+    /// The area whose controls are shown.
+    pub(crate) region: WallpaperRegion,
+    /// "Opening the image…", or why it could not be used (failed).
+    pub(crate) status: Option<(String, bool)>,
+    /// Reading and checking the latest image; replacing it drops an older
+    /// one.
+    task: Option<Task<()>>,
+}
+
+impl WallpaperUi {
+    fn select(&mut self, dark: bool, region: WallpaperRegion) {
+        self.dark = dark;
+        self.region = region;
+    }
+}
+
+/// Keeps `bytes` (already checked) as a file named by its content in
+/// `directory` and returns its path, so the wallpaper no longer depends on
+/// the original file or a temporary drop. The prefix keeps theme pruning off
+/// it, and equal images share one file.
+fn keep_image(directory: &Path, bytes: &[u8], extension: &str) -> Result<String, String> {
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let path = directory.join(format!("wallpaper-{:016x}.{extension}", hasher.finish()));
+    if !path.is_file() {
+        std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
 
 /// What the theme section holds besides the form's values.
 pub(crate) struct ThemeUi {
+    pub(crate) wallpaper: WallpaperUi,
     pub(crate) library: Vec<LibraryEntry>,
     /// A file is being read or written; further file actions wait.
     busy: bool,
@@ -39,6 +92,12 @@ struct ExportPrompt {
 impl ThemeUi {
     pub(crate) fn new() -> Self {
         Self {
+            wallpaper: WallpaperUi {
+                dark: false,
+                region: WallpaperRegion::ChannelLog,
+                status: None,
+                task: None,
+            },
             library: crate::settings_file::library_directory()
                 .map(|directory| theme_file::library_list(&directory))
                 .unwrap_or_default(),
@@ -359,68 +418,90 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Asks for an image, checks it, and makes it the standard wallpaper of
-    /// the area.
+    /// Asks for an image for the area of the light or dark theme. The file
+    /// dialog and a drop on the area end in the same `wallpaper_offer`.
     pub(crate) fn wallpaper_choose(
         &mut self,
         dark: bool,
         region: WallpaperRegion,
         cx: &mut Context<Self>,
     ) {
-        if self.themes.busy {
-            return;
-        }
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("wallpaper_choose").into()),
-            filter: None,
+            filter: Some(image_file_filter(&self.i18n)),
         });
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(mut paths))) = chosen.await else {
-                return;
-            };
-            let Some(path) = paths.pop() else {
+            let Ok(Ok(Some(paths))) = chosen.await else {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                this.themes.busy = true;
-                let checking = cx.background_spawn({
-                    let path = path.clone();
-                    async move {
-                        let bytes = read_limited(&path, wallpaper::MAX_FILE_BYTES)?;
-                        check_image(&bytes).map(|_| ())
-                    }
-                });
-                cx.spawn(async move |this, cx| {
-                    let result = checking.await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.themes.busy = false;
-                        let text = path.to_string_lossy().into_owned();
-                        match result {
-                            Ok(()) if text.len() <= cayenchat_storage::MAX_WALLPAPER_PATH_BYTES => {
-                                this.settings
-                                    .values
-                                    .appearance
-                                    .wallpapers_mut(dark)
-                                    .get_mut(region)
-                                    .path = Some(text);
-                                this.themes.message = None;
-                                cx.notify();
-                            }
-                            Ok(()) => {
-                                let message = this.i18n.text("channel_look_wallpaper_long");
-                                this.theme_message(message, cx);
-                            }
-                            Err(error) => this.theme_error(&error, cx),
-                        }
-                    });
-                })
-                .detach();
+                this.wallpaper_offer(dark, region, paths, None, AttachmentSource::Chooser, cx)
             });
         })
         .detach();
+    }
+
+    /// Reads the image named by `paths` (one file; `keep` holds a macOS file
+    /// promise until it is read), checks it, keeps a copy of it in the
+    /// application's own `wallpapers` directory and makes that copy the
+    /// standard wallpaper of `region` in the light or dark theme. The target
+    /// is fixed here, so an answer that comes late never lands on whatever
+    /// is selected by then. A failure shows its reason and leaves the earlier
+    /// wallpaper as it was.
+    pub(crate) fn wallpaper_offer(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        paths: Vec<PathBuf>,
+        keep: Option<Arc<PromisedFiles>>,
+        source: AttachmentSource,
+        cx: &mut Context<Self>,
+    ) {
+        self.themes.wallpaper.select(dark, region);
+        self.themes.wallpaper.status = Some((self.i18n.text("wallpaper_loading"), false));
+        let read = read_in_background(paths, keep, source, cx);
+        let i18n = self.i18n.clone();
+        let directory = crate::settings_file::wallpaper_directory();
+        self.themes.wallpaper.task = Some(cx.spawn(async move |this, cx| {
+            let outcome: Result<String, String> = match read.await {
+                Err(error) => Err(error.text(&i18n)),
+                Ok(attachment) => match acceptable_attachment(attachment, None, &i18n) {
+                    Err(error) => Err(error),
+                    Ok(attachment) => {
+                        cx.background_executor()
+                            .spawn(async move {
+                                let extension = check_image(&attachment.bytes)?;
+                                keep_image(&directory?, &attachment.bytes, extension)
+                            })
+                            .await
+                    }
+                },
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.themes.wallpaper.task = None;
+                this.themes.wallpaper.status = match outcome {
+                    Ok(path) if path.len() <= cayenchat_storage::MAX_WALLPAPER_PATH_BYTES => {
+                        this.settings
+                            .values
+                            .appearance
+                            .wallpapers_mut(dark)
+                            .get_mut(region)
+                            .path = Some(path);
+                        None
+                    }
+                    Ok(_) => Some((this.i18n.text("channel_look_wallpaper_long"), true)),
+                    Err(error) => Some((
+                        this.i18n.format("wallpaper_failed", &[("error", &error)]),
+                        true,
+                    )),
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     pub(crate) fn wallpaper_clear(
@@ -611,10 +692,205 @@ impl SettingsWindow {
         })
     }
 
-    /// The standard wallpapers of the four areas for light and dark.
+    /// The standard wallpapers: a miniature of the four areas laid out as in
+    /// the chat window, each a drop target for one image, for the light or
+    /// the dark theme (one at a time), and the controls of the selected area.
     pub(crate) fn render_wallpaper_settings(&self, cx: &mut Context<Self>) -> Div {
         let palette = settings_theme::palette(cx);
-        let mut section = div()
+        let WallpaperUi {
+            dark,
+            region: selected,
+            ..
+        } = self.themes.wallpaper;
+        let appearance = self.shown_appearance(cx);
+        // The chat window's own resolution (`channel_look::region_wallpaper`)
+        // over the pane colors of the theme being edited.
+        let theme = crate::theme::Theme::new(
+            if dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            WindowAppearance::Light,
+            &appearance,
+        );
+        let area = |region: WallpaperRegion, key: &str, cx: &mut Context<Self>| {
+            let pane = match region {
+                WallpaperRegion::ChannelLog => theme.panes.channel_log,
+                WallpaperRegion::CombinedLog => theme.panes.combined_log,
+                WallpaperRegion::MemberList => theme.panes.member_list,
+                WallpaperRegion::ChannelTree => theme.panes.channel_tree,
+            };
+            let wallpaper = appearance.wallpapers(dark).get(region);
+            let (request, over) = channel_look::region_wallpaper(wallpaper, pane);
+            let id = AREAS.iter().position(|(r, _)| *r == region).unwrap_or(0);
+            let chosen = region == selected;
+            let ring = palette.link;
+            div()
+                .id(("wallpaper-area", id))
+                .relative()
+                .overflow_hidden()
+                .flex_1()
+                .min_h(px(70.))
+                .p_1()
+                .border_2()
+                .border_color(if chosen { ring } else { palette.border })
+                .bg(Rgba { a: 1., ..pane })
+                .text_color(theme.text)
+                .text_size(px(12.))
+                .cursor_pointer()
+                // Only the area under the pointer is marked and receives the
+                // drop; the others are separate targets.
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(ring))
+                .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                    let dark = this.themes.wallpaper.dark;
+                    this.wallpaper_offer(
+                        dark,
+                        region,
+                        paths.paths().to_vec(),
+                        paths.keep_alive(),
+                        AttachmentSource::Drop,
+                        cx,
+                    )
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let dark = this.themes.wallpaper.dark;
+                    this.themes.wallpaper.select(dark, region);
+                    cx.notify();
+                }))
+                .when_some(request, |d, request| {
+                    d.child(
+                        img(PathBuf::from(request.path))
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(div().absolute().top_0().left_0().size_full().bg(over))
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(self.i18n.text(key))
+                        .when(wallpaper.path.is_none(), |d| {
+                            d.child(
+                                div()
+                                    .text_color(theme.text_muted)
+                                    .child(self.i18n.text("wallpaper_none")),
+                            )
+                        })
+                        .child(
+                            settings_theme::button(("wallpaper-choose", id), false, cx)
+                                .text_size(px(11.))
+                                .child(self.i18n.text("wallpaper_choose"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let dark = this.themes.wallpaper.dark;
+                                    this.themes.wallpaper.select(dark, region);
+                                    this.wallpaper_choose(dark, region, cx)
+                                })),
+                        ),
+                )
+        };
+        let [log, combined, members, tree] = AREAS.map(|(region, key)| area(region, key, cx));
+        let preview = div()
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .gap_1()
+            .w(px(520.))
+            .h(px(280.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .flex_1()
+                    .child(log)
+                    .child(combined),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w(px(170.))
+                    .child(members)
+                    .child(tree),
+            );
+
+        let wallpaper = appearance.wallpapers(dark).get(selected).clone();
+        let area_name = AREAS
+            .iter()
+            .find(|(region, _)| *region == selected)
+            .map_or("", |(_, key)| *key);
+        let shown = wallpaper.path.as_deref().map_or_else(
+            || self.i18n.text("wallpaper_none"),
+            |path| {
+                Path::new(path)
+                    .file_name()
+                    .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+            },
+        );
+        let mode_button = |mode: bool, cx: &mut Context<Self>| {
+            settings_theme::button(("wallpaper-mode", usize::from(mode)), mode == dark, cx)
+                .child(self.theme_kind_label(mode))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.themes.wallpaper.dark = mode;
+                    cx.notify();
+                }))
+        };
+        let controls = div()
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(format!(
+                "{} ({}): {}",
+                self.i18n.text(area_name),
+                self.theme_kind_label(dark),
+                shown
+            ))
+            .child(
+                settings_theme::button("wallpaper-change", false, cx)
+                    .child(self.i18n.text("wallpaper_change"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let dark = this.themes.wallpaper.dark;
+                        let region = this.themes.wallpaper.region;
+                        this.wallpaper_choose(dark, region, cx)
+                    })),
+            )
+            .when(wallpaper.path.is_some(), |d| {
+                d.child(
+                    settings_theme::button("wallpaper-clear", false, cx)
+                        .child(self.i18n.text("wallpaper_clear"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_clear(dark, region, cx)
+                        })),
+                )
+                .child(
+                    settings_theme::button("wallpaper-weaker", false, cx)
+                        .child("−")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_step_opacity(dark, region, -OPACITY_STEP, cx)
+                        })),
+                )
+                .child(format!("{}%", 100 - wallpaper.opacity_percent()))
+                .child(
+                    settings_theme::button("wallpaper-stronger", false, cx)
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_step_opacity(dark, region, OPACITY_STEP, cx)
+                        })),
+                )
+            });
+        div()
             .flex()
             .flex_col()
             .gap_2()
@@ -628,80 +904,29 @@ impl SettingsWindow {
                     .ml(settings_theme::LABEL_INDENT)
                     .text_color(palette.text_secondary)
                     .child(self.i18n.text("wallpaper_hint")),
-            );
-        for (index, (region, key)) in [
-            (WallpaperRegion::ChannelLog, "channel_log"),
-            (WallpaperRegion::CombinedLog, "combined_log"),
-            (WallpaperRegion::MemberList, "member_list"),
-            (WallpaperRegion::ChannelTree, "channel_tree"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            for dark in [false, true] {
-                let wallpaper = self
-                    .settings
-                    .values
-                    .appearance
-                    .wallpapers(dark)
-                    .get(region)
-                    .clone();
-                let shown = wallpaper.path.as_deref().map_or_else(
-                    || self.i18n.text("wallpaper_none"),
-                    |path| {
-                        Path::new(path)
-                            .file_name()
-                            .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
-                    },
-                );
-                let id = index * 2 + usize::from(dark);
-                section = section.child(
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .gap_2()
+                    .child(mode_button(false, cx))
+                    .child(mode_button(true, cx)),
+            )
+            .child(preview)
+            .child(controls)
+            .when_some(self.themes.wallpaper.status.clone(), |d, (text, failed)| {
+                d.child(
                     div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(settings_theme::label_column().child(format!(
-                            "{} ({})",
-                            self.i18n.text(key),
-                            self.theme_kind_label(dark)
-                        )))
-                        .child(div().flex_1().min_w_0().child(shown))
-                        .child(
-                            settings_theme::button(("wallpaper-choose", id), false, cx)
-                                .child(self.i18n.text("wallpaper_choose"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.wallpaper_choose(dark, region, cx)
-                                })),
-                        )
-                        .when(wallpaper.path.is_some(), |d| {
-                            d.child(
-                                settings_theme::button(("wallpaper-clear", id), false, cx)
-                                    .child(self.i18n.text("wallpaper_clear"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.wallpaper_clear(dark, region, cx)
-                                    })),
-                            )
-                            .child(
-                                settings_theme::button(("wallpaper-weaker", id), false, cx)
-                                    .child("−")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.wallpaper_step_opacity(dark, region, -OPACITY_STEP, cx)
-                                    })),
-                            )
-                            .child(format!("{}%", 100 - wallpaper.opacity_percent()))
-                            .child(
-                                settings_theme::button(("wallpaper-stronger", id), false, cx)
-                                    .child("+")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.wallpaper_step_opacity(dark, region, OPACITY_STEP, cx)
-                                    })),
-                            )
-                        }),
-                );
-            }
-        }
-        section
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(if failed {
+                            palette.warning
+                        } else {
+                            palette.text_secondary
+                        })
+                        .child(text),
+                )
+            })
     }
 }
 
@@ -712,8 +937,8 @@ mod tests {
 
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion, export_file_name,
-        theme_file,
+        AttachmentSource, OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion,
+        export_file_name, theme_file,
     };
     use crate::{secrets, settings_file::TestFile, settings_with_channels};
     use gpui::{Entity, VisualTestContext, WindowAppearance};
@@ -793,6 +1018,98 @@ mod tests {
         // The dark side is as it was.
         assert_eq!(text(&form, cx, true), "#654321");
         assert!(status(&form, cx, true).1);
+    }
+
+    #[gpui::test]
+    fn a_dropped_image_becomes_the_wallpaper_of_its_area_only_and_is_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        crate::settings_file::use_theme_root(root.path());
+        let (form, cx) = open(&settings, cx);
+        let source = root.path().join("original.png");
+        std::fs::write(&source, png()).unwrap();
+
+        form.update(cx, |form, cx| {
+            form.wallpaper_offer(
+                true,
+                WallpaperRegion::ChannelTree,
+                vec![source.clone()],
+                None,
+                AttachmentSource::Drop,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        // The original may vanish (a temporary drop): the kept copy remains.
+        std::fs::remove_file(&source).unwrap();
+
+        let appearance = form.read_with(cx, |form, _| form.settings.values.appearance.clone());
+        let kept = PathBuf::from(
+            appearance
+                .dark
+                .wallpapers
+                .channel_tree
+                .path
+                .clone()
+                .unwrap(),
+        );
+        assert!(kept.starts_with(root.path().join("wallpapers")) && kept.is_file());
+        // No other area or side changed.
+        let mut expected = appearance.clone();
+        expected.dark.wallpapers.channel_tree = Default::default();
+        assert_eq!(expected.wallpapers, Default::default());
+        assert_eq!(expected.dark.wallpapers, Default::default());
+        form.read_with(cx, |form, _| {
+            assert!(form.themes.wallpaper.status.is_none());
+            assert!(form.themes.wallpaper.dark);
+            assert_eq!(form.themes.wallpaper.region, WallpaperRegion::ChannelTree);
+        });
+
+        // Saved, and handed to the chat window.
+        form.update(cx, |form, cx| form.autosave_now(None, cx));
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            assert_eq!(
+                form.saved.appearance.dark.wallpapers.channel_tree.path,
+                appearance.dark.wallpapers.channel_tree.path
+            );
+        });
+        let on_disk = crate::settings_file::load().unwrap().unwrap();
+        assert_eq!(
+            on_disk.appearance.dark.wallpapers.channel_tree.path,
+            appearance.dark.wallpapers.channel_tree.path
+        );
+
+        // A bad file is refused with a reason and the earlier one stays.
+        let bad = root.path().join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        form.update(cx, |form, cx| {
+            form.wallpaper_offer(
+                true,
+                WallpaperRegion::ChannelTree,
+                vec![bad],
+                None,
+                AttachmentSource::Chooser,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            assert!(form.themes.wallpaper.status.as_ref().unwrap().1);
+            assert_eq!(
+                form.settings
+                    .values
+                    .appearance
+                    .dark
+                    .wallpapers
+                    .channel_tree
+                    .path,
+                appearance.dark.wallpapers.channel_tree.path
+            );
+        });
     }
 
     #[gpui::test]
