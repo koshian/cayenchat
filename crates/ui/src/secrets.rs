@@ -8,7 +8,10 @@
 //! the moment a test binary reads the user's "CayenChat" item.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex, mpsc};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use cayenchat_storage::credentials::{MemoryBackend, SystemBackend};
@@ -32,6 +35,69 @@ pub fn install(kind: CredentialBackendKind, cx: &mut App) {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+/// The credential jobs whose outcome is not yet in the application: counted
+/// from the moment one is queued until its caller has taken the result and
+/// run what follows it (the note in the settings file, the report). An
+/// ordinary quit waits for the count to reach zero (#982); the queue alone
+/// is not enough, since the worker finishes a job before the UI thread has
+/// recorded it.
+#[derive(Default)]
+struct Outstanding {
+    count: AtomicUsize,
+    /// Set by a forced quit: nothing is waited for any more.
+    abandoned: AtomicBool,
+    waiting: Mutex<Vec<Waker>>,
+}
+
+impl Outstanding {
+    fn hold(self: &Arc<Self>) -> Hold {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        Hold(self.clone())
+    }
+
+    fn waiting(&self) -> MutexGuard<'_, Vec<Waker>> {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// One count of `Outstanding`. A job holds one until it has run (or is
+/// dropped unrun), and the future that delivers its result holds another
+/// until that future has produced the result: the code after the `await`
+/// runs in the same poll, before the UI thread can look at the count again.
+struct Hold(Arc<Outstanding>);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if self.0.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            for waker in self.0.waiting().drain(..) {
+                waker.wake();
+            }
+        }
+    }
+}
+
+/// Resolves when no credential job is outstanding.
+struct Idle(Arc<Outstanding>);
+
+impl Future for Idle {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // The waker is registered before the count is read, under the lock
+        // the last `Hold` takes to wake, so a release cannot slip between.
+        let mut waiting = self.0.waiting();
+        if self.0.count.load(Ordering::SeqCst) == 0 || self.0.abandoned.load(Ordering::SeqCst) {
+            return Poll::Ready(());
+        }
+        if !waiting.iter().any(|waker| waker.will_wake(cx.waker())) {
+            waiting.push(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+}
+
 /// The one thread that reads and writes the credential store (D087). The
 /// operating system's store may stop for a permission dialog or a D-Bus
 /// answer, and two threads taking turns at its lock would stop the UI
@@ -45,6 +111,7 @@ pub struct Worker {
     /// that is current at its place in the queue, not the one that was
     /// installed when it was queued.
     current: Arc<Mutex<CredentialStore>>,
+    outstanding: Arc<Outstanding>,
 }
 
 impl Global for Worker {}
@@ -71,6 +138,7 @@ impl Worker {
         Self {
             queue,
             current: Arc::new(Mutex::new(store)),
+            outstanding: Default::default(),
         }
     }
 }
@@ -102,9 +170,12 @@ where
 {
     let installed = store(cx);
     let (done, result) = futures_channel::oneshot::channel();
+    let mut delivering = None;
     match cx.try_global::<Worker>() {
         Some(worker) => {
             let current = worker.current.clone();
+            let running = worker.outstanding.hold();
+            delivering = Some(worker.outstanding.hold());
             let queued: Job = Box::new(move || {
                 let store = lock(&current).clone();
                 let (value, switched) = job(&store);
@@ -112,6 +183,7 @@ where
                     *lock(&current) = switched;
                 }
                 let _ = done.send(value);
+                drop(running);
             });
             let _ = worker.queue.send(queued);
         }
@@ -120,7 +192,44 @@ where
             let _ = done.send(value);
         }
     }
-    async move { result.await.ok() }
+    async move {
+        let value = result.await.ok();
+        // Released as the result is handed over: what the caller does with
+        // it runs in this same poll.
+        drop(delivering);
+        value
+    }
+}
+
+/// Whether a credential job is still outstanding: queued, running, or done
+/// but not yet taken in by its caller.
+pub fn pending(cx: &App) -> bool {
+    cx.try_global::<Worker>().is_some_and(|worker| {
+        let outstanding = &worker.outstanding;
+        outstanding.count.load(Ordering::SeqCst) > 0
+            && !outstanding.abandoned.load(Ordering::SeqCst)
+    })
+}
+
+/// Resolves when no credential job is outstanding any more (at once if none
+/// is). Event driven: the release of the last job wakes it.
+pub fn idle(cx: &App) -> impl Future<Output = ()> + use<> {
+    let outstanding = cx
+        .try_global::<Worker>()
+        .map(|worker| worker.outstanding.clone());
+    async move {
+        if let Some(outstanding) = outstanding {
+            Idle(outstanding).await;
+        }
+    }
+}
+
+/// Stops waiting for outstanding jobs: the user chose to quit anyway.
+pub fn abandon(cx: &App) {
+    if let Some(worker) = cx.try_global::<Worker>() {
+        worker.outstanding.abandoned.store(true, Ordering::SeqCst);
+        worker.outstanding.waiting().drain(..).for_each(Waker::wake);
+    }
 }
 
 fn lock(current: &Mutex<CredentialStore>) -> std::sync::MutexGuard<'_, CredentialStore> {
@@ -134,12 +243,17 @@ pub fn stopped() -> CredentialError {
     CredentialError::Access("the credential store thread stopped".into())
 }
 
-/// Waits, up to `limit`, for the jobs queued so far, so that a write made
-/// just before quitting is not lost with the process.
+/// Waits, up to `limit`, for the jobs queued so far. This is the last resort
+/// of the quits that cannot ask (the system's shutdown, a signal) and says
+/// nothing of the outcome; an ordinary quit waits with `idle` first and shows
+/// what it waits for. Does nothing after `abandon`.
 pub fn flush(cx: &App, limit: Duration) {
     let Some(worker) = cx.try_global::<Worker>() else {
         return;
     };
+    if worker.outstanding.abandoned.load(Ordering::SeqCst) {
+        return;
+    }
     let (done, finished) = mpsc::channel();
     if worker
         .queue

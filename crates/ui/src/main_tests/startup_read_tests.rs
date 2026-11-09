@@ -380,3 +380,83 @@ fn a_write_queued_during_a_move_lands_in_the_new_store(cx: &mut TestAppContext) 
         );
     });
 }
+
+/// An ordinary quit does not end while a store job is out (#982): it says so,
+/// goes on by itself once the job's result has been taken in, and offers a
+/// forced quit only after the store has kept it waiting.
+#[gpui::test]
+fn a_quit_waits_for_the_store_and_shows_why(cx: &mut TestAppContext) {
+    let app = cx.clone();
+    let key = settings(false).servers[0].server_password_key();
+    let release = cx.update(|cx| {
+        set_theme(cx);
+        GatedBackend::install(cx).0
+    });
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    cx.executor().allow_parking();
+    let waiting =
+        |cx: &mut gpui::VisualTestContext| chat.read_with(cx, |c, _| c.quit_dialog.is_waiting());
+    let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.debug_bounds(id).is_some()
+    };
+
+    // The store is stuck on a read, as when the system asks for permission.
+    let result = cx.update(|_, cx| Box::pin(crate::secrets::run(cx, move |store| store.get(&key))));
+    app.update(|cx| assert!(crate::secrets::pending(cx)));
+    app.update(crate::quit_app);
+    assert!(
+        shown(cx, "quit-wait-dialog"),
+        "the quit is held back, with a reason"
+    );
+    assert!(waiting(cx));
+    assert!(!shown(cx, "quit-wait-force"), "no forced quit at first");
+
+    // Nobody can be told it is stuck before the wait has lasted.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"), "then the choice is offered");
+    // "Keep waiting" (Escape) takes the choice away until the next interval.
+    cx.simulate_keystrokes("escape");
+    assert!(waiting(cx));
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.offers_force()));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"));
+
+    // The worker finishes, but the result is not taken in yet: still held.
+    release.send(()).unwrap();
+    let started = std::time::Instant::now();
+    while !app.update(|cx| crate::secrets::pending(cx)) || !waiting(cx) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(app.update(|cx| crate::secrets::pending(cx)), "not taken in");
+    assert!(waiting(cx));
+
+    // Taking the result in lets the quit go on.
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    cx.run_until_parked();
+    app.update(|cx| assert!(!crate::secrets::pending(cx)));
+    assert!(!waiting(cx), "the quit went on");
+
+    // Cancel before the wait is long: the quit is given up, the window stays.
+    let (release, key) = (release, settings(false).servers[0].server_password_key());
+    let result = cx.update(|_, cx| Box::pin(crate::secrets::run(cx, move |store| store.get(&key))));
+    app.update(crate::quit_app);
+    assert!(shown(cx, "quit-wait-dialog"));
+    cx.simulate_keystrokes("escape");
+    assert!(!waiting(cx), "cancelled");
+    release.send(()).unwrap();
+    cx.update(|_, cx| cx.spawn(async move |_| drop(result.await)).detach());
+    let started = std::time::Instant::now();
+    while app.update(|cx| crate::secrets::pending(cx)) {
+        assert!(started.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}

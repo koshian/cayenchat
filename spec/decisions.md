@@ -3950,7 +3950,13 @@ the start of the session.
   for the same server, or a second submit of the same dialog, is ignored. A
   failed deletion of a removed server's secrets no longer fails the save that
   removed it: the file is written, the error is shown and the deletion is tried
-  again at the next save. Quitting waits at most two seconds for queued jobs.
+  again at the next save. An ordinary quit waits for outstanding jobs and says
+  so, and offers a forced quit after two seconds (#982, `architecture.md`,
+  Credentials); the system's shutdown and signals wait at most two seconds.
+  Reads count too: a read stuck on a permission prompt also holds the queue
+  behind it, and the choice to quit anyway is the way out. A failure that
+  arrives while the quit waits is reported by the window that asked, which
+  the quit may then close; it is not retried.
 - **What a result is applied to.** A result is tied to what it was read or
   written for, because the UI keeps changing while a job waits. A read of a
   server's secrets carries the profile it was read for; if the profile has
