@@ -549,6 +549,9 @@ impl ChatWindow {
                     .remove(&write.channel.to_ascii_lowercase());
             }
             if result.is_ok() {
+                session
+                    .key_read_failed
+                    .remove(&write.channel.to_ascii_lowercase());
                 // Invalidate refreshes that captured a snapshot before this
                 // successful store change completed, even after reconnecting.
                 session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
@@ -683,7 +686,9 @@ impl ChatWindow {
     /// A key missing from `found` may be missing because the store could not
     /// be read (`stored_channel_keys` cannot tell), so a note is cleared only
     /// after a read of that key succeeds and finds none. A failed read leaves
-    /// the note, and a first scan unfinished, for the next connection.
+    /// the note, and a first scan unfinished, and is not repeated in this
+    /// session (`key_read_failed`): the user is asked for the key when the
+    /// server refuses it, and saves it again.
     pub(crate) fn correct_key_notes(
         &mut self,
         network: NetworkId,
@@ -699,14 +704,22 @@ impl ChatWindow {
             return;
         };
         let scanning = profile.channel_key_scan_pending();
-        let unsure: Vec<String> = read
+        let mut unsure: Vec<String> = read
             .iter()
             .filter(|channel| scanning || profile.channel_key_noted(channel))
             .filter(|channel| !found.keys().any(|name| name.eq_ignore_ascii_case(channel)))
             .cloned()
             .collect();
+        // A read that failed in this session is not repeated: the note stays
+        // and the channel is unknown, as after the failure itself.
+        let (skipped, rest): (Vec<String>, Vec<String>) = unsure.drain(..).partition(|channel| {
+            session
+                .key_read_failed
+                .contains(&channel.to_ascii_lowercase())
+        });
+        let unsure = rest;
         if unsure.is_empty() {
-            self.apply_key_notes(&profile_id, read, found, &[]);
+            self.apply_key_notes(&profile_id, read, found, &skipped);
             return;
         }
         let (generation, revision) = (session.generation, session.channel_key_revision);
@@ -735,7 +748,7 @@ impl ChatWindow {
                 return;
             };
             let _ = this.update(cx, |this, _| {
-                let Some(session) = this.sessions.get(&network) else {
+                let Some(session) = this.sessions.get_mut(&network) else {
                     return;
                 };
                 if session.profile_id != profile_id
@@ -746,7 +759,7 @@ impl ChatWindow {
                     return;
                 }
                 let mut found = found;
-                let mut unknown = Vec::new();
+                let mut unknown = skipped;
                 for (channel, got) in checked {
                     match got {
                         // Not there (read succeeded): the note is cleared.
@@ -754,7 +767,10 @@ impl ChatWindow {
                         Some(Some(key)) => {
                             found.insert(channel, key);
                         }
-                        Some(None) => unknown.push(channel),
+                        Some(None) => {
+                            session.key_read_failed.insert(channel.to_ascii_lowercase());
+                            unknown.push(channel);
+                        }
                     }
                 }
                 this.apply_key_notes(&profile_id, &read, &found, &unknown);
