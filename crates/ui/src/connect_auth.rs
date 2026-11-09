@@ -363,6 +363,11 @@ impl ChatWindow {
                 sasl.map_or(Ok(None), |key| store.get(&key)),
             ),
         });
+        // The keys of the last connection may be missing (the store could not
+        // be read then), so what the store holds now is added to them.
+        let keys = profile
+            .as_ref()
+            .map(|profile| crate::channel_keys::read_stored_keys(cx, profile));
         cx.spawn(async move |this, cx| {
             let Some(read) = read.await else {
                 // The store thread is gone or the job panicked. Only the
@@ -373,6 +378,13 @@ impl ChatWindow {
                 });
                 return;
             };
+            let mut config = config;
+            if let Some(keys) = keys {
+                let mut stored = keys.await;
+                // Add only: forgetting a key is a complete refresh's job.
+                stored.complete = false;
+                crate::channel_keys::update_keys_if_valid(&mut config, stored);
+            }
             let _ = this.update(cx, |this, cx| {
                 let current = this
                     .sessions
@@ -742,7 +754,7 @@ impl ChatWindow {
         let reading = crate::channel_keys::read_stored_keys(cx, &profile);
         self.credential_prompts[index].submitting = true;
         cx.spawn_in(window, async move |this, cx| {
-            let keys = reading.await;
+            let keys = reading.await.keys;
             let _ = this.update_in(cx, |this, window, cx| {
                 let submission = Submission {
                     config,
