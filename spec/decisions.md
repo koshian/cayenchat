@@ -4017,6 +4017,8 @@ otherwise be sent the old host's passwords.
   not say, so the store thread looks for the possible entries first and the
   dialog is shown when one exists (an entry that cannot be read counts as
   existing); none, no dialog. Either way the possible entries are deleted.
+  The possible entries include the disabled auto-join channels, which the
+  scan skips but a key may be stored for (`channel_key_secret_keys`).
 - **Order.** Confirm, delete the entries on the store thread, clear the notes
   (`server_saved`, `sasl_saved`, the keyed channels; written to the settings
   file at once), and only then save the new host. Cancelling, or an entry that

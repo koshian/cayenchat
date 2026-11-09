@@ -1613,12 +1613,17 @@ impl ServerProfile {
     }
 
     /// The store entries that may hold this profile's channel keys: the noted
-    /// channels, or the enabled auto-join channels while the first scan is
-    /// still pending (the set that scan reads).
+    /// channels, or every auto-join channel (disabled ones too, which the
+    /// scan skips but a key may still be stored for) while the first scan is
+    /// still pending.
     pub fn channel_key_secret_keys(&self) -> Vec<SecretKey> {
         let channels = match &self.keyed_channels {
             Some(noted) => noted.clone(),
-            None => self.channels(),
+            None => self
+                .auto_join_entries()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect(),
         };
         channels
             .iter()
@@ -2680,11 +2685,12 @@ mod tests {
         let keys = settings.connection_secret_keys();
         assert!(keys.contains(&SecretKey::channel_key(&id, "#noted")));
         assert!(!keys.contains(&SecretKey::channel_key(&id, "#a")));
-        // A file from before the note: the channels the first scan reads.
+        // A file from before the note: every auto-join channel, disabled
+        // ones included.
         settings.selected_profile_mut().unwrap().keyed_channels = None;
         let keys = settings.connection_secret_keys();
         assert!(keys.contains(&SecretKey::channel_key(&id, "#a")));
-        assert!(!keys.contains(&SecretKey::channel_key(&id, "#b")));
+        assert!(keys.contains(&SecretKey::channel_key(&id, "#b")));
     }
 
     #[test]

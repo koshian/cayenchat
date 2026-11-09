@@ -7572,6 +7572,36 @@ mod host_change_tests {
     }
 
     #[gpui::test]
+    fn an_unscanned_profile_covers_a_disabled_auto_join_channel(cx: &mut TestAppContext) {
+        let (mut settings, id) = saved_secrets(cx);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.set_server_password_saved(false);
+        profile.set_sasl_password_saved(false);
+        profile.channels = "-#b".into();
+        profile.keyed_channels = None;
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = super::escape_tests::open(cx, settings);
+        let store = cx.update(|_, cx| crate::secrets::store(cx));
+        let key = SecretKey::channel_key(&id, "#b");
+        store.set(&key, &Secret::new("secret")).unwrap();
+
+        edit_host(&form, cx, "irc.new.example");
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.old.example");
+        assert!(store.contains(&key).unwrap());
+
+        edit_host(&form, cx, "irc.new.example");
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("host_change_confirm"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert_eq!(saved_host(&form, cx), "irc.new.example");
+        assert!(!store.contains(&key).unwrap());
+    }
+
+    #[gpui::test]
     fn an_unscanned_profile_with_nothing_stored_asks_nothing(cx: &mut TestAppContext) {
         let (mut settings, _id) = saved_secrets(cx);
         let profile = settings.selected_profile_mut().unwrap();
