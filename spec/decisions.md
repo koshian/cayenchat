@@ -515,7 +515,7 @@ iCCP and text chunks are removed before decoding because their metadata is not
 used. Before making the filtered PNG copy, its full input length is
 conservatively reserved, as is twice the length of any eXIf chunk (which is
 kept, and which `png` holds twice while its decoder lives under an allocation
-limit it fixes at construction); the source raster is charged against the same
+limit it fixes at construction), and for PNG the raster declared by IHDR (overflow-safe; tRNS counted) is also taken off that fixed limit. A PNG whose first chunk is not a valid IHDR is rejected before metadata is stripped (so a chunk placed ahead of IHDR cannot skip the raster reservation), and 512 KiB is kept aside for buffers `png` allocates outside its limit (measured 283–299 KiB at 4096 × 3070 RGBA, plain and Adam7; the raster can therefore use the budget less 512 KiB for PNG). The source raster is charged against the same
 budget, and decoder-owned intermediate buffers use only the remainder. Dimensions (at most 8192 px a side and 16.7
 megapixels) are checked before pixel decoding, and that same decoder supplies
 the pixels. The decoded source image is charged against the budget before
@@ -1886,6 +1886,12 @@ does the work, `settings_transfer` draws the questions in the chat window
 - **Machine-specific values** stay as this computer has them: the
   credential backend, the debug log file, and the conversation log folder
   (the choice to log is imported).
+- **No wallpaper paths.** Every wallpaper path (the standard wallpapers of
+  both themes and each channel look's) is dropped, and the confirmation says
+  so (#972). A path is opened when drawn, so a UNC path would reach a remote
+  host, and it is read when a theme is exported, so any file could end up
+  in a shared theme. The theme export also refuses a wallpaper file that is
+  not an image.
 - **Off the UI thread.** The export write and the import's backup (synced
   to disk), replacement and reload of the current file run in the
   background while the dialog shows a notice and ignores answers; the
@@ -3684,7 +3690,13 @@ the start of the session.
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
   and blurs it, so fine detail is lost. This happens once per file, on a
   background thread; the window keeps one result (the selected channel's)
-  and drops a result that arrives for another key. The picture is the
+  and drops a result that arrives for another key. Each slot holds the
+  `CancelFlag` of its load (#986): releasing the slot (another file or blur,
+  no wallpaper, window closed) cancels it, and the load stops at its next
+  check (before the file is opened, after it is read, at and after the
+  decode gate, before the blur) and its result is not applied. A read blocked
+  in the OS, a decode or a blur already running is not interrupted, so a
+  superseded load can still finish that step. The picture is the
   backmost layer and the log's background color lies over it with an
   opacity, so a high-contrast photo leaves the text readable in the light
   and the dark theme (D088 replaced the first version's baked-in tint and
@@ -3953,7 +3965,14 @@ the start of the session.
   for the same server, or a second submit of the same dialog, is ignored. A
   failed deletion of a removed server's secrets no longer fails the save that
   removed it: the file is written, the error is shown and the deletion is tried
-  again at the next save. Quitting waits at most two seconds for queued jobs.
+  again at the next save. An ordinary quit waits for outstanding jobs and says
+  so, and offers a forced quit after two seconds (#982, `architecture.md`,
+  Credentials); the system's shutdown and signals wait at most two seconds.
+  Reads count too: a read stuck on a permission prompt also holds the queue
+  behind it, and the choice to quit anyway is the way out. A save or delete
+  that fails while the quit waits, or a note that cannot be written, stops the
+  quit from going on by itself: the dialog says so and the user quits anyway
+  or cancels. A failed read does not.
 - **What a result is applied to.** A result is tied to what it was read or
   written for, because the UI keeps changing while a job waits. A read of a
   server's secrets carries the profile it was read for; if the profile has
