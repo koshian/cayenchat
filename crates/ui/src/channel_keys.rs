@@ -1174,10 +1174,12 @@ mod refresh_tests {
             inner: MemoryBackend::new(CredentialBackendKind::System),
             broken: broken.clone(),
         }));
-        let mut profile = ServerProfile::default();
-        profile.id = "p".into();
-        profile.channels = "#good,#bad".into();
-        profile.keyed_channels = Some(vec!["#good".into(), "#bad".into()]);
+        let profile = ServerProfile {
+            id: "p".into(),
+            channels: "#good,#bad".into(),
+            keyed_channels: Some(vec!["#good".into(), "#bad".into()]),
+            ..Default::default()
+        };
         for channel in ["#good", "#bad"] {
             store
                 .set(&SecretKey::channel_key("p", channel), &Secret::new("k"))
