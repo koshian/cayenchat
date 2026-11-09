@@ -2094,7 +2094,13 @@ never the UI, and two threads cannot take turns at the backend's lock to stop
 it (#638). A job uses the store that is current at its place in the queue, and
 jobs run in the order queued; the move to another backend is one job that
 switches the store as it ends (`run_switching`), so what is queued during it
-lands in the new store. A result read for a profile that has changed is read
+lands in the new store. A job that panics is caught per job: it is not run
+again, its switch (if any) is not applied, its future resolves to `None`
+(`secrets::stopped()`, never a success), and the jobs behind it go on. A
+failed thread spawn fails every job the same way; nothing falls back to the
+UI thread. A reconnect whose read fails this way shows the error on its own
+network only while its retry token is current. A result read for a profile
+that has changed is read
 again (D087). A flow that needs a result
 before it can go on (connect, reconnect, the credential dialog's channel
 keys, the upload service's token, Connect and the draft's Save in settings)

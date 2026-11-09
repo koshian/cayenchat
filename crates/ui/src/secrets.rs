@@ -60,18 +60,50 @@ impl Worker {
                 #[cfg(test)]
                 crate::settings_file::adopt(test_file);
                 while let Ok(job) = jobs.recv() {
-                    job();
+                    // A panic ends that job only. Its result is never sent
+                    // (the caller's receiver closes, so it sees a failure,
+                    // `stopped`), a switch of the store it was making is not
+                    // applied, and it is not run again. The jobs after it
+                    // go on. The panic message is not printed here beyond
+                    // the default hook; jobs hold secrets only inside the
+                    // store, never in their panic payload.
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                        eprintln!("CayenChat: a credential store job panicked");
+                    }
                 }
             });
         if let Err(error) = spawned {
-            // Jobs then wait in the queue for good and report nothing; the
-            // callers' receivers are dropped with it.
+            // The closure, with the queue's receiver, is dropped: every
+            // later send fails and its job is dropped, which closes the
+            // caller's receiver. The jobs fail; nothing falls back to the
+            // UI thread.
             eprintln!("CayenChat: credential store thread: {error}");
         }
         Self {
             queue,
             current: Arc::new(Mutex::new(store)),
         }
+    }
+
+    /// Queues `job` against the current store. The receiver closes without
+    /// a value if the job panics or the thread is gone.
+    fn submit<T, F>(&self, job: F) -> futures_channel::oneshot::Receiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
+    {
+        let (done, result) = futures_channel::oneshot::channel();
+        let current = self.current.clone();
+        let queued: Job = Box::new(move || {
+            let store = lock(&current).clone();
+            let (value, switched) = job(&store);
+            if let Some(switched) = switched {
+                *lock(&current) = switched;
+            }
+            let _ = done.send(value);
+        });
+        let _ = self.queue.send(queued);
+        result
     }
 }
 
@@ -101,25 +133,15 @@ where
     F: FnOnce(&CredentialStore) -> (T, Option<CredentialStore>) + Send + 'static,
 {
     let installed = store(cx);
-    let (done, result) = futures_channel::oneshot::channel();
-    match cx.try_global::<Worker>() {
-        Some(worker) => {
-            let current = worker.current.clone();
-            let queued: Job = Box::new(move || {
-                let store = lock(&current).clone();
-                let (value, switched) = job(&store);
-                if let Some(switched) = switched {
-                    *lock(&current) = switched;
-                }
-                let _ = done.send(value);
-            });
-            let _ = worker.queue.send(queued);
-        }
+    let result = match cx.try_global::<Worker>() {
+        Some(worker) => worker.submit(job),
         None => {
+            let (done, result) = futures_channel::oneshot::channel();
             let (value, _) = job(&installed);
             let _ = done.send(value);
+            result
         }
-    }
+    };
     async move { result.await.ok() }
 }
 
@@ -129,9 +151,11 @@ fn lock(current: &Mutex<CredentialStore>) -> std::sync::MutexGuard<'_, Credentia
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The error for a job that never ran because the store thread is gone.
+/// The error for a job that never ran or did not finish because the store
+/// thread is gone or the job panicked. What the job did to the store is
+/// unknown, so it is not a success.
 pub fn stopped() -> CredentialError {
-    CredentialError::Access("the credential store thread stopped".into())
+    CredentialError::Access("the credential store thread stopped or the job failed".into())
 }
 
 /// Waits, up to `limit`, for the jobs queued so far, so that a write made
@@ -331,6 +355,59 @@ impl cayenchat_storage::credentials::CredentialBackend for PasswordWatch {
 mod tests {
     use super::*;
     use cayenchat_storage::{Secret, SecretKey};
+
+    fn worker() -> Worker {
+        Worker::start(memory_store(CredentialBackendKind::System))
+    }
+
+    fn after_queue(worker: &Worker) {
+        let (done, finished) = mpsc::channel();
+        worker
+            .queue
+            .send(Box::new(move || {
+                let _ = done.send(());
+            }))
+            .unwrap();
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_job_fails_alone_and_the_next_job_runs() {
+        let worker = worker();
+        let key = SecretKey::server_password("secrets-test-panic");
+        let panicking = worker.submit(|_| -> ((), Option<CredentialStore>) { panic!("boom") });
+        let switching = worker.submit(|_| -> ((), _) {
+            if true {
+                panic!("boom while switching");
+            }
+            ((), Some(memory_store(CredentialBackendKind::LocalFile)))
+        });
+        let ok = worker.submit({
+            let key = key.clone();
+            move |store| (store.set(&key, &Secret::new("x")).is_ok(), None)
+        });
+        after_queue(&worker);
+        use futures_util::FutureExt;
+        assert!(matches!(panicking.now_or_never(), Some(Err(_))));
+        assert!(matches!(switching.now_or_never(), Some(Err(_))));
+        assert_eq!(ok.now_or_never().and_then(Result::ok), Some(true));
+        // The store the panicking switch would have installed is not current.
+        assert_eq!(lock(&worker.current).kind(), CredentialBackendKind::System);
+    }
+
+    #[test]
+    fn a_failed_thread_spawn_fails_jobs_without_waiting() {
+        // A worker whose thread never ran: its queue has no receiver.
+        let (queue, jobs) = mpsc::channel::<Job>();
+        drop(jobs);
+        let worker = Worker {
+            queue,
+            current: Arc::new(Mutex::new(memory_store(CredentialBackendKind::System))),
+        };
+        let job = worker.submit(|_| ((), None));
+        use futures_util::FutureExt;
+        assert!(matches!(job.now_or_never(), Some(Err(_))));
+    }
 
     #[gpui::test]
     #[should_panic(expected = "no credential store is installed")]
