@@ -286,7 +286,7 @@ pub(crate) struct Wallpapers {
 }
 
 impl Wallpapers {
-    fn get_mut(&mut self, region: WallpaperRegion) -> &mut Wallpaper {
+    pub(crate) fn get_mut(&mut self, region: WallpaperRegion) -> &mut Wallpaper {
         match region {
             WallpaperRegion::ChannelLog => &mut self.channel_log,
             WallpaperRegion::CombinedLog => &mut self.combined_log,
@@ -306,8 +306,14 @@ impl Wallpapers {
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
-        self.get_mut(region)
-            .element(region, wanted, background, translucent, window, cx)
+        self.get_mut(region).element(
+            wanted,
+            background,
+            translucent,
+            window,
+            cx,
+            move |this: &mut ChatWindow| this.wallpapers.get_mut(region),
+        )
     }
 }
 
@@ -341,14 +347,16 @@ impl Wallpaper {
     /// The picture for `wanted`, as the first child of the log; starts its
     /// loading when it is not the one held. Nothing while it loads or when
     /// the file cannot be used.
-    fn element(
+    /// `slot_of` finds this wallpaper again in its owner `T` (the chat window,
+    /// or the settings window's miniature) when the load ends.
+    pub(crate) fn element<T: 'static>(
         &mut self,
-        region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
         background: Rgba,
         translucent: bool,
         window: &mut Window,
-        cx: &mut Context<ChatWindow>,
+        cx: &mut Context<T>,
+        slot_of: impl Fn(&mut T) -> &mut Wallpaper + 'static,
     ) -> Option<Div> {
         let Some(wanted) = wanted else {
             self.release(window);
@@ -376,7 +384,7 @@ impl Wallpaper {
                     return;
                 }
                 let _ = this.update(cx, |this, cx| {
-                    let Some((held, state)) = this.wallpapers.get_mut(region).slot.as_mut() else {
+                    let Some((held, state)) = slot_of(this).slot.as_mut() else {
                         return;
                     };
                     if *held != key {

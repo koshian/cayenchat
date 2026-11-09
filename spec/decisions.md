@@ -3932,14 +3932,19 @@ the start of the session.
 - **Editing the standard wallpapers (#989).** The Appearance tab shows a
   miniature of the chat window (channel log over combined log on the left,
   member list over channel tree on the right) for one side at a time, chosen
-  by light/dark buttons. Each of the four areas is its own drop target
+  by light/dark buttons, starting on the theme in use. Each of the four areas is its own drop target
   (`ExternalPaths`, with the file promise kept alive until read) with its own
   "Choose image…" button; the file dialog and a drop both end in
   `SettingsWindow::wallpaper_offer`, whose target (side, area) is fixed when
   it starts. A failure shows its reason and keeps the earlier wallpaper. The
   selected area's change / clear / strength controls sit below. Each area
-  shows its picture (GPUI `img`, cover) under the pane color at the opacity
-  `channel_look::region_wallpaper` resolves, the chat window's own rule; the
+  shows its picture under the pane color at the opacity
+  `channel_look::region_wallpaper` resolves, the chat window's own rule. The
+  picture is loaded by the same `channel_look::Wallpaper` slot as the chat
+  window's (`media::wallpaper::load`: ≤ 640 px, first frame, decode gate,
+  released when the area has none), never by GPUI's path-based `img`, which
+  has no size limit and decodes every frame. A drag over an area marks that
+  area (border and fill) apart from the selected area's ring. The
   miniature shows the standard values only, never a channel's own. Not done:
   blur and fit are not previewed (defaults), no range editor for standard
   wallpapers.

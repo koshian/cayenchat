@@ -49,12 +49,17 @@ pub(crate) struct WallpaperUi {
     /// Reading and checking the latest image; replacing it drops an older
     /// one.
     task: Option<Task<()>>,
+    /// The miniature's pictures, loaded like the chat window's
+    /// (`channel_look::Wallpaper`: size limit, decode gate, released when an
+    /// area has none).
+    preview: channel_look::Wallpapers,
 }
 
 impl WallpaperUi {
     fn select(&mut self, dark: bool, region: WallpaperRegion) {
         self.dark = dark;
         self.region = region;
+        self.status = None;
     }
 }
 
@@ -90,13 +95,16 @@ struct ExportPrompt {
 }
 
 impl ThemeUi {
-    pub(crate) fn new() -> Self {
+    /// `dark`: the theme in use, which the wallpaper section edits first, so
+    /// what is set there is what the chat window shows.
+    pub(crate) fn new(dark: bool) -> Self {
         Self {
             wallpaper: WallpaperUi {
-                dark: false,
+                dark,
                 region: WallpaperRegion::ChannelLog,
                 status: None,
                 task: None,
+                preview: channel_look::Wallpapers::default(),
             },
             library: crate::settings_file::library_directory()
                 .map(|directory| theme_file::library_list(&directory))
@@ -695,7 +703,11 @@ impl SettingsWindow {
     /// The standard wallpapers: a miniature of the four areas laid out as in
     /// the chat window, each a drop target for one image, for the light or
     /// the dark theme (one at a time), and the controls of the selected area.
-    pub(crate) fn render_wallpaper_settings(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_wallpaper_settings(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let palette = settings_theme::palette(cx);
         let WallpaperUi {
             dark,
@@ -714,88 +726,100 @@ impl SettingsWindow {
             WindowAppearance::Light,
             &appearance,
         );
-        let area = |region: WallpaperRegion, key: &str, cx: &mut Context<Self>| {
-            let pane = match region {
-                WallpaperRegion::ChannelLog => theme.panes.channel_log,
-                WallpaperRegion::CombinedLog => theme.panes.combined_log,
-                WallpaperRegion::MemberList => theme.panes.member_list,
-                WallpaperRegion::ChannelTree => theme.panes.channel_tree,
-            };
-            let wallpaper = appearance.wallpapers(dark).get(region);
-            let (request, over) = channel_look::region_wallpaper(wallpaper, pane);
-            let id = AREAS.iter().position(|(r, _)| *r == region).unwrap_or(0);
-            let chosen = region == selected;
-            let ring = palette.link;
-            div()
-                .id(("wallpaper-area", id))
-                .relative()
-                .overflow_hidden()
-                .flex_1()
-                .min_h(px(70.))
-                .p_1()
-                .border_2()
-                .border_color(if chosen { ring } else { palette.border })
-                .bg(Rgba { a: 1., ..pane })
-                .text_color(theme.text)
-                .text_size(px(12.))
-                .cursor_pointer()
-                // Only the area under the pointer is marked and receives the
-                // drop; the others are separate targets.
-                .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(ring))
-                .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
-                    let dark = this.themes.wallpaper.dark;
-                    this.wallpaper_offer(
-                        dark,
-                        region,
-                        paths.paths().to_vec(),
-                        paths.keep_alive(),
-                        AttachmentSource::Drop,
-                        cx,
-                    )
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let dark = this.themes.wallpaper.dark;
-                    this.themes.wallpaper.select(dark, region);
-                    cx.notify();
-                }))
-                .when_some(request, |d, request| {
-                    d.child(
-                        img(PathBuf::from(request.path))
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    )
-                    .child(div().absolute().top_0().left_0().size_full().bg(over))
-                })
-                .child(
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(self.i18n.text(key))
-                        .when(wallpaper.path.is_none(), |d| {
-                            d.child(
-                                div()
-                                    .text_color(theme.text_muted)
-                                    .child(self.i18n.text("wallpaper_none")),
-                            )
-                        })
-                        .child(
-                            settings_theme::button(("wallpaper-choose", id), false, cx)
-                                .text_size(px(11.))
-                                .child(self.i18n.text("wallpaper_choose"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let dark = this.themes.wallpaper.dark;
-                                    this.themes.wallpaper.select(dark, region);
-                                    this.wallpaper_choose(dark, region, cx)
-                                })),
-                        ),
-                )
+        let pane_of = |region: WallpaperRegion| match region {
+            WallpaperRegion::ChannelLog => theme.panes.channel_log,
+            WallpaperRegion::CombinedLog => theme.panes.combined_log,
+            WallpaperRegion::MemberList => theme.panes.member_list,
+            WallpaperRegion::ChannelTree => theme.panes.channel_tree,
         };
-        let [log, combined, members, tree] = AREAS.map(|(region, key)| area(region, key, cx));
+        // The pictures: the chat window's loading and its layers over them.
+        let layers = AREAS.map(|(region, _)| {
+            let wallpaper = appearance.wallpapers(dark).get(region);
+            let (request, over) = channel_look::region_wallpaper(wallpaper, pane_of(region));
+            self.themes.wallpaper.preview.get_mut(region).element(
+                request.as_ref(),
+                over,
+                false,
+                window,
+                cx,
+                move |this: &mut Self| this.themes.wallpaper.preview.get_mut(region),
+            )
+        });
+        let area =
+            |region: WallpaperRegion, key: &str, layer: Option<Div>, cx: &mut Context<Self>| {
+                let pane = pane_of(region);
+                let wallpaper = appearance.wallpapers(dark).get(region);
+                let id = AREAS.iter().position(|(r, _)| *r == region).unwrap_or(0);
+                let chosen = region == selected;
+                let ring = palette.link;
+                let hover = palette.selected;
+                let drop_ring = theme.text;
+                div()
+                    .id(("wallpaper-area", id))
+                    .relative()
+                    .overflow_hidden()
+                    .flex_1()
+                    .min_h(px(70.))
+                    .p_1()
+                    .border_2()
+                    .border_color(if chosen { ring } else { palette.border })
+                    .bg(Rgba { a: 1., ..pane })
+                    .text_color(theme.text)
+                    .text_size(px(12.))
+                    .cursor_pointer()
+                    // Only the area under the pointer is marked and receives the
+                    // drop; the others are separate targets.
+                    // The mark differs from the selected area's ring, so a
+                    // selected area elsewhere is not taken for the target.
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                        style.border_color(drop_ring).bg(hover)
+                    })
+                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                        let dark = this.themes.wallpaper.dark;
+                        this.wallpaper_offer(
+                            dark,
+                            region,
+                            paths.paths().to_vec(),
+                            paths.keep_alive(),
+                            AttachmentSource::Drop,
+                            cx,
+                        )
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let dark = this.themes.wallpaper.dark;
+                        this.themes.wallpaper.select(dark, region);
+                        cx.notify();
+                    }))
+                    .children(layer)
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(self.i18n.text(key))
+                            .when(wallpaper.path.is_none(), |d| {
+                                d.child(
+                                    div()
+                                        .text_color(theme.text_muted)
+                                        .child(self.i18n.text("wallpaper_none")),
+                                )
+                            })
+                            .child(
+                                settings_theme::button(("wallpaper-choose", id), false, cx)
+                                    .text_size(px(11.))
+                                    .child(self.i18n.text("wallpaper_choose"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let dark = this.themes.wallpaper.dark;
+                                        this.themes.wallpaper.select(dark, region);
+                                        this.wallpaper_choose(dark, region, cx)
+                                    })),
+                            ),
+                    )
+            };
+        let mut layers = layers.into_iter();
+        let [log, combined, members, tree] =
+            AREAS.map(|(region, key)| area(region, key, layers.next().flatten(), cx));
         let preview = div()
             .ml(settings_theme::LABEL_INDENT)
             .flex()
@@ -839,6 +863,7 @@ impl SettingsWindow {
                 .child(self.theme_kind_label(mode))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.themes.wallpaper.dark = mode;
+                    this.themes.wallpaper.status = None;
                     cx.notify();
                 }))
         };
@@ -938,7 +963,7 @@ mod tests {
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
         AttachmentSource, OPACITY_STEP, PathBuf, SettingsWindow, ThemeFile, WallpaperRegion,
-        export_file_name, theme_file,
+        channel_look, export_file_name, theme_file,
     };
     use crate::{secrets, settings_file::TestFile, settings_with_channels};
     use gpui::{Entity, VisualTestContext, WindowAppearance};
@@ -947,12 +972,23 @@ mod tests {
         settings: &Settings,
         cx: &'a mut TestAppContext,
     ) -> (Entity<SettingsWindow>, &'a mut VisualTestContext) {
+        open_in(settings, ThemeMode::Light, cx)
+    }
+
+    fn open_in<'a>(
+        settings: &Settings,
+        mode: ThemeMode,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<SettingsWindow>, &'a mut VisualTestContext) {
+        let mut settings = settings.clone();
+        settings.theme = mode;
+        let settings = &settings;
         cx.update(|cx| {
             if !cx.has_global::<secrets::Credentials>() {
                 secrets::install_memory(cx);
             }
             cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
+                mode,
                 WindowAppearance::Light,
                 &Appearance::default(),
             ));
@@ -1083,6 +1119,69 @@ mod tests {
             appearance.dark.wallpapers.channel_tree.path
         );
 
+        // The chat window asks to draw it in that area and side only.
+        let wanted = |form: &Entity<SettingsWindow>, cx: &mut VisualTestContext, dark: bool| {
+            form.update(cx, |form, cx| {
+                form.owner
+                    .update(cx, |chat, _, _| {
+                        let theme = crate::theme::Theme::new(
+                            if dark {
+                                ThemeMode::Dark
+                            } else {
+                                ThemeMode::Light
+                            },
+                            WindowAppearance::Light,
+                            &chat.appearance,
+                        );
+                        let standard = chat.appearance.wallpapers(dark);
+                        let path = |wallpaper, pane| {
+                            channel_look::region_wallpaper(wallpaper, pane)
+                                .0
+                                .map(|request| request.path)
+                        };
+                        [
+                            path(&standard.channel_log, theme.panes.channel_log),
+                            path(&standard.combined_log, theme.panes.combined_log),
+                            path(&standard.member_list, theme.panes.member_list),
+                            path(&standard.channel_tree, theme.panes.channel_tree),
+                        ]
+                    })
+                    .unwrap()
+            })
+        };
+        assert_eq!(
+            wanted(&form, cx, true),
+            [
+                None,
+                None,
+                None,
+                appearance.dark.wallpapers.channel_tree.path.clone()
+            ]
+        );
+        assert_eq!(wanted(&form, cx, false), [None, None, None, None]);
+        // The miniature loaded the same picture through the chat window's
+        // loader (limits, decode gate).
+        form.update(cx, |form, cx| {
+            form.tab = crate::settings_window::SettingsTab::Appearance;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
+            let preview = &mut form.themes.wallpaper.preview;
+            assert!(
+                preview
+                    .get_mut(WallpaperRegion::ChannelTree)
+                    .slice(gpui::rgba(0xffffffff))
+                    .is_some()
+            );
+            assert!(
+                preview
+                    .get_mut(WallpaperRegion::ChannelLog)
+                    .slice(gpui::rgba(0xffffffff))
+                    .is_none()
+            );
+        });
+
         // A bad file is refused with a reason and the earlier one stays.
         let bad = root.path().join("bad.png");
         std::fs::write(&bad, b"not an image").unwrap();
@@ -1110,6 +1209,16 @@ mod tests {
                 appearance.dark.wallpapers.channel_tree.path
             );
         });
+    }
+
+    #[gpui::test]
+    fn the_wallpaper_section_starts_on_the_theme_in_use(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        let (form, cx) = open_in(&settings, ThemeMode::Dark, cx);
+        form.read_with(cx, |form, _| assert!(form.themes.wallpaper.dark));
+        let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
+        form.read_with(cx, |form, _| assert!(!form.themes.wallpaper.dark));
     }
 
     #[gpui::test]
