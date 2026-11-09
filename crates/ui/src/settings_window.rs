@@ -7329,6 +7329,33 @@ mod escape_tests {
         assert!(result.is_ok());
         assert!(!store.contains(&removed.server_password_key()).unwrap());
     }
+
+    /// #1001: a key noted in the file after this window took its snapshot
+    /// is deleted with its server, though `previous` does not list it.
+    #[gpui::test]
+    fn removing_a_server_forgets_a_key_noted_after_the_snapshot(cx: &mut TestAppContext) {
+        use cayenchat_storage::Secret;
+        let mut previous = crate::settings_with_channels("#a");
+        previous.selected_profile_mut().unwrap().keyed_channels = Some(Vec::new());
+        let id = previous.selected_profile().unwrap().id.clone();
+        let mut noted = previous.clone();
+        noted
+            .selected_profile_mut()
+            .unwrap()
+            .note_channel_key("#a", true);
+        let keys = noted.profile(&id).unwrap().channel_key_secret_keys();
+        assert_eq!(keys.len(), 1);
+        let _file = crate::settings_file::TestFile::with(&noted);
+        let (form, cx, _app) = open(cx, previous.clone());
+        let store = form.update(cx, |_, cx| crate::secrets::store(cx));
+        store.set(&keys[0], &Secret::new("k")).unwrap();
+
+        let mut next = previous.clone();
+        next.remove_selected_server();
+        let result = form.update(cx, |form, cx| form.commit_settings(&previous, next, cx));
+        assert!(result.is_ok());
+        assert!(!store.contains(&keys[0]).unwrap());
+    }
 }
 
 #[cfg(test)]
