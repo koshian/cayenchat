@@ -1468,7 +1468,7 @@ D021 that stored typed passwords with Save of the server.
   password and finds it gone. A stored value the note lacks is not looked
   for (see the next rule). An open settings window takes over the notes in
   the file before it saves, so a save made there never writes back a note a
-  connection changed meanwhile. An import clears the notes, as the passwords
+  connection changed meanwhile. An import clears the notes (and the upload token note, #970), as the passwords
   do not travel. A note can differ from the store (a store emptied
   elsewhere); Connect then asks for the password. A correction made by a
   read (a connection's or a channel-key read) changes only the chat window's
@@ -1878,7 +1878,11 @@ does the work, `settings_transfer` draws the questions in the chat window
   old settings versions and files with password fields are refused. The
   credentials of the servers being replaced are left in the
   store (not deleted, so restoring the backup still finds them); they are
-  unused entries until removed by hand or by a later cleanup.
+  unused entries until removed by hand or by a later cleanup. Upload tokens
+  do not travel either: an import sets `image_upload.token_saved` to an
+  empty list (also for old files without the note, which loading would read
+  as "saved"), so the Image Upload tab shows "not connected", and the
+  guidance after the import asks to register the upload token again (#970).
 - **Machine-specific values** stay as this computer has them: the
   credential backend, the debug log file, and the conversation log folder
   (the choice to log is imported).

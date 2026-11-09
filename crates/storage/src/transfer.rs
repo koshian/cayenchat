@@ -116,6 +116,10 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         directory: None,
         ..settings.conversation_log
     };
+    // Upload tokens stay on the machine they were saved on. An empty note
+    // (not `None`, which loading reads as "the configured provider is
+    // saved") shows "not connected" for files with and without the note.
+    settings.image_upload.token_saved = Some(Vec::new());
     let ids = settings
         .servers
         .iter()
@@ -262,6 +266,24 @@ mod tests {
         expected.selected_server = after.id.clone();
         assert_eq!(imported, expected);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_import_clears_the_upload_token_note_with_or_without_it_in_the_file() {
+        let mut marked = sample();
+        marked.image_upload.provider = Some("imgbb".into());
+        marked.image_upload.token_saved = Some(vec!["imgbb".into()]);
+        let mut value = serde_json::to_value(&marked).unwrap();
+        let with_note = import_from_bytes(value.to_string().as_bytes()).unwrap();
+        assert_eq!(with_note.settings.image_upload.token_saved, Some(vec![]));
+        assert!(!with_note.settings.image_upload.token_noted("imgbb"));
+        value["image_upload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("token_saved");
+        let without_note = import_from_bytes(value.to_string().as_bytes()).unwrap();
+        assert_eq!(without_note.settings.image_upload.token_saved, Some(vec![]));
+        assert!(!without_note.settings.image_upload.token_noted("imgbb"));
     }
 
     #[test]

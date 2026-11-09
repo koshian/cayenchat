@@ -846,7 +846,7 @@
   "transfer_import_done": "The settings were imported. Some settings, such as the Linux display system, apply the next time CayenChat starts.",
   "transfer_import_backup": "The previous settings are kept in {path}.",
   "transfer_import_no_backup": "There was no settings file before, so there is no backup.",
-  "transfer_import_credentials_after": "Credentials were not carried over. Enter the passwords again in each server's settings.",
+  "transfer_import_credentials_after": "Credentials were not carried over. Enter the passwords again in each server's settings, and register the upload token again under Image Upload.",
   "transfer_unchanged": "The current settings were not changed.",
   "transfer_picker_failed": "The file dialog could not be opened.",
   "transfer_working": "Working on the file. Please wait…",
