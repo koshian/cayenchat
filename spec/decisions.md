@@ -515,7 +515,7 @@ iCCP and text chunks are removed before decoding because their metadata is not
 used. Before making the filtered PNG copy, its full input length is
 conservatively reserved, as is twice the length of any eXIf chunk (which is
 kept, and which `png` holds twice while its decoder lives under an allocation
-limit it fixes at construction); the source raster is charged against the same
+limit it fixes at construction), and for PNG the raster declared by IHDR (overflow-safe; tRNS counted) is also taken off that fixed limit; the source raster is charged against the same
 budget, and decoder-owned intermediate buffers use only the remainder. Dimensions (at most 8192 px a side and 16.7
 megapixels) are checked before pixel decoding, and that same decoder supplies
 the pixels. The decoded source image is charged against the budget before

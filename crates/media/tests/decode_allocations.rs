@@ -226,3 +226,40 @@ fn retained_exif_is_charged_to_the_decode_budget() {
     });
     assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
 }
+
+fn png_raster(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![7; width as usize * height as usize * 4])
+        .unwrap();
+    drop(writer);
+    bytes
+}
+
+#[test]
+fn png_raster_declared_by_ihdr_leaves_less_for_png_internal_buffers() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // Rasters of 2 MiB under, and just over, a 4 MiB budget. `png`'s own
+    // allocation limit is fixed when the decoder is built, so it must already
+    // exclude the raster: the sum of both may not exceed the budget.
+    let budget = 4 * 1024 * 1024;
+    let limits = Limits {
+        max_decode_bytes: budget as u64,
+        ..Limits::default()
+    };
+    let near = png_raster(1024, 700);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&near, &limits, &CancelFlag::default())
+    });
+    assert!(result.is_ok());
+    let over = png_raster(1024, 1100);
+    let result = within_budget(budget, || {
+        decode::thumbnail(&over, &limits, &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+}
