@@ -581,6 +581,16 @@ impl ChatWindow {
                 self.write_pending_notes();
             }
         }
+        // The profile was removed while the save was running: the removal
+        // could not know of this key, so it is deleted here (#1001).
+        if result.is_ok() && write.key.is_some() && self.saved.profile(&write.profile).is_none() {
+            let key = SecretKey::channel_key(&write.profile, &write.channel);
+            let deleting = secrets::run(cx, move |store| store.delete(&key));
+            cx.spawn(async move |_, _| {
+                let _ = deleting.await;
+            })
+            .detach();
+        }
         if !current {
             cx.notify();
             return;
