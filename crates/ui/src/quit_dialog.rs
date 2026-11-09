@@ -37,6 +37,10 @@ struct SecretsWait {
     /// The store did not answer within `SECRETS_PATIENCE`: the user may now
     /// choose between waiting on and quitting anyway.
     slow: bool,
+    /// The store is done but a save or delete failed, or its note could not
+    /// be written: the quit does not go on by itself (#982). The user may
+    /// quit anyway or stay.
+    trouble: bool,
     task: Task<()>,
 }
 
@@ -57,6 +61,12 @@ impl QuitDialog {
         self.waiting.as_ref().is_some_and(|wait| wait.slow)
     }
 
+    /// Whether the held-back quit stopped on a failed save.
+    #[cfg(test)]
+    pub(crate) fn shows_trouble(&self) -> bool {
+        self.waiting.as_ref().is_some_and(|wait| wait.trouble)
+    }
+
     pub(crate) fn is_waiting(&self) -> bool {
         self.waiting.is_some()
     }
@@ -71,6 +81,8 @@ impl ChatWindow {
             return;
         }
         window.activate_window();
+        // Failures from before this wait were shown where they happened.
+        crate::secrets::acknowledge_failure(cx);
         self.quit_dialog.previous = window.focused(cx);
         self.quit_dialog.focus_pending = true;
         self.watch_secrets(window, cx);
@@ -100,12 +112,28 @@ impl ChatWindow {
             }
             let _ = this.update_in(cx, |this, window, cx| this.secrets_settled(window, cx));
         });
-        self.quit_dialog.waiting = Some(SecretsWait { slow: false, task });
+        self.quit_dialog.waiting = Some(SecretsWait {
+            slow: false,
+            trouble: false,
+            task,
+        });
     }
 
-    /// The store is idle: the quit goes on through the usual checks, which
-    /// also catch a failed save that left the settings window with an error.
+    /// The store is idle. The notes of what it saved are written now (a
+    /// retry if they were not), and the quit goes on through the usual
+    /// checks only if every save and note went in; otherwise the dialog says
+    /// so and the user chooses.
     fn secrets_settled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.write_pending_notes();
+        if crate::secrets::failed(cx) || !self.pending_notes.is_empty() {
+            if let Some(wait) = self.quit_dialog.waiting.as_mut() {
+                wait.slow = false;
+                wait.trouble = true;
+            }
+            self.quit_dialog.focus_pending = true;
+            cx.notify();
+            return;
+        }
         if let Some(wait) = self.quit_dialog.waiting.take() {
             wait.task.detach();
         }
@@ -119,6 +147,8 @@ impl ChatWindow {
     /// Gives up the quit; the saves go on in the background.
     fn cancel_secrets_wait(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.quit_dialog.waiting = None;
+        // Shown to the user now; a later quit is not held for it again.
+        crate::secrets::acknowledge_failure(cx);
         if let Some(handle) = self.quit_dialog.previous.take() {
             window.focus(&handle);
         }
@@ -142,13 +172,32 @@ impl ChatWindow {
 
     fn render_secrets_wait(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let slow = self.quit_dialog.waiting.as_ref().is_some_and(|w| w.slow);
+        let trouble = self.quit_dialog.waiting.as_ref().is_some_and(|w| w.trouble);
         if self.quit_dialog.focus_pending {
             self.quit_dialog.focus_pending = false;
             window.focus(&self.quit_dialog.cancel);
         }
         let theme = theme::current(cx);
         let box_width = dialog::box_width(QUIT_BOX_MAX_WIDTH, window);
-        let buttons = if slow {
+        let buttons = if trouble {
+            button_order::row(div().flex().gap_2())
+                .child(dialog::confirm_button(
+                    "quit-wait-force",
+                    self.i18n.text("quit_wait_force"),
+                    &self.quit_dialog.confirm,
+                    &theme,
+                    |this, _, cx| this.quit_without_secrets(cx),
+                    cx,
+                ))
+                .child(dialog::cancel_button(
+                    "quit-wait-cancel",
+                    self.i18n.text("cancel"),
+                    &self.quit_dialog.cancel,
+                    &theme,
+                    |this, window, cx| this.cancel_secrets_wait(window, cx),
+                    cx,
+                ))
+        } else if slow {
             button_order::row(div().flex().gap_2())
                 .child(dialog::confirm_button(
                     "quit-wait-force",
@@ -179,9 +228,9 @@ impl ChatWindow {
         dialog::overlay("quit-wait-dialog", &theme)
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
-                    "escape" if slow => this.keep_waiting_for_secrets(window, cx),
+                    "escape" if slow && !trouble => this.keep_waiting_for_secrets(window, cx),
                     "escape" => this.cancel_secrets_wait(window, cx),
-                    "tab" if slow => {
+                    "tab" if slow || trouble => {
                         let (cancel, confirm) =
                             (&this.quit_dialog.cancel, &this.quit_dialog.confirm);
                         window.focus(if cancel.is_focused(window) {
@@ -204,13 +253,21 @@ impl ChatWindow {
                             .font_weight(FontWeight::BOLD)
                             .child(self.i18n.text("quit_wait_title")),
                     )
-                    .child(div().debug_selector(|| "quit-wait-detail".into()).child(
-                        self.i18n.text(if slow {
-                            "quit_wait_slow"
-                        } else {
-                            "quit_wait_detail"
-                        }),
-                    ))
+                    // The width is given: a box sized by its content measures
+                    // wrapped text at the one-line width and the lines would
+                    // overflow it.
+                    .child(
+                        div()
+                            .debug_selector(|| "quit-wait-detail".into())
+                            .w(box_width - QUIT_BOX_CHROME)
+                            .child(self.i18n.text(if trouble {
+                                "quit_wait_failed"
+                            } else if slow {
+                                "quit_wait_slow"
+                            } else {
+                                "quit_wait_detail"
+                            })),
+                    )
                     .child(buttons),
             )
             .into_any_element()

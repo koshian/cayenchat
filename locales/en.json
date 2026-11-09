@@ -362,6 +362,7 @@
   "quit_wait_slow": "The credential store has not answered yet; the system may be waiting for your permission. Quitting now may lose a password or key being saved, or leave one that was being deleted.",
   "quit_wait_force": "Quit anyway",
   "quit_wait_keep": "Keep waiting",
+  "quit_wait_failed": "Saving or deleting a password or key did not succeed, or its note in the settings file could not be written. Quitting now may lose it or leave it undone. Cancel to stay and fix it, or quit anyway.",
   "part_dialog_title": "Leave {channel}?",
   "part_dialog_server": "Server: {server}",
   "part_dialog_reason": "Part message (optional)",

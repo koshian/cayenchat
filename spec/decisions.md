@@ -3681,7 +3681,13 @@ the start of the session.
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
   and blurs it, so fine detail is lost. This happens once per file, on a
   background thread; the window keeps one result (the selected channel's)
-  and drops a result that arrives for another key. The picture is the
+  and drops a result that arrives for another key. Each slot holds the
+  `CancelFlag` of its load (#986): releasing the slot (another file or blur,
+  no wallpaper, window closed) cancels it, and the load stops at its next
+  check (before the file is opened, after it is read, at and after the
+  decode gate, before the blur) and its result is not applied. A read blocked
+  in the OS, a decode or a blur already running is not interrupted, so a
+  superseded load can still finish that step. The picture is the
   backmost layer and the log's background color lies over it with an
   opacity, so a high-contrast photo leaves the text readable in the light
   and the dark theme (D088 replaced the first version's baked-in tint and
@@ -3954,9 +3960,10 @@ the start of the session.
   so, and offers a forced quit after two seconds (#982, `architecture.md`,
   Credentials); the system's shutdown and signals wait at most two seconds.
   Reads count too: a read stuck on a permission prompt also holds the queue
-  behind it, and the choice to quit anyway is the way out. A failure that
-  arrives while the quit waits is reported by the window that asked, which
-  the quit may then close; it is not retried.
+  behind it, and the choice to quit anyway is the way out. A save or delete
+  that fails while the quit waits, or a note that cannot be written, stops the
+  quit from going on by itself: the dialog says so and the user quits anyway
+  or cancels. A failed read does not.
 - **What a result is applied to.** A result is tied to what it was read or
   written for, because the UI keeps changing while a job waits. A read of a
   server's secrets carries the profile it was read for; if the profile has
