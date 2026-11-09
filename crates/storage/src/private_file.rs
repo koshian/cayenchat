@@ -76,8 +76,16 @@ fn replace_durably(from: &Path, to: &Path, parent: &Path) -> io::Result<()> {
         };
         let wide =
             |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain(Some(0)).collect() };
-        let _ = parent;
-        let (from, to) = (wide(from), wide(to));
+        // `MoveFileExW` takes a path of at most MAX_PATH units unless it is
+        // in the `\\?\` form, which `fs::rename` used to add itself. The
+        // canonical directory has that form; both files live in it.
+        let parent = fs::canonicalize(parent)?;
+        let named = |path: &Path| {
+            path.file_name()
+                .map(|name| parent.join(name))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))
+        };
+        let (from, to) = (wide(&named(from)?), wide(&named(to)?));
         // SAFETY: both buffers are NUL-terminated and outlive the call.
         let moved = unsafe {
             MoveFileExW(
@@ -130,6 +138,20 @@ mod tests {
         write(&path, b"b", Flush::Disk).unwrap();
         assert_eq!(count(), 1);
         assert_eq!(fs::read(&path).unwrap(), b"b");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_disk_write_replaces_a_file_under_a_path_over_max_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut long = directory.path().to_path_buf();
+        while long.as_os_str().len() <= 300 {
+            long.push("a_directory_name_of_some_length");
+        }
+        let path = long.join("file.json");
+        write(&path, b"first", Flush::Disk).unwrap();
+        write(&path, b"second", Flush::Disk).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
     }
 
     #[test]
