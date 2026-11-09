@@ -766,7 +766,9 @@ impl ChatWindow {
                 return false;
             }
             if scanning {
+                // The early keys are in `read`, so the scan notes them.
                 profile.keyed_channels = Some(Vec::new());
+                profile.early_keyed_channels.clear();
             }
             let mut changed = scanning;
             for channel in read {
@@ -811,6 +813,9 @@ impl ChatWindow {
                 theirs.sasl_key_saved = ours.sasl_key_saved;
                 theirs.remember_passwords = ours.remember_passwords;
                 theirs.keyed_channels.clone_from(&ours.keyed_channels);
+                theirs
+                    .early_keyed_channels
+                    .clone_from(&ours.early_keyed_channels);
             }
         }
     }
