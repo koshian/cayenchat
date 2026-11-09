@@ -604,3 +604,55 @@ fn the_wait_dialog_fits_its_text_and_buttons(cx: &mut TestAppContext) {
         "the button is inside the box"
     );
 }
+
+/// A note still unwritten when no store job is out holds the quit too, and
+/// another quit request while the failure is shown does not end it.
+#[gpui::test]
+fn an_unwritten_note_holds_a_later_quit_until_the_user_answers(cx: &mut TestAppContext) {
+    let app = cx.clone();
+    cx.update(set_theme);
+    let (chat, cx) = cx
+        .add_window_view(|window, cx| ChatWindow::with_settings(settings(false), None, window, cx));
+    chat.update(cx, |c, _| {
+        c.pending_notes
+            .insert(settings(false).servers[0].id.clone())
+    });
+    crate::settings_file::fail_saves(true);
+    app.update(crate::quit_app);
+    assert!(shown(cx, "quit-wait-force"), "no job, still held");
+    assert!(chat.read_with(cx, |c, _| c.quit_dialog.shows_trouble()));
+    app.update(crate::quit_app);
+    assert!(
+        shown(cx, "quit-wait-force"),
+        "a second request changes nothing"
+    );
+
+    // Cancelled and fixed, the next quit writes the note and goes on.
+    cx.simulate_keystrokes("escape");
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+    crate::settings_file::fail_saves(false);
+    app.update(crate::quit_app);
+    cx.run_until_parked();
+    assert!(chat.read_with(cx, |c, _| c.pending_notes.is_empty()));
+    assert!(!chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()));
+}
+
+/// Enter on a wait button acts on the key press only; the release must not
+/// press the button that appears under the focus next.
+#[gpui::test]
+fn the_key_release_does_not_press_the_next_wait_button(cx: &mut TestAppContext) {
+    let (_release, _, chat, cx, _result) = quit_during_a_write(cx, false, false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(shown(cx, "quit-wait-force"));
+    // "Keep waiting" has the focus; Enter, with its release.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    cx.run_until_parked();
+    assert!(
+        chat.read_with(cx, |c, _| c.quit_dialog.is_waiting()),
+        "waiting goes on"
+    );
+}

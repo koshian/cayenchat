@@ -2135,11 +2135,16 @@ holds the quit. The chat window then shows what it waits for
 (`quit_dialog`) and quits by itself, through the usual checks, when the store is
 idle (`secrets::idle`, woken by the release of the last job). After two seconds
 it offers "Keep waiting" and "Quit anyway" (`secrets::abandon`); Cancel gives
-the quit up. A failed save is not a success: when the wait ends the pending
-notes are written (a retry), and if a save or delete failed
-(`secrets::failed`, counted by `CredentialStore::write_failures` or a lost job)
-or a note is still unwritten, the quit does not go on by itself; the dialog
-says so and offers "Quit anyway" or Cancel (which acknowledges the failure).
+the quit up. A failed save is not a success. `quit_app` leaves the decision to
+the chat window (`quit_checked`), in this order: while the wait dialog is up
+nothing is decided (a second quit request cannot end an unanswered failure);
+a job still out is waited for; a note still unwritten is written again; if it
+cannot be, or if a save or delete failed while waiting (`secrets::failed`,
+counted by `CredentialStore::write_failures` or a lost job), the quit does not
+go on and the dialog says so, offering "Quit anyway" or Cancel (which
+acknowledges a store failure). A later quit retries the note. The dialog's
+buttons act on the key press only, so the key release does not press the
+button that takes its place.
 A failed settings save still refuses the quit (`settings_block_quit`). The system's shutdown and signals cannot ask and only
 wait up to two seconds for the queue (`secrets::flush`); a forced quit, a kill
 or a power loss may leave a save or delete undone.

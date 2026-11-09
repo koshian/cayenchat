@@ -73,19 +73,54 @@ impl QuitDialog {
 }
 
 impl ChatWindow {
-    /// Holds an ordinary quit back until the credential store has taken in
-    /// every save and delete (#982), saying what it waits for. The quit
-    /// itself is `quit_app`, run again when the store is idle.
-    pub(crate) fn wait_for_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The decision of an ordinary quit, run by `quit_app` (#982). Nothing
+    /// is decided while the wait dialog is up, so a second quit request
+    /// cannot end a failure the user has not answered. Otherwise: a store job
+    /// still out is waited for; a note not yet written is written again; if
+    /// it still cannot be, the dialog says so; else the app quits.
+    pub(crate) fn quit_checked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.quit_dialog.waiting.is_some() {
             return;
         }
-        window.activate_window();
-        // Failures from before this wait were shown where they happened.
-        crate::secrets::acknowledge_failure(cx);
-        self.quit_dialog.previous = window.focused(cx);
+        if crate::secrets::pending(cx) {
+            window.activate_window();
+            // Failures from before this wait were shown where they happened.
+            crate::secrets::acknowledge_failure(cx);
+            self.begin_quit_dialog(window, cx);
+            self.watch_secrets(window, cx);
+            return;
+        }
+        if !self.pending_notes.is_empty() {
+            self.write_pending_notes();
+            if !self.pending_notes.is_empty() {
+                window.activate_window();
+                self.begin_quit_dialog(window, cx);
+                self.show_trouble(cx);
+                return;
+            }
+        }
+        cx.quit();
+    }
+
+    /// Remembers where the focus was, unless a question already has.
+    fn begin_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_dialog.previous.is_none() {
+            self.quit_dialog.previous = window.focused(cx);
+        }
         self.quit_dialog.focus_pending = true;
-        self.watch_secrets(window, cx);
+        cx.notify();
+    }
+
+    /// The held-back quit stops: the user chooses to quit anyway or stay.
+    fn show_trouble(&mut self, cx: &mut Context<Self>) {
+        let wait = self.quit_dialog.waiting.get_or_insert_with(|| SecretsWait {
+            slow: false,
+            trouble: false,
+            task: Task::ready(()),
+        });
+        wait.slow = false;
+        wait.trouble = true;
+        self.quit_dialog.focus_pending = true;
         cx.notify();
     }
 
@@ -119,19 +154,12 @@ impl ChatWindow {
         });
     }
 
-    /// The store is idle. The notes of what it saved are written now (a
-    /// retry if they were not), and the quit goes on through the usual
-    /// checks only if every save and note went in; otherwise the dialog says
-    /// so and the user chooses.
+    /// The store is idle. A failed save or delete stops the quit for the
+    /// user to answer; otherwise the quit is decided again, which also writes
+    /// the notes of what the store saved.
     fn secrets_settled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.write_pending_notes();
-        if crate::secrets::failed(cx) || !self.pending_notes.is_empty() {
-            if let Some(wait) = self.quit_dialog.waiting.as_mut() {
-                wait.slow = false;
-                wait.trouble = true;
-            }
-            self.quit_dialog.focus_pending = true;
-            cx.notify();
+        if crate::secrets::failed(cx) {
+            self.show_trouble(cx);
             return;
         }
         if let Some(wait) = self.quit_dialog.waiting.take() {
@@ -251,7 +279,11 @@ impl ChatWindow {
                     .child(
                         div()
                             .font_weight(FontWeight::BOLD)
-                            .child(self.i18n.text("quit_wait_title")),
+                            .child(self.i18n.text(if trouble {
+                                "quit_wait_failed_title"
+                            } else {
+                                "quit_wait_title"
+                            })),
                     )
                     // The width is given: a box sized by its content measures
                     // wrapped text at the one-line width and the lines would
@@ -292,10 +324,10 @@ impl ChatWindow {
             return;
         }
         self.quit_prompt_open = false;
-        let previous = self.quit_dialog.previous.take();
         if quit {
+            // The focus to restore stays for the wait the quit may start.
             crate::quit_app(cx);
-        } else if let Some(handle) = previous {
+        } else if let Some(handle) = self.quit_dialog.previous.take() {
             window.focus(&handle);
         }
         cx.notify();

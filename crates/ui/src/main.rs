@@ -10731,28 +10731,22 @@ pub(crate) fn quit_app(cx: &mut App) {
     if settings_block_quit(cx) {
         return;
     }
-    if secrets::pending(cx) {
-        // A save or delete of a credential, or the note of it, has not been
-        // taken in yet (#982). The chat window says what is awaited and
-        // quits by itself when the store is done. Deferred: this may run
-        // inside that window's own update.
-        cx.defer(|cx| {
-            let held = cx
-                .windows()
-                .into_iter()
-                .find_map(|w| w.downcast::<ChatWindow>())
-                .is_some_and(|chat| {
-                    chat.update(cx, |this, window, cx| this.wait_for_secrets(window, cx))
-                        .is_ok()
-                });
-            // With no chat window nothing could say what is awaited.
-            if !held {
-                cx.quit();
-            }
-        });
-        return;
-    }
-    cx.quit();
+    // The chat window decides (store jobs and notes still out, #982) and
+    // says what it waits for. Deferred: this may run inside its own update.
+    cx.defer(|cx| {
+        let held = cx
+            .windows()
+            .into_iter()
+            .find_map(|w| w.downcast::<ChatWindow>())
+            .is_some_and(|chat| {
+                chat.update(cx, |this, window, cx| this.quit_checked(window, cx))
+                    .is_ok()
+            });
+        // With no chat window nothing could say what is awaited.
+        if !held {
+            cx.quit();
+        }
+    });
 }
 
 /// The chat window cannot be updated while it is handling an event, which is
