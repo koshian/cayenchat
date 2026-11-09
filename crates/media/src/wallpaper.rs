@@ -54,6 +54,10 @@ pub fn load(path: &Path, blur: u8, cancel: &CancelFlag) -> Result<Thumbnail, Loa
     Ok(thumbnail)
 }
 
+/// File name extensions of the formats [`validate`] accepts, for a file
+/// dialog to offer only those files. The content check stays the authority.
+pub const FILE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
 /// Checks that `bytes` are a wallpaper image this app can draw (PNG, JPEG,
 /// GIF or WebP within the decoder's size limits) and returns the file name
 /// extension for its format. Decodes it, so run it off the UI thread.

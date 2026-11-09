@@ -933,8 +933,9 @@ pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
 pub const MAX_WALLPAPER_BLUR: u8 = 30;
 /// No blur unless set (the maintainer found even #950's first 3 too strong).
 pub const DEFAULT_WALLPAPER_BLUR: u8 = 0;
-/// The background color over a wallpaper is 80 % opaque unless set.
-pub const DEFAULT_BACKGROUND_OPACITY: u8 = 80;
+/// The background color over a wallpaper is 50 % opaque unless set (the
+/// wallpaper shows at 50 %; the UI shows `100 - value`).
+pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
 
 impl ChannelLook {
     /// Whether any field differs from the global appearance.
@@ -2627,13 +2628,28 @@ fn parse_settings(bytes: &[u8], unchanged: &str) -> Result<Settings, String> {
     Ok(settings)
 }
 
+/// [`save`], but returns only once the file is on disk. This waits for the
+/// disk, so call it off the UI thread, and only where something irreversible
+/// follows the save (such as deleting the secrets of the old credential store).
+pub fn save_durable(settings: &Settings) -> Result<(), String> {
+    write_settings(&settings_path()?, settings, private_file::Flush::Disk)
+}
+
 /// Writes settings to `path`, readable only by the user, replacing the file
 /// whole or not at all.
 pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
+    // The settings window saves on the UI thread, so the file is not flushed.
+    write_settings(path, settings, private_file::Flush::Skip)
+}
+
+fn write_settings(
+    path: &Path,
+    settings: &Settings,
+    flush: private_file::Flush,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(&settings.clone().normalize())
         .map_err(|error| format!("Could not serialize settings: {error}"))?;
-    // The settings window saves on the UI thread, so the file is not flushed.
-    private_file::write(path, &bytes, private_file::Flush::Skip)
+    private_file::write(path, &bytes, flush)
         .map_err(|error| format!("Could not write settings: {error}"))
 }
 
