@@ -927,8 +927,9 @@ pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
 pub const MAX_WALLPAPER_BLUR: u8 = 30;
 /// No blur unless set (the maintainer found even #950's first 3 too strong).
 pub const DEFAULT_WALLPAPER_BLUR: u8 = 0;
-/// The background color over a wallpaper is 80 % opaque unless set.
-pub const DEFAULT_BACKGROUND_OPACITY: u8 = 80;
+/// The background color over a wallpaper is 50 % opaque unless set (the
+/// wallpaper shows at 50 %; the UI shows `100 - value`).
+pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
 
 impl ChannelLook {
     /// Whether any field differs from the global appearance.
