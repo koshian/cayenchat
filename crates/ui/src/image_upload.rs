@@ -58,14 +58,15 @@ pub(crate) fn configured_uploader(
         // it (#642). A note that cannot be written is corrected at the next
         // upload.
         match reading.await.unwrap_or_else(|| Err(secrets::stopped())) {
-            Ok(Some(token)) => {
+            // An empty value is no token: it would only fail at the upload.
+            Ok(Some(token)) if !token.is_empty() => {
                 let _ = settings_file::note_upload_token(info.id, true);
                 Ok((
                     UploaderReadiness::Ready { provider },
                     cayenchat_upload::connect(info.id, token),
                 ))
             }
-            Ok(None) => {
+            Ok(Some(_) | None) => {
                 let _ = settings_file::note_upload_token(info.id, false);
                 Ok((UploaderReadiness::NeedsAccount { provider }, None))
             }
