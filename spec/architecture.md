@@ -2126,8 +2126,28 @@ slow store installs `secrets::Worker::start()` with a gated backend. The
 settings file stays small synchronous I/O on the UI thread. Deleting the
 secrets of removed servers is queued after the settings are written; one that
 fails is kept in the window (`forget_pending`) and tried again by the next
-save, and its error is shown as the autosave error. Quitting waits up to two
-seconds for the queue (`secrets::flush`).
+save, and its error is shown as the autosave error. An ordinary quit
+(`quit_app`) does not end while a credential job is outstanding
+(`secrets::pending`): a job counts from the moment it is queued until its
+caller has taken the result in and run what follows (the note in the settings
+file, the report), so a finished worker job whose note is not yet written still
+holds the quit. The chat window then shows what it waits for
+(`quit_dialog`) and quits by itself, through the usual checks, when the store is
+idle (`secrets::idle`, woken by the release of the last job). After two seconds
+it offers "Keep waiting" and "Quit anyway" (`secrets::abandon`); Cancel gives
+the quit up. A failed save is not a success. `quit_app` leaves the decision to
+the chat window (`quit_checked`), in this order: while the wait dialog is up
+nothing is decided (a second quit request cannot end an unanswered failure);
+a job still out is waited for; a note still unwritten is written again; if it
+cannot be, or if a save or delete failed while waiting (`secrets::failed`,
+counted by `CredentialStore::write_failures` or a lost job), the quit does not
+go on and the dialog says so, offering "Quit anyway" or Cancel (which
+acknowledges a store failure). A later quit retries the note. The dialog's
+buttons act on the key press only, so the key release does not press the
+button that takes its place.
+A failed settings save still refuses the quit (`settings_block_quit`). The system's shutdown and signals cannot ask and only
+wait up to two seconds for the queue (`secrets::flush`); a forced quit, a kill
+or a power loss may leave a save or delete undone.
 
 The store is touched only when the settings file notes that a secret is saved,
 or when the user acts on it, because reading any entry can ask for the login
