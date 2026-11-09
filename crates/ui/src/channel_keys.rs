@@ -1129,9 +1129,102 @@ enum StoreChange {
 
 #[cfg(test)]
 mod refresh_tests {
-    use super::{BTreeMap, ConnectionConfig, StoredKeys, update_keys_if_valid};
+    use super::{
+        BTreeMap, ConnectionConfig, StoredKeys, stored_channel_keys, update_keys_if_valid,
+    };
+    use cayenchat_storage::{
+        CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey, ServerProfile,
+        credentials::{CredentialBackend, MemoryBackend},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
-    fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
+    /// A memory store whose reads of `#bad` fail while `broken` is set.
+    struct Flaky {
+        inner: MemoryBackend,
+        broken: Arc<AtomicBool>,
+    }
+
+    impl CredentialBackend for Flaky {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+        fn is_memory(&self) -> bool {
+            true
+        }
+        fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
+            if self.broken.load(Ordering::SeqCst) && key.name().ends_with("/#bad") {
+                return Err(CredentialError::Access("locked".into()));
+            }
+            self.inner.get(key)
+        }
+        fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
+            self.inner.set(key, value)
+        }
+        fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
+            self.inner.delete(key)
+        }
+    }
+
+    fn flaky_store() -> (CredentialStore, Arc<AtomicBool>, ServerProfile) {
+        let broken = Arc::new(AtomicBool::new(true));
+        let store = CredentialStore::with_backend(Arc::new(Flaky {
+            inner: MemoryBackend::new(CredentialBackendKind::System),
+            broken: broken.clone(),
+        }));
+        let mut profile = ServerProfile::default();
+        profile.id = "p".into();
+        profile.channels = "#good,#bad".into();
+        profile.keyed_channels = Some(vec!["#good".into(), "#bad".into()]);
+        for channel in ["#good", "#bad"] {
+            store
+                .set(&SecretKey::channel_key("p", channel), &Secret::new("k"))
+                .unwrap();
+        }
+        (store, broken, profile)
+    }
+
+    #[test]
+    fn an_unreadable_channel_makes_the_read_incomplete_but_keeps_the_others() {
+        let (store, _, profile) = flaky_store();
+        let stored = stored_channel_keys(&profile, &store);
+        assert!(!stored.complete);
+        assert_eq!(stored.keys.keys().collect::<Vec<_>>(), ["#good"]);
+    }
+
+    #[test]
+    fn a_read_of_every_channel_is_complete() {
+        let (store, broken, profile) = flaky_store();
+        broken.store(false, Ordering::SeqCst);
+        let stored = stored_channel_keys(&profile, &store);
+        assert!(stored.complete);
+        assert_eq!(stored.keys.len(), 2);
+    }
+
+    #[test]
+    fn a_reconnect_after_the_store_recovers_gives_the_connection_its_keys() {
+        let (store, broken, profile) = flaky_store();
+        // The read at connect time failed: only `#good` was found.
+        let mut config = ConnectionConfig::tls(
+            "irc.example".into(),
+            "nick".into(),
+            vec!["#good".into(), "#bad".into()],
+        );
+        update_keys_if_valid(&mut config, stored_channel_keys(&profile, &store));
+        assert!(!config.channel_keys.contains_key("#bad"));
+        // The store recovers; a reconnect reads again and only adds (as
+        // `connect_auth` does, with `complete` cleared).
+        broken.store(false, Ordering::SeqCst);
+        let mut stored = stored_channel_keys(&profile, &store);
+        stored.complete = false;
+        update_keys_if_valid(&mut config, stored);
+        assert_eq!(config.channel_keys["#good"], "k");
+        assert_eq!(config.channel_keys["#bad"], "k");
+    }
+
+    fn update_with_complete_read(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
         update_keys_if_valid(
             config,
             StoredKeys {
@@ -1178,7 +1271,7 @@ mod refresh_tests {
     #[test]
     fn a_valid_new_set_replaces_the_keys() {
         let mut config = config_with("old");
-        replace_keys_if_valid(
+        update_with_complete_read(
             &mut config,
             BTreeMap::from([("#a".to_owned(), "new".to_owned())]),
         );
@@ -1193,7 +1286,7 @@ mod refresh_tests {
             username: "acct".into(),
             password: String::new(),
         });
-        replace_keys_if_valid(
+        update_with_complete_read(
             &mut config,
             BTreeMap::from([("#a".to_owned(), "new".to_owned())]),
         );
@@ -1205,7 +1298,7 @@ mod refresh_tests {
     fn an_invalid_new_set_keeps_the_keys_it_had() {
         let mut config = config_with("old");
         assert!(config.validate().is_ok());
-        replace_keys_if_valid(
+        update_with_complete_read(
             &mut config,
             BTreeMap::from([("#a".to_owned(), "k".repeat(1000))]),
         );

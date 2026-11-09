@@ -381,6 +381,7 @@ impl ChatWindow {
             let mut config = config;
             if let Some(keys) = keys {
                 let mut stored = keys.await;
+                // Add only: forgetting a key is a complete refresh's job.
                 stored.complete = false;
                 crate::channel_keys::update_keys_if_valid(&mut config, stored);
             }
