@@ -832,12 +832,44 @@ impl ChannelSettingsView {
         self.edited(cx);
     }
 
+    /// The blur and the opacity the sliders show: the effective ones, so an
+    /// inherited value is the standard wallpaper's, as the miniature and the
+    /// channel log use it. They become the channel's own only when moved.
+    pub(crate) fn shown_strengths(&self, cx: &App) -> (u8, u8) {
+        let inherits = self.look.wallpaper_choice == WallpaperChoice::Inherit
+            && self.look.wallpaper.read(cx).text().trim().is_empty();
+        if !inherits || (self.look.blur_own && self.look.opacity_own) {
+            return (self.look.blur, self.look.opacity);
+        }
+        let dark = crate::theme::current(cx).dark;
+        let standard = self
+            .owner
+            .read(cx)
+            .map(|chat| chat.appearance.wallpapers(dark).channel_log.clone())
+            .unwrap_or_default();
+        if standard.path.is_none() {
+            return (self.look.blur, self.look.opacity);
+        }
+        (
+            if self.look.blur_own {
+                self.look.blur
+            } else {
+                standard.blur_tenths()
+            },
+            if self.look.opacity_own {
+                self.look.opacity
+            } else {
+                standard.opacity_percent()
+            },
+        )
+    }
+
     pub(crate) fn set_fit(&mut self, fit: WallpaperFit, cx: &mut Context<Self>) {
         self.look.fit = fit;
         self.edited(cx);
     }
 
-    fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
+    pub(crate) fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
         self.look.blur = blur.min(u32::from(MAX_WALLPAPER_BLUR)) as u8;
         self.look.blur_own = true;
         self.edited(cx);
@@ -1107,19 +1139,17 @@ impl Render for ChannelSettingsView {
             knob: palette.surface,
             ring,
         };
+        let (shown_blur, shown_opacity) = self.shown_strengths(cx);
         let blur = Self::field(
             self.i18n.format(
                 "channel_look_blur",
-                &[(
-                    "value",
-                    &format!("{}.{}", self.look.blur / 10, self.look.blur % 10),
-                )],
+                &[("value", &format!("{}.{}", shown_blur / 10, shown_blur % 10))],
             ),
             &palette,
         )
         .child(slider::slider(
             "channel-look-blur",
-            u32::from(self.look.blur),
+            u32::from(shown_blur),
             u32::from(MAX_WALLPAPER_BLUR),
             &self.look.blur_track,
             &self.controls.blur,
@@ -1130,13 +1160,13 @@ impl Render for ChannelSettingsView {
         let opacity = Self::field(
             self.i18n.format(
                 "channel_look_opacity",
-                &[("value", &self.look.opacity.to_string())],
+                &[("value", &shown_opacity.to_string())],
             ),
             &palette,
         )
         .child(slider::slider(
             "channel-look-opacity",
-            u32::from(self.look.opacity),
+            u32::from(shown_opacity),
             100,
             &self.look.opacity_track,
             &self.controls.opacity,

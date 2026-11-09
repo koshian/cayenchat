@@ -6,6 +6,7 @@ use crate::channel_settings_dialog::ChannelSettingsView;
 use cayenchat_model::names::CaseMapping;
 use cayenchat_storage::{
     CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, TextEncoding, WallpaperFit,
+    WallpaperRegion,
 };
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
@@ -729,5 +730,33 @@ fn a_dropped_image_is_cut_to_the_chosen_range_and_kept_as_the_wallpaper(cx: &mut
         second
     );
     let _ = std::fs::remove_dir_all(&dir);
+    drop(file);
+}
+
+#[gpui::test]
+fn an_inherited_blur_shows_the_standard_value_and_zero_can_be_chosen(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    chat.update(cx, |chat, cx| {
+        let dark = crate::theme::current(cx).dark;
+        let standard = chat
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(WallpaperRegion::ChannelLog);
+        standard.path = Some("standard.png".into());
+        standard.blur = Some(30);
+    });
+    let (view, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    // Inheriting: the slider shows the standard blur, and nothing is the
+    // channel's own yet.
+    view.read_with(wcx, |view, cx| {
+        assert_eq!(view.shown_strengths(cx).0, 30);
+        assert_eq!(view.look(cx).unwrap().wallpaper_blur, None);
+    });
+    view.update_in(wcx, |view, window, cx| {
+        view.set_blur_value(0, cx);
+        view.save_now(window, cx);
+        assert_eq!(view.look(cx).unwrap().wallpaper_blur, Some(0));
+        assert_eq!(view.shown_strengths(cx).0, 0);
+    });
     drop(file);
 }
