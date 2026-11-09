@@ -2133,6 +2133,19 @@ change read only the noted channels, the refresh runs only when a noted channel
 was added to the list, and the note is corrected from what the store returned
 (D052).
 
+**Concurrent writers of the credential notes (CRED-3, CRED-4).** The backend
+choice is changed only by `settings_file::set_credential_backend`, a short
+read-modify-write that sets that one field; `settings_file::save` (every
+whole-file save and a settings import) keeps the file's choice, so a window holding an older
+snapshot cannot write the old store back while or after the secrets move. The
+file lock is never held across the copy. A channel key written to the store
+and confirmed is noted in `keyed_channels` even when its connection has gone
+(a reconnect); only the running connection's configuration is skipped then.
+Results of one channel are ordered by the order the writes were queued, not by
+the order the callbacks arrive, so an older success cannot undo a newer one; a
+failed write changes no note. A note the file refuses stays pending
+(`pending_notes`) for the next save.
+
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the
 store again; unchanged values are not written back, and failed reads are not
