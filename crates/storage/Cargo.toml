@@ -27,6 +27,10 @@ security-framework = "3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# `MoveFileExW` with write-through makes the replacing rename durable.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [features]
 # Test builds keep settings and the local credential file in a fresh
 # temporary directory per launch and file system-store secrets under a

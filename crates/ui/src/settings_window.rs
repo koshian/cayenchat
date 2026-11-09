@@ -701,7 +701,7 @@ impl SettingsForm {
             false,
         );
         crate::connect_auth::while_incomplete(&mut config, |config| {
-            crate::channel_keys::use_keys(config, stored.keys);
+            crate::channel_keys::use_keys(config, stored.keys.keys);
             config.validate()
         })?;
         // What the read found corrects the note of stored passwords; the
@@ -1128,6 +1128,9 @@ fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) 
             server.sasl_saved = theirs.sasl_saved;
             server.sasl_key_saved = theirs.sasl_key_saved;
             server.remember_passwords = theirs.remember_passwords;
+            // The channels whose keys are stored: a join that saved one wrote
+            // the note, and an older copy would hide the key from later reads.
+            server.keyed_channels.clone_from(&theirs.keyed_channels);
         }
     }
 }
@@ -1908,6 +1911,16 @@ impl SettingsWindow {
         let _ = self
             .owner
             .update(cx, |owner, _, _| owner.overlay_pending_notes(&mut settings));
+        // The notes the chat window wrote since `previous` was taken (a
+        // channel key saved meanwhile) are only in the file. Only profiles
+        // `previous` has count: the file may hold servers another process
+        // added, which are not removed by this save (#1001).
+        let mut removed = removed_secret_keys(previous, &settings);
+        if let Ok(Some(mut file)) = settings_file::load() {
+            file.servers
+                .retain(|server| previous.servers.iter().any(|p| p.id == server.id));
+            removed.extend(removed_secret_keys(&file, &settings));
+        }
         if let Err(error) = settings_file::save(&settings) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
@@ -1916,7 +1929,7 @@ impl SettingsWindow {
         // After the save: a failed save must not cost the secrets of profiles
         // the file still holds (#760). The deletion is done by the store
         // thread; one that fails is tried again by the next Save.
-        self.forget_removed(removed_secret_keys(previous, &settings), cx);
+        self.forget_removed(removed, cx);
         Ok(settings)
     }
 
@@ -7270,6 +7283,19 @@ mod escape_tests {
         assert!(pending, "nothing is left to write");
     }
 
+    #[test]
+    fn password_notes_followed_include_the_keyed_channels() {
+        let mut file = crate::settings_with_channels("#a");
+        file.selected_profile_mut().unwrap().keyed_channels = Some(vec!["#a".into()]);
+        let mut form = file.clone();
+        form.selected_profile_mut().unwrap().keyed_channels = Some(Vec::new());
+        super::follow_password_notes(&mut form.servers, &file.servers);
+        assert_eq!(
+            form.selected_profile().unwrap().keyed_channels,
+            Some(vec!["#a".to_owned()])
+        );
+    }
+
     #[gpui::test]
     fn failed_save_keeps_the_secrets_of_removed_profiles(cx: &mut TestAppContext) {
         use cayenchat_storage::Secret;
@@ -7302,6 +7328,33 @@ mod escape_tests {
         let result = form.update(cx, |form, cx| form.commit_settings(&previous, next, cx));
         assert!(result.is_ok());
         assert!(!store.contains(&removed.server_password_key()).unwrap());
+    }
+
+    /// #1001: a key noted in the file after this window took its snapshot
+    /// is deleted with its server, though `previous` does not list it.
+    #[gpui::test]
+    fn removing_a_server_forgets_a_key_noted_after_the_snapshot(cx: &mut TestAppContext) {
+        use cayenchat_storage::Secret;
+        let mut previous = crate::settings_with_channels("#a");
+        previous.selected_profile_mut().unwrap().keyed_channels = Some(Vec::new());
+        let id = previous.selected_profile().unwrap().id.clone();
+        let mut noted = previous.clone();
+        noted
+            .selected_profile_mut()
+            .unwrap()
+            .note_channel_key("#a", true);
+        let keys = noted.profile(&id).unwrap().channel_key_secret_keys();
+        assert_eq!(keys.len(), 1);
+        let _file = crate::settings_file::TestFile::with(&noted);
+        let (form, cx, _app) = open(cx, previous.clone());
+        let store = form.update(cx, |_, cx| crate::secrets::store(cx));
+        store.set(&keys[0], &Secret::new("k")).unwrap();
+
+        let mut next = previous.clone();
+        next.remove_selected_server();
+        let result = form.update(cx, |form, cx| form.commit_settings(&previous, next, cx));
+        assert!(result.is_ok());
+        assert!(!store.contains(&keys[0]).unwrap());
     }
 }
 
