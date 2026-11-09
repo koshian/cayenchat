@@ -46,10 +46,20 @@ pub(crate) fn set_credential_backend(
 }
 
 /// Replaces the file with `settings` after copying the old one beside it;
-/// returns where the copy is (`None` when there was no file).
+/// returns where the copy is (`None` when there was no file). Like `save`, it
+/// keeps the credential backend the file holds, so an import cannot write
+/// back a store the secrets have been moved out of.
 #[cfg(not(test))]
 pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>, String> {
-    cayenchat_storage::transfer::replace_settings(settings)
+    let _write = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    match cayenchat_storage::load() {
+        Ok(Some(file)) if file.credential_backend != settings.credential_backend => {
+            let mut settings = settings.clone();
+            settings.credential_backend = file.credential_backend;
+            cayenchat_storage::transfer::replace_settings(&settings)
+        }
+        _ => cayenchat_storage::transfer::replace_settings(settings),
+    }
 }
 
 #[cfg(test)]
@@ -1442,6 +1452,16 @@ mod tests {
         assert_eq!(
             super::load().unwrap().unwrap().credential_backend,
             CredentialBackendKind::LocalFile
+        );
+        // The file names the store that holds the secret, so the next start
+        // reads it from there.
+        let store = cx.update(|_, cx| secrets::store(cx));
+        assert!(
+            store
+                .get(&cayenchat_storage::SecretKey::uploader_token("imgbb"))
+                .unwrap()
+                .is_some(),
+            "the moved secret is in the new store"
         );
         drop(file);
     }

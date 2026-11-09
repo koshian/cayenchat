@@ -2123,7 +2123,7 @@ was added to the list, and the note is corrected from what the store returned
 **Concurrent writers of the credential notes (CRED-3, CRED-4).** The backend
 choice is changed only by `settings_file::set_credential_backend`, a short
 read-modify-write that sets that one field; `settings_file::save` (every
-whole-file save) keeps the file's choice, so a window holding an older
+whole-file save and a settings import) keeps the file's choice, so a window holding an older
 snapshot cannot write the old store back while or after the secrets move. The
 file lock is never held across the copy. A channel key written to the store
 and confirmed is noted in `keyed_channels` even when its connection has gone

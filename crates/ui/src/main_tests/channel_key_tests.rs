@@ -3,6 +3,7 @@ use super::{ChatWindow, Worker};
 use crate::channel_keys::KeyJoin;
 use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
+use cayenchat_storage::credentials::CredentialBackend as _;
 use cayenchat_storage::{CredentialStore, Secret, SecretKey};
 use gpui::TestAppContext;
 use std::collections::BTreeMap;
@@ -816,6 +817,198 @@ fn a_failed_forget_after_a_save_keeps_the_note(cx: &mut TestAppContext) {
         chat.key_store_written(NET, save, Ok(()), cx);
         let forget = written(chat, 2, None, 0);
         chat.key_store_written(NET, forget, store_refused(), cx);
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
+
+/// A store behind the real credential worker whose writes wait for the test
+/// (one token each), and whose removals can be made to fail.
+struct SlowWrites {
+    inner: cayenchat_storage::credentials::MemoryBackend,
+    gate: std::sync::Mutex<mpsc::Receiver<()>>,
+    refuse_delete: std::sync::atomic::AtomicBool,
+}
+
+impl cayenchat_storage::credentials::CredentialBackend for SlowWrites {
+    fn kind(&self) -> cayenchat_storage::CredentialBackendKind {
+        self.inner.kind()
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &SecretKey) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+        self.inner.get(key)
+    }
+
+    fn set(
+        &self,
+        key: &SecretKey,
+        value: &Secret,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.wait();
+        self.inner.set(key, value)
+    }
+
+    fn delete(&self, key: &SecretKey) -> Result<(), cayenchat_storage::CredentialError> {
+        self.wait();
+        if self.refuse_delete.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(cayenchat_storage::CredentialError::Io("refused".into()));
+        }
+        self.inner.delete(key)
+    }
+}
+
+impl SlowWrites {
+    fn wait(&self) {
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the test lets the write go");
+    }
+}
+
+/// Opens a chat whose key writes run on the real worker against `SlowWrites`.
+fn open_chat_with_worker(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<ChatWindow>,
+    mpsc::Sender<()>,
+    std::sync::Arc<SlowWrites>,
+    &mut gpui::VisualTestContext,
+) {
+    let (release, gate) = mpsc::channel();
+    let backend = std::sync::Arc::new(SlowWrites {
+        inner: cayenchat_storage::credentials::MemoryBackend::new(
+            cayenchat_storage::CredentialBackendKind::System,
+        ),
+        gate: std::sync::Mutex::new(gate),
+        refuse_delete: Default::default(),
+    });
+    let (chat, _store, cx) = open_chat(None, cx);
+    cx.update(|_, cx| {
+        let store = CredentialStore::with_backend(backend.clone());
+        cx.set_global(crate::secrets::Credentials(store.clone()));
+        cx.set_global(crate::secrets::Worker::start(store));
+    });
+    cx.executor().allow_parking();
+    chat.update(cx, |chat, _| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+    });
+    (chat, release, backend, cx)
+}
+
+fn queue_key_write(
+    chat: &gpui::Entity<ChatWindow>,
+    typed: &str,
+    remember: bool,
+    stale: bool,
+    cx: &mut gpui::VisualTestContext,
+) {
+    chat.update(cx, |chat, cx| {
+        chat.sessions
+            .get_mut(&NET)
+            .unwrap()
+            .key_joins
+            .push(KeyJoin {
+                channel: "#Secret".into(),
+                typed: Some(Secret::new(typed)),
+                remember,
+                stale,
+            });
+        chat.key_join_succeeded(NET, "#Secret", cx);
+    });
+}
+
+fn wait_for_key_writes(chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext) {
+    let started = std::time::Instant::now();
+    while chat.read_with(cx, |chat, _| {
+        chat.sessions[&NET].channel_key_writes_pending > 0
+    }) {
+        assert!(started.elapsed().as_secs() < 20, "the writes finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}
+
+fn secret_key(chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext) -> SecretKey {
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    SecretKey::channel_key(&profile, "#secret")
+}
+
+/// CRED-4 through the real queue: the write is held, the connection is
+/// replaced, then the store takes the key. The note is made; the new
+/// connection is not given the old one's key.
+#[gpui::test]
+fn a_queued_key_write_finished_after_a_reconnect_is_noted(cx: &mut TestAppContext) {
+    let (chat, release, backend, cx) = open_chat_with_worker(cx);
+    queue_key_write(&chat, "late", true, false, cx);
+    chat.update(cx, |chat, _| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.generation = session.generation.wrapping_add(1);
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+    release.send(()).unwrap();
+    wait_for_key_writes(&chat, cx);
+    let key = secret_key(&chat, cx);
+    assert!(backend.inner.get(&key).unwrap().is_some());
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+        let config = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert!(!config.channel_keys.contains_key("#Secret"));
+        let profile = chat.saved.profile(&chat.sessions[&NET].profile_id).unwrap();
+        assert_eq!(profile.channel_key_secret_keys().len(), 1);
+    });
+}
+
+/// Save then forget on the one queue: whichever callback is handled, the
+/// note is what the store holds at the end.
+#[gpui::test]
+fn a_queued_save_then_a_forget_that_succeeds_leaves_no_note(cx: &mut TestAppContext) {
+    let (chat, release, backend, cx) = open_chat_with_worker(cx);
+    queue_key_write(&chat, "k", true, false, cx);
+    queue_key_write(&chat, "k", false, true, cx);
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    wait_for_key_writes(&chat, cx);
+    let key = secret_key(&chat, cx);
+    assert!(backend.inner.get(&key).unwrap().is_none());
+    chat.read_with(cx, |chat, _| {
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
+
+#[gpui::test]
+fn a_queued_save_then_a_forget_that_fails_keeps_the_note(cx: &mut TestAppContext) {
+    let (chat, release, backend, cx) = open_chat_with_worker(cx);
+    backend
+        .refuse_delete
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    queue_key_write(&chat, "k", true, false, cx);
+    queue_key_write(&chat, "k", false, true, cx);
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    wait_for_key_writes(&chat, cx);
+    let key = secret_key(&chat, cx);
+    assert!(backend.inner.get(&key).unwrap().is_some(), "still stored");
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
+
+/// Another server's channel of the same name is ordered on its own.
+#[gpui::test]
+fn the_same_channel_on_another_server_is_ordered_on_its_own(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(Vec::new());
+        let mut other = written(chat, 5, None, 1);
+        other.profile = "another-profile".into();
+        chat.key_store_written(NET, other, Ok(()), cx);
+        let save = written(chat, 1, Some("k"), 1);
+        chat.key_store_written(NET, save, Ok(()), cx);
         assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
     });
 }
