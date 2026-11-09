@@ -60,7 +60,16 @@ fn move_secrets(
     // from here on no whole-file save of an older snapshot can put the old
     // backend back (`settings_file::save` keeps the file's choice).
     if let Err(error) = settings_file::set_credential_backend(kind, form) {
-        copied.remove_copies(to);
+        // The error can come after the file was replaced (a failed flush of
+        // the directory). Delete the copies only when the file still names
+        // the old store; if it names the new one, or cannot be read, the
+        // next start may use the new store, so keep the copies and the
+        // originals both. The leftovers are harmless, a lost secret is not.
+        let unchanged = settings_file::load()
+            .is_ok_and(|file| file.is_none_or(|file| file.credential_backend != kind));
+        if unchanged {
+            copied.remove_copies(to);
+        }
         return Err(MoveError::Settings(error));
     }
     let moved = (copied.source_unavailable, copied.count());
@@ -571,4 +580,72 @@ impl SettingsWindow {
 /// The bordered panel below the settings tabs.
 pub(crate) fn panel(_: &App) -> Div {
     div().w_full().flex().flex_col().gap_2()
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::move_secrets;
+    use crate::settings_file;
+    use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings};
+    use cayenchat_storage::{CredentialStore, credentials::MemoryBackend};
+    use std::sync::Arc;
+
+    fn memory(kind: CredentialBackendKind) -> CredentialStore {
+        CredentialStore::with_backend(Arc::new(MemoryBackend::new(kind)))
+    }
+
+    /// The settings file is replaced but the call still fails (#1016): the
+    /// next start uses the new store, so its copies must stay.
+    #[gpui::test]
+    fn a_failure_after_the_file_changed_keeps_the_copies_and_the_originals(
+        _cx: &mut gpui::TestAppContext,
+    ) {
+        let key = SecretKey::uploader_token("imgbb");
+        let mut settings = Settings::default();
+        settings.credential_backend = CredentialBackendKind::System;
+        let _file = settings_file::TestFile::with(&settings);
+        let from = memory(CredentialBackendKind::System);
+        let to = memory(CredentialBackendKind::LocalFile);
+        from.set(&key, &Secret::new("v")).unwrap();
+
+        settings_file::fail_set_backend_after_replace(true);
+        let result = move_secrets(
+            &from,
+            &to,
+            CredentialBackendKind::LocalFile,
+            &settings,
+            vec![key.clone()],
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            settings_file::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        assert!(to.contains(&key).unwrap(), "the copy is kept");
+        assert!(from.contains(&key).unwrap(), "the original is kept");
+    }
+
+    /// A failure that changed nothing still removes the copies.
+    #[gpui::test]
+    fn a_failure_before_the_file_changed_removes_the_copies(_cx: &mut gpui::TestAppContext) {
+        let key = SecretKey::uploader_token("imgbb");
+        let mut settings = Settings::default();
+        settings.credential_backend = CredentialBackendKind::System;
+        let _file = settings_file::TestFile::with(&settings);
+        let from = memory(CredentialBackendKind::System);
+        let to = memory(CredentialBackendKind::LocalFile);
+        from.set(&key, &Secret::new("v")).unwrap();
+
+        settings_file::fail_saves(true);
+        let result = move_secrets(
+            &from,
+            &to,
+            CredentialBackendKind::LocalFile,
+            &settings,
+            vec![key.clone()],
+        );
+        assert!(result.is_err());
+        assert!(!to.contains(&key).unwrap());
+        assert!(from.contains(&key).unwrap());
+    }
 }

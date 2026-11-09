@@ -70,6 +70,9 @@ pub(crate) struct TestState {
     enabled: bool,
     failing: bool,
     unreadable: bool,
+    /// `set_credential_backend` changes the file, then reports an error, as a
+    /// failed flush of the directory after the rename does.
+    fail_after_replace: bool,
 }
 
 /// What a test's file is made of. Each test thread has its own, so tests do
@@ -158,8 +161,17 @@ pub(crate) fn set_credential_backend(
             settings.credential_backend = kind;
             state.file = Some(settings);
         }
+        if state.fail_after_replace {
+            return Err("cannot flush the settings directory".into());
+        }
         Ok(())
     })
+}
+
+/// Makes `set_credential_backend` fail after it replaced the file.
+#[cfg(test)]
+pub(crate) fn fail_set_backend_after_replace(failing: bool) {
+    with_state(|state| state.fail_after_replace = failing);
 }
 
 #[cfg(test)]
