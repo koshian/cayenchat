@@ -1613,17 +1613,12 @@ impl ServerProfile {
     }
 
     /// The store entries that may hold this profile's channel keys: the noted
-    /// channels, or every auto-join channel (disabled ones too, which the
-    /// scan skips but a key may still be stored for) while the first scan is
-    /// still pending.
+    /// channels, or the enabled auto-join channels while the first scan is
+    /// still pending (the set that scan reads).
     pub fn channel_key_secret_keys(&self) -> Vec<SecretKey> {
         let channels = match &self.keyed_channels {
             Some(noted) => noted.clone(),
-            None => self
-                .auto_join_entries()
-                .into_iter()
-                .map(|entry| entry.name)
-                .collect(),
+            None => self.channels(),
         };
         channels
             .iter()
@@ -1683,6 +1678,16 @@ impl ServerProfile {
     pub fn host_bound_secret_keys(&self) -> Vec<SecretKey> {
         let mut keys = vec![self.server_password_key(), self.sasl_password_key()];
         keys.extend(self.channel_key_secret_keys());
+        if self.keyed_channels.is_none() {
+            // The first scan skips disabled channels, but a key may still
+            // be stored for one.
+            keys.extend(
+                self.auto_join_entries()
+                    .into_iter()
+                    .filter(|entry| !entry.enabled)
+                    .map(|entry| SecretKey::channel_key(&self.id, &entry.name)),
+            );
+        }
         keys
     }
 
@@ -2685,12 +2690,11 @@ mod tests {
         let keys = settings.connection_secret_keys();
         assert!(keys.contains(&SecretKey::channel_key(&id, "#noted")));
         assert!(!keys.contains(&SecretKey::channel_key(&id, "#a")));
-        // A file from before the note: every auto-join channel, disabled
-        // ones included.
+        // A file from before the note: the channels the first scan reads.
         settings.selected_profile_mut().unwrap().keyed_channels = None;
         let keys = settings.connection_secret_keys();
         assert!(keys.contains(&SecretKey::channel_key(&id, "#a")));
-        assert!(keys.contains(&SecretKey::channel_key(&id, "#b")));
+        assert!(!keys.contains(&SecretKey::channel_key(&id, "#b")));
     }
 
     #[test]
