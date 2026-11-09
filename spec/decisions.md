@@ -1886,6 +1886,12 @@ does the work, `settings_transfer` draws the questions in the chat window
 - **Machine-specific values** stay as this computer has them: the
   credential backend, the debug log file, and the conversation log folder
   (the choice to log is imported).
+- **No wallpaper paths.** Every wallpaper path (the standard wallpapers of
+  both themes and each channel look's) is dropped, and the confirmation says
+  so (#972). A path is opened when drawn, so a UNC path would reach a remote
+  host, and it is read when a theme is exported, so any file could end up
+  in a shared theme. The theme export also refuses a wallpaper file that is
+  not an image.
 - **Off the UI thread.** The export write and the import's backup (synced
   to disk), replacement and reload of the current file run in the
   background while the dialog shows a notice and ignores answers; the

@@ -30,8 +30,8 @@ pub struct Import {
     pub settings: Settings,
     /// The `version` the file declared, before migration.
     pub source_version: u32,
-    /// The file named a log folder or a diagnostics file of the machine it
-    /// came from; neither is imported.
+    /// The file named a log folder, a diagnostics file or a wallpaper file
+    /// of the machine it came from; none of them is imported.
     pub dropped_local_paths: bool,
 }
 
@@ -104,9 +104,13 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         .appearance
         .validate()
         .map_err(|error| format!("The file holds an invalid appearance setting: {error}"))?;
-    let dropped_local_paths = settings.experimental.debug_logging
+    let mut dropped_local_paths = settings.experimental.debug_logging
         || settings.experimental.stderr_file.is_some()
         || settings.conversation_log.directory.is_some();
+    // A wallpaper path of a file is opened when drawn and read when a theme
+    // is exported, so a path from another computer (a UNC path, a private
+    // key) is never trusted: the imported settings point at no local file.
+    dropped_local_paths |= drop_wallpaper_paths(&mut settings.appearance);
     // Logging belongs to this machine; Auto Phrase is a display preference.
     settings.experimental = Experimental {
         auto_phrase: settings.experimental.auto_phrase,
@@ -141,6 +145,21 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         source_version,
         dropped_local_paths,
     })
+}
+
+/// Clears every wallpaper path of `appearance`: the standard wallpapers of
+/// both themes and those of the channel looks. Returns whether there was one.
+fn drop_wallpaper_paths(appearance: &mut crate::Appearance) -> bool {
+    let mut dropped = false;
+    let mut clear = |path: &mut Option<String>| dropped |= path.take().is_some();
+    for region in crate::WallpaperRegion::ALL {
+        clear(&mut appearance.wallpapers.get_mut(region).path);
+        clear(&mut appearance.dark.wallpapers.get_mut(region).path);
+    }
+    for look in &mut appearance.channel_looks {
+        clear(&mut look.wallpaper);
+    }
+    dropped
 }
 
 /// Refuses a server list that loading would quietly repair by dropping
@@ -366,6 +385,34 @@ mod tests {
             let error = import_from_bytes(value.to_string().as_bytes()).unwrap_err();
             assert!(error.starts_with("Server "), "{error}");
         }
+    }
+
+    #[test]
+    fn wallpaper_paths_are_not_imported() {
+        let mut other = Settings::default();
+        other.appearance.wallpapers.channel_log.path = Some("\\\\host\\share\\x.png".into());
+        other.appearance.wallpapers.channel_log.opacity = Some(40);
+        other.appearance.dark.wallpapers.channel_tree.path = Some("/home/me/.ssh/id".into());
+        other.appearance.channel_looks.push(crate::ChannelLook {
+            server: "s".into(),
+            channel: "#c".into(),
+            font_size: 14,
+            wallpaper: Some("//host/share/y.png".into()),
+            ..crate::ChannelLook::default()
+        });
+        let import = import_from_bytes(&serde_json::to_vec(&other).unwrap()).unwrap();
+        assert!(import.dropped_local_paths);
+        let appearance = &import.settings.appearance;
+        for region in crate::WallpaperRegion::ALL {
+            assert_eq!(appearance.wallpapers.get(region).path, None);
+            assert_eq!(appearance.dark.wallpapers.get(region).path, None);
+        }
+        assert_eq!(appearance.wallpapers.channel_log.opacity, Some(40));
+        assert_eq!(appearance.channel_looks[0].wallpaper, None);
+        assert_eq!(appearance.channel_looks[0].font_size, 14);
+        // Without a path there is nothing to announce.
+        let clean = import_from_bytes(&serde_json::to_vec(&Settings::default()).unwrap()).unwrap();
+        assert!(!clean.dropped_local_paths);
     }
 
     #[test]

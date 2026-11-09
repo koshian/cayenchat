@@ -49,7 +49,7 @@ fn read(path: &str) -> Result<Vec<u8>, String> {
 fn export_import_apply_round_trips_the_dark_side() {
     let dir = tempfile::tempdir().unwrap();
     let source = sample();
-    let theme = ThemeFile::capture(&source, true, "  My\u{202E} Dark ", read).unwrap();
+    let theme = ThemeFile::capture(&source, true, "  My\u{202E} Dark ", &check, read).unwrap();
     assert_eq!(theme.name, "My Dark");
     let bytes = theme.to_gzip().unwrap();
     assert!(bytes.starts_with(&[0x1f, 0x8b]));
@@ -88,7 +88,7 @@ fn export_import_apply_round_trips_the_dark_side() {
 
 #[test]
 fn a_shared_theme_carries_no_servers_channels_or_paths() {
-    let theme = ThemeFile::capture(&sample(), true, "Mine", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Mine", &check, read).unwrap();
     let json = String::from_utf8(serde_json::to_vec(&theme).unwrap()).unwrap();
     for private in ["libera", "#private", "/home/me", "secret-name", "chan.png"] {
         assert!(!json.contains(private), "{private} leaked");
@@ -118,7 +118,7 @@ fn plain_hand_edited_json_is_read_and_missing_colors_take_the_default() {
 #[test]
 fn editing_after_applying_marks_the_theme_modified_and_undoing_clears_it() {
     let dir = tempfile::tempdir().unwrap();
-    let theme = ThemeFile::capture(&sample(), true, "Mine", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Mine", &check, read).unwrap();
     let mut appearance = Appearance::default();
     theme.apply(&mut appearance, dir.path(), &check).unwrap();
     let applied = appearance.dark.channel_log_background.clone();
@@ -172,7 +172,7 @@ fn the_default_is_unmodified_until_edited_and_applying_it_again_returns() {
 #[test]
 fn applying_a_theme_leaves_everything_but_the_look_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let theme = ThemeFile::capture(&sample(), true, "Mine", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Mine", &check, read).unwrap();
     let mut appearance = Appearance {
         alternate_rows: true,
         compact_urls: true,
@@ -271,11 +271,17 @@ fn sizes_are_limited_before_and_after_expanding_and_per_image() {
     // Exporting a picture over the limit fails instead of dropping it.
     let mut appearance = Appearance::default();
     appearance.wallpapers.channel_log.path = Some("x".into());
-    let error = ThemeFile::capture(&appearance, false, "T", |_| {
+    let error = ThemeFile::capture(&appearance, false, "T", &check, |_| {
         Ok(vec![0; MAX_THEME_WALLPAPER_BYTES + 1])
     })
     .unwrap_err();
     assert!(error.contains("larger"));
+    // A file that is not an image fails the export; its bytes are not kept.
+    let error = ThemeFile::capture(&appearance, false, "T", &check, |_| {
+        Ok(b"-----BEGIN OPENSSH PRIVATE KEY-----".to_vec())
+    })
+    .unwrap_err();
+    assert!(error.contains("not an image"), "{error}");
     // A name is bounded.
     let long = "x".repeat(500);
     assert_eq!(
@@ -288,7 +294,7 @@ fn sizes_are_limited_before_and_after_expanding_and_per_image() {
 fn the_library_keeps_themes_apart_from_the_applied_appearance() {
     let library = tempfile::tempdir().unwrap();
     let wallpapers = tempfile::tempdir().unwrap();
-    let theme = ThemeFile::capture(&sample(), true, "Shared", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Shared", &check, read).unwrap();
     let entry = library_add(library.path(), &theme).unwrap();
     assert_eq!(library_list(library.path()), vec![entry.clone()]);
     assert_eq!(entry.mode, ThemeKind::Dark);
@@ -336,7 +342,7 @@ fn the_library_is_bounded_and_ids_cannot_name_other_files() {
 fn pruning_removes_only_unused_files_of_our_own_naming() {
     let dir = tempfile::tempdir().unwrap();
     let mut appearance = Appearance::default();
-    let theme = ThemeFile::capture(&sample(), true, "Mine", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Mine", &check, read).unwrap();
     theme.apply(&mut appearance, dir.path(), &check).unwrap();
     let kept = appearance
         .dark
@@ -407,7 +413,7 @@ fn empty_or_mistyped_color_fields_are_left_out_and_the_file_reads_back() {
     appearance.dark.channel_log_background = String::new();
     appearance.dark.member_list_background = "#12".into();
     appearance.dark.link_background = String::new();
-    let theme = ThemeFile::capture(&appearance, true, "Blank", read).unwrap();
+    let theme = ThemeFile::capture(&appearance, true, "Blank", &check, read).unwrap();
     assert!(!theme.colors.contains_key("channel_log_background"));
     assert!(!theme.colors.contains_key("member_list_background"));
     let back = ThemeFile::parse(&theme.to_gzip().unwrap(), &check).unwrap();
@@ -440,7 +446,7 @@ fn unknown_color_keys_are_skipped_not_stored() {
 #[test]
 fn library_names_are_cleaned_and_empty_ones_dropped() {
     let library = tempfile::tempdir().unwrap();
-    let theme = ThemeFile::capture(&sample(), true, "Shared", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Shared", &check, read).unwrap();
     let a = library_add(library.path(), &theme).unwrap();
     let b = library_add(library.path(), &theme).unwrap();
     let index = serde_json::to_vec(&[
@@ -464,7 +470,7 @@ fn library_names_are_cleaned_and_empty_ones_dropped() {
 #[test]
 fn a_prepared_theme_lands_on_the_current_appearance_and_keeps_other_edits() {
     let dir = tempfile::tempdir().unwrap();
-    let theme = ThemeFile::capture(&sample(), true, "Dark", read).unwrap();
+    let theme = ThemeFile::capture(&sample(), true, "Dark", &check, read).unwrap();
     let prepared = theme.prepare(dir.path(), &check).unwrap();
     // Meanwhile the light side and the shared fonts were edited.
     let mut live = Appearance {
@@ -485,7 +491,7 @@ fn a_prepared_theme_lands_on_the_current_appearance_and_keeps_other_edits() {
 #[test]
 fn a_theme_without_fonts_leaves_edited_fonts_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let mut theme = ThemeFile::capture(&sample(), true, "Dark", read).unwrap();
+    let mut theme = ThemeFile::capture(&sample(), true, "Dark", &check, read).unwrap();
     theme.fonts = None;
     let prepared = theme.prepare(dir.path(), &check).unwrap();
     let mut live = Appearance::default();
