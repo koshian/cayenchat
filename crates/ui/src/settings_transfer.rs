@@ -1031,4 +1031,96 @@ mod tests {
         drop(file);
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    /// #972: from the imported file through the confirmed import to the
+    /// drawing, no wallpaper path of the file is kept, requested or loaded.
+    /// `Wallpapers::element` is the only caller of `wallpaper::load` and it
+    /// is given a request only from these paths, so an idle `wallpapers`
+    /// means no file (a UNC path included) was opened.
+    #[gpui::test]
+    fn imported_wallpaper_paths_never_reach_the_loader(cx: &mut TestAppContext) {
+        let current = english(settings_with_channels("#old"));
+        let file = TestFile::with(&current);
+        let (chat, cx) = window(&current, cx);
+
+        let paths = [
+            "\\\\host\\share\\x.png",
+            "//host/share/x.png",
+            "/home/me/.ssh/id_ed25519",
+        ];
+        let mut other = english(settings_with_channels("#old"));
+        for (index, region) in cayenchat_storage::WallpaperRegion::ALL
+            .into_iter()
+            .enumerate()
+        {
+            let wallpaper = other.appearance.wallpapers.get_mut(region);
+            wallpaper.path = Some(paths[index % paths.len()].into());
+            wallpaper.opacity = Some(40);
+            let wallpaper = other.appearance.dark.wallpapers.get_mut(region);
+            wallpaper.path = Some(paths[(index + 1) % paths.len()].into());
+        }
+        let server = other.servers[0].id.clone();
+        other
+            .appearance
+            .channel_looks
+            .push(cayenchat_storage::ChannelLook {
+                server,
+                channel: "#old".into(),
+                font_size: 14,
+                wallpaper: Some(paths[0].into()),
+                ..cayenchat_storage::ChannelLook::default()
+            });
+        let directory = directory("import-wallpaper");
+        let path = directory.join("cayenchat-settings.json");
+        transfer::export_to(&path, &other).unwrap();
+
+        chat.update_in(cx, |chat, window, cx| {
+            chat.read_import(path.clone(), window, cx)
+        });
+        cx.run_until_parked();
+        chat.update_in(cx, |chat, window, cx| {
+            chat.answer_transfer(true, window, cx)
+        });
+        cx.run_until_parked();
+
+        chat.read_with(cx, |chat, _| {
+            // The applied settings and the saved file hold no path, and the
+            // strength settings next to them survive.
+            let saved = settings_file::load().unwrap().unwrap().appearance;
+            for appearance in [&chat.saved.appearance, &chat.appearance, &saved] {
+                for region in cayenchat_storage::WallpaperRegion::ALL {
+                    assert_eq!(appearance.wallpapers.get(region).path, None);
+                    assert_eq!(appearance.dark.wallpapers.get(region).path, None);
+                }
+                assert!(
+                    appearance
+                        .channel_looks
+                        .iter()
+                        .all(|look| look.wallpaper.is_none())
+                );
+                assert_eq!(appearance.wallpapers.channel_log.opacity, Some(40));
+            }
+            // So no drawing request exists in either theme, and no area
+            // started loading.
+            for dark in [false, true] {
+                let standard = chat.appearance.wallpapers(dark);
+                for region in cayenchat_storage::WallpaperRegion::ALL {
+                    let (request, _) = crate::channel_look::region_wallpaper(
+                        standard.get(region),
+                        crate::theme::Theme::new(
+                            ThemeMode::Light,
+                            gpui::WindowAppearance::Light,
+                            &chat.appearance,
+                        )
+                        .panes
+                        .channel_log,
+                    );
+                    assert!(request.is_none(), "{region:?} dark={dark}");
+                }
+            }
+            assert!(chat.wallpapers.is_idle());
+        });
+        drop(file);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
