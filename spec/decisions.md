@@ -3685,7 +3685,13 @@ the start of the session.
   the preview decoder's limits and decode gate), keeps at most 640 px a side,
   and blurs it, so fine detail is lost. This happens once per file, on a
   background thread; the window keeps one result (the selected channel's)
-  and drops a result that arrives for another key. The picture is the
+  and drops a result that arrives for another key. Each slot holds the
+  `CancelFlag` of its load (#986): releasing the slot (another file or blur,
+  no wallpaper, window closed) cancels it, and the load stops at its next
+  check (before the file is opened, after it is read, at and after the
+  decode gate, before the blur) and its result is not applied. A read blocked
+  in the OS, a decode or a blur already running is not interrupted, so a
+  superseded load can still finish that step. The picture is the
   backmost layer and the log's background color lies over it with an
   opacity, so a high-contrast photo leaves the text readable in the light
   and the dark theme (D088 replaced the first version's baked-in tint and
