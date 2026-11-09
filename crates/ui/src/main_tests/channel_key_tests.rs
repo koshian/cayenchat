@@ -269,7 +269,10 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
             profile.channels_to_read_keys_for(),
             generation,
             revision,
-            BTreeMap::from([("#Secret".to_owned(), snapshot.expose().to_owned())]),
+            crate::channel_keys::StoredKeys {
+                keys: BTreeMap::from([("#Secret".to_owned(), snapshot.expose().to_owned())]),
+                complete: true,
+            },
         )
     });
     cx.run_until_parked();
