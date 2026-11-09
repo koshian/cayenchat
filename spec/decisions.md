@@ -2199,7 +2199,10 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   message or the IRCv3 choices never reads. The note is a hint: what the
   connection was configured with is written back as the note for the channels
   that were read, so a key that vanished from the store is dropped from the
-  list, and a missing note is recovered by the 475 dialog. A file from before
+  list, and a missing note is recovered by the 475 dialog. A note is dropped
+  only after a read of that key succeeded and found none (#977): a store that
+  cannot be read keeps the note, and leaves a first scan unfinished for the
+  next connection. A file from before
   the note (`keyed_channels` absent) is read in full by its first connection
   (every enabled auto-join channel, as before) and the keys found become the
   note, so no saved key is lost. A note made before that scan is ignored, as it
