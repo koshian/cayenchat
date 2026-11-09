@@ -1908,6 +1908,16 @@ impl SettingsWindow {
         let _ = self
             .owner
             .update(cx, |owner, _, _| owner.overlay_pending_notes(&mut settings));
+        // The notes the chat window wrote since `previous` was taken (a
+        // channel key saved meanwhile) are only in the file. Only profiles
+        // `previous` has count: the file may hold servers another process
+        // added, which are not removed by this save (#1001).
+        let mut removed = removed_secret_keys(previous, &settings);
+        if let Ok(Some(mut file)) = settings_file::load() {
+            file.servers
+                .retain(|server| previous.servers.iter().any(|p| p.id == server.id));
+            removed.extend(removed_secret_keys(&file, &settings));
+        }
         if let Err(error) = settings_file::save(&settings) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
@@ -1916,7 +1926,7 @@ impl SettingsWindow {
         // After the save: a failed save must not cost the secrets of profiles
         // the file still holds (#760). The deletion is done by the store
         // thread; one that fails is tried again by the next Save.
-        self.forget_removed(removed_secret_keys(previous, &settings), cx);
+        self.forget_removed(removed, cx);
         Ok(settings)
     }
 

@@ -1012,3 +1012,19 @@ fn the_same_channel_on_another_server_is_ordered_on_its_own(cx: &mut TestAppCont
         assert!(chat.saved.servers[0].channel_key_noted("#Secret"));
     });
 }
+
+/// #1001: a save that finishes after its profile was removed leaves a key
+/// the removal could not list, so it is deleted when the save is taken in.
+#[gpui::test]
+fn a_key_saved_for_a_removed_profile_is_deleted(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(Some("k"), cx);
+    let key = secret_key(&chat, cx);
+    assert!(store.get(&key).unwrap().is_some());
+    chat.update(cx, |chat, cx| {
+        let write = written(chat, 1, Some("k"), 0);
+        chat.saved.servers.clear();
+        chat.key_store_written(NET, write, Ok(()), cx);
+    });
+    cx.run_until_parked();
+    assert!(store.get(&key).unwrap().is_none());
+}
