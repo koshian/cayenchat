@@ -31,13 +31,13 @@ pub(crate) fn limited_decoder<'a>(
     // while it constructs the decoder. We do not use those values for display,
     // so remove them before handing PNG data to it. The input copy and source
     // raster are charged afterwards by `reserve_source_image`, from the
-    // constructed decoder's `total_bytes`: constructing a decoder does not
-    // allocate raster-sized memory, so only the input copy and the eXIf
-    // data `png` retains are charged here. `png`'s own allocation limit
-    // cannot change after construction, so what it retains must be reserved
-    // before the raster is known.
-    let metadata_copy_bytes = png_metadata_copy_bytes(bytes, format);
-    if metadata_copy_bytes > limits.max_decode_bytes {
+    // constructed decoder's `total_bytes`. Constructing a decoder does not
+    // allocate raster-sized memory, but `png`'s own allocation limit cannot
+    // change after construction (`PngDecoder::set_limits` does not reach it),
+    // so for PNG the input copy, the retained eXIf data and the raster
+    // declared by IHDR are all taken off that limit here.
+    let (metadata_copy_bytes, raster_bytes) = png_reservations(bytes, format)?;
+    if metadata_copy_bytes.saturating_add(raster_bytes) > limits.max_decode_bytes {
         return Err(insufficient_memory());
     }
 
@@ -50,7 +50,7 @@ pub(crate) fn limited_decoder<'a>(
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_source_side);
     decoder_limits.max_image_height = Some(limits.max_source_side);
-    decoder_limits.max_alloc = Some(limits.max_decode_bytes - metadata_copy_bytes);
+    decoder_limits.max_alloc = Some(limits.max_decode_bytes - metadata_copy_bytes - raster_bytes);
     reader.limits(decoder_limits);
     reader
         .into_decoder()
@@ -72,23 +72,95 @@ fn insufficient_memory() -> image::ImageError {
 /// lives, in its raw buffer and in the parsed info, and its internal
 /// allocation limit is fixed when the decoder is constructed, so that memory
 /// cannot be left to the remaining-budget check done later.
-fn png_metadata_copy_bytes(bytes: &[u8], format: ImageFormat) -> u64 {
+///
+/// Returns that reservation and the raster the decoded image will need
+/// (see `png_raster_bytes`), which `reserve_source_image` charges later from
+/// `total_bytes`; here it only lowers `png`'s fixed allocation limit.
+///
+/// A PNG whose first chunk is not a well-formed IHDR is rejected here, before
+/// any metadata is stripped: otherwise a chunk placed ahead of IHDR would make
+/// the estimate unavailable and then be removed, leaving a valid PNG whose
+/// raster was never reserved.
+fn png_reservations(bytes: &[u8], format: ImageFormat) -> image::ImageResult<(u64, u64)> {
     if format != ImageFormat::Png {
-        return 0;
+        return Ok((0, 0));
     }
-    let (has_metadata, exif_bytes) = scan_png_chunks(bytes);
-    let copy = if has_metadata { bytes.len() as u64 } else { 0 };
-    copy.saturating_add(exif_bytes.saturating_mul(2))
+    let scan = scan_png_chunks(bytes);
+    let Some(raster) = png_raster_bytes(bytes, scan.has_trns) else {
+        return Err(image::ImageError::Decoding(
+            image::error::DecodingError::new(
+                image::error::ImageFormatHint::Exact(ImageFormat::Png),
+                "PNG does not start with a valid IHDR",
+            ),
+        ));
+    };
+    let copy = if scan.has_metadata {
+        bytes.len() as u64
+    } else {
+        0
+    };
+    Ok((
+        copy.saturating_add(scan.exif_bytes.saturating_mul(2))
+            .saturating_add(PNG_UNRESERVED_HEADROOM),
+        raster,
+    ))
 }
 
-/// Walks well-framed PNG chunks, returning whether any is metadata that
-/// `strip_png_metadata` removes and the total length of eXIf chunks.
-fn scan_png_chunks(bytes: &[u8]) -> (bool, u64) {
+/// Memory `png` allocates without going through its allocation limit
+/// (`UnfilteringBuffer`, inflate state, row buffers), so lowering `max_alloc`
+/// cannot account for it. Measured at the default 48 MiB budget with a
+/// 4096 × 3070 RGBA PNG, plain and Adam7: the decode peak exceeded the budget
+/// by about 250–266 KiB with the raster filling it; this keeps twice that
+/// aside for PNG. See `spec/performance.md`.
+const PNG_UNRESERVED_HEADROOM: u64 = 512 * 1024;
+
+/// Upper bound of the decoded raster `image` produces for a PNG, from its
+/// IHDR (and whether a tRNS chunk adds an alpha channel). `None` when the
+/// header is not a well-formed IHDR, which `png` then rejects itself. A raster
+/// too large for `u64` saturates, so it never fits any budget.
+fn png_raster_bytes(bytes: &[u8], has_trns: bool) -> Option<u64> {
+    let ihdr = bytes.get(8..29)?;
+    if &ihdr[4..8] != b"IHDR" || ihdr[..4] != 13u32.to_be_bytes() {
+        return None;
+    }
+    let width = u64::from(u32::from_be_bytes(ihdr[8..12].try_into().ok()?));
+    let height = u64::from(u32::from_be_bytes(ihdr[12..16].try_into().ok()?));
+    let (depth, color_type) = (ihdr[16], ihdr[17]);
+    let channels: u64 = match color_type {
+        0 => 1,
+        2 | 3 => 3,
+        4 => 2,
+        6 => 4,
+        _ => return None,
+    };
+    let channels = if has_trns && color_type != 4 && color_type != 6 {
+        channels + 1
+    } else {
+        channels
+    };
+    let sample_bytes = if depth == 16 { 2 } else { 1 };
+    Some(
+        width
+            .saturating_mul(height)
+            .saturating_mul(channels * sample_bytes),
+    )
+}
+
+#[derive(Default)]
+struct PngScan {
+    /// Some chunk is metadata that `strip_png_metadata` removes.
+    has_metadata: bool,
+    /// Total length of eXIf chunks.
+    exif_bytes: u64,
+    has_trns: bool,
+}
+
+/// Walks well-framed PNG chunks.
+fn scan_png_chunks(bytes: &[u8]) -> PngScan {
     const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    let mut has_metadata = false;
-    let mut exif_bytes = 0u64;
+    let mut scan = PngScan::default();
     if !bytes.starts_with(SIGNATURE) {
-        return (false, 0);
+        return scan;
     }
     let mut offset = SIGNATURE.len();
     while offset < bytes.len() {
@@ -109,13 +181,14 @@ fn scan_png_chunks(bytes: &[u8]) -> (bool, u64) {
             break;
         }
         match &header[4..8] {
-            b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt" => has_metadata = true,
-            b"eXIf" => exif_bytes += length as u64,
+            b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt" => scan.has_metadata = true,
+            b"eXIf" => scan.exif_bytes += length as u64,
+            b"tRNS" => scan.has_trns = true,
             _ => {}
         }
         offset = chunk_end;
     }
-    (has_metadata, exif_bytes)
+    scan
 }
 
 /// Drops compressed and uncompressed PNG metadata chunks that the media
@@ -351,6 +424,31 @@ pub(crate) fn into_bgra(image: DynamicImage) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::testing::{encode, gif_two_frames};
+
+    fn ihdr_png(width: u32, height: u32, depth: u8, color_type: u8) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[depth, color_type, 0, 0, 0]);
+        bytes
+    }
+
+    #[test]
+    fn png_raster_bytes_follow_ihdr_without_overflowing() {
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 6), false), Some(400));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 16, 6), false), Some(800));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 2), false), Some(300));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 2), true), Some(400));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 1, 0), false), Some(100));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 3), true), Some(400));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 4), true), Some(200));
+        assert_eq!(png_raster_bytes(&ihdr_png(10, 10, 8, 5), false), None);
+        assert_eq!(png_raster_bytes(b"\x89PNG\r\n\x1a\n", false), None);
+        assert_eq!(
+            png_raster_bytes(&ihdr_png(u32::MAX, u32::MAX, 16, 6), false),
+            Some(u64::MAX)
+        );
+    }
 
     #[test]
     fn decodes_supported_formats_into_small_bgra_thumbnails() {
