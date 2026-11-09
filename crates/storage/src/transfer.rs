@@ -390,16 +390,27 @@ mod tests {
     #[test]
     fn wallpaper_paths_are_not_imported() {
         let mut other = Settings::default();
-        other.appearance.wallpapers.channel_log.path = Some("\\\\host\\share\\x.png".into());
-        other.appearance.wallpapers.channel_log.opacity = Some(40);
-        other.appearance.dark.wallpapers.channel_tree.path = Some("/home/me/.ssh/id".into());
-        other.appearance.channel_looks.push(crate::ChannelLook {
-            server: "s".into(),
-            channel: "#c".into(),
-            font_size: 14,
-            wallpaper: Some("//host/share/y.png".into()),
-            ..crate::ChannelLook::default()
-        });
+        let paths = [
+            "\\\\host\\share\\x.png",
+            "//host/share/x.png",
+            "/home/me/.ssh/id",
+        ];
+        for (index, region) in crate::WallpaperRegion::ALL.into_iter().enumerate() {
+            let light = other.appearance.wallpapers.get_mut(region);
+            light.path = Some(paths[index % 3].into());
+            light.opacity = Some(40);
+            let dark = other.appearance.dark.wallpapers.get_mut(region);
+            dark.path = Some(paths[(index + 1) % 3].into());
+        }
+        for (index, path) in paths.into_iter().enumerate() {
+            other.appearance.channel_looks.push(crate::ChannelLook {
+                server: "s".into(),
+                channel: format!("#c{index}"),
+                font_size: 14,
+                wallpaper: Some(path.into()),
+                ..crate::ChannelLook::default()
+            });
+        }
         let import = import_from_bytes(&serde_json::to_vec(&other).unwrap()).unwrap();
         assert!(import.dropped_local_paths);
         let appearance = &import.settings.appearance;
@@ -408,8 +419,11 @@ mod tests {
             assert_eq!(appearance.dark.wallpapers.get(region).path, None);
         }
         assert_eq!(appearance.wallpapers.channel_log.opacity, Some(40));
-        assert_eq!(appearance.channel_looks[0].wallpaper, None);
-        assert_eq!(appearance.channel_looks[0].font_size, 14);
+        assert_eq!(appearance.channel_looks.len(), 3);
+        for look in &appearance.channel_looks {
+            assert_eq!(look.wallpaper, None);
+            assert_eq!(look.font_size, 14);
+        }
         // Without a path there is nothing to announce.
         let clean = import_from_bytes(&serde_json::to_vec(&Settings::default()).unwrap()).unwrap();
         assert!(!clean.dropped_local_paths);
