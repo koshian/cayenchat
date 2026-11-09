@@ -19,16 +19,19 @@ use std::{
 };
 
 use cayenchat_media::avatar_edit::{self, AvatarSource};
-use cayenchat_model::attachment::AttachmentSource;
+use cayenchat_model::attachment::{AttachmentError, AttachmentSource};
 use gpui::{prelude::*, *};
 
 use super::ChannelSettingsView;
 use crate::{
     avatar_editor::open_error_key,
     crop_editor::{CropConstraint, ImageCropEditor},
-    image_upload::{acceptable_attachment, image_file_filter, read_in_background},
+    image_upload::{acceptable_attachment, read_in_background},
     settings_theme,
 };
+
+/// File name extensions of the formats the range editor opens.
+const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"];
 
 /// Largest size of the range view, in logical pixels.
 const VIEW_WIDTH: u32 = 360;
@@ -110,7 +113,13 @@ impl ChannelSettingsView {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("channel_look_wallpaper").into()),
-            filter: Some(image_file_filter(&self.i18n)),
+            filter: Some(PathPromptFilter {
+                name: self.i18n.text("upload_image_files").into(),
+                extensions: WALLPAPER_EXTENSIONS
+                    .iter()
+                    .map(|extension| SharedString::from(*extension))
+                    .collect(),
+            }),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {
@@ -139,6 +148,8 @@ impl ChannelSettingsView {
         self.crop.task = Some(cx.spawn(async move |this, cx| {
             let outcome: Result<AvatarSource, String> = match read.await {
                 Err(error) => Err(error.text(&i18n)),
+                // Not the upload's wording: a wallpaper is not uploaded.
+                Ok(Err(AttachmentError::NotAnImage)) => Err(i18n.text("wallpaper_not_image")),
                 Ok(attachment) => match acceptable_attachment(attachment, None, &i18n) {
                     Err(error) => Err(error),
                     Ok(attachment) => {

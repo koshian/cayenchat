@@ -15,7 +15,7 @@ use std::{
 };
 
 use cayenchat_media::wallpaper;
-use cayenchat_model::attachment::AttachmentSource;
+use cayenchat_model::attachment::{AttachmentError, AttachmentSource};
 use cayenchat_storage::theme_file::{
     self, LibraryEntry, MAX_THEME_FILE_BYTES, MAX_THEME_WALLPAPER_BYTES, THEME_EXTENSION,
 };
@@ -24,7 +24,7 @@ use gpui::{prelude::*, *};
 
 use crate::{
     SettingsWindow, channel_look,
-    image_upload::{acceptable_attachment, image_file_filter, read_in_background},
+    image_upload::{acceptable_attachment, read_in_background},
     input::TextInput,
     settings_theme,
 };
@@ -137,6 +137,17 @@ fn check_image(bytes: &[u8]) -> Result<&'static str, String> {
         }
         .to_owned()
     })
+}
+
+/// The localization key explaining why an image cannot be a wallpaper.
+fn wallpaper_refusal_key(error: &cayenchat_media::LoadError) -> &'static str {
+    match error {
+        cayenchat_media::LoadError::NotImage | cayenchat_media::LoadError::Unsupported => {
+            "wallpaper_not_supported"
+        }
+        cayenchat_media::LoadError::TooLarge => "wallpaper_too_large",
+        _ => "wallpaper_damaged",
+    }
 }
 
 /// Reads at most `limit` bytes of `path`; a longer file is an error.
@@ -451,7 +462,13 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("wallpaper_choose").into()),
-            filter: Some(image_file_filter(&self.i18n)),
+            filter: Some(PathPromptFilter {
+                name: self.i18n.text("upload_image_files").into(),
+                extensions: wallpaper::FILE_EXTENSIONS
+                    .iter()
+                    .map(|extension| SharedString::from(*extension))
+                    .collect(),
+            }),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {
@@ -488,12 +505,16 @@ impl SettingsWindow {
         self.themes.wallpaper.task = Some(cx.spawn(async move |this, cx| {
             let outcome: Result<String, String> = match read.await {
                 Err(error) => Err(error.text(&i18n)),
+                // Not the upload's wording: a wallpaper is not uploaded.
+                Ok(Err(AttachmentError::NotAnImage)) => Err(i18n.text("wallpaper_not_image")),
                 Ok(attachment) => match acceptable_attachment(attachment, None, &i18n) {
                     Err(error) => Err(error),
                     Ok(attachment) => {
+                        let i18n = i18n.clone();
                         cx.background_executor()
                             .spawn(async move {
-                                let extension = check_image(&attachment.bytes)?;
+                                let extension = wallpaper::validate(&attachment.bytes)
+                                    .map_err(|error| i18n.text(wallpaper_refusal_key(&error)))?;
                                 keep_image(&directory?, &attachment.bytes, extension)
                             })
                             .await
@@ -1378,7 +1399,7 @@ mod tests {
             })
         };
         // The picture's strength is the rest of the background's opacity.
-        assert_eq!(100 - strength(&form, cx), 20);
+        assert_eq!(100 - strength(&form, cx), 50);
         // One percent at a time, and the blur in tenths up to its limit.
         form.update(cx, |form, cx| {
             form.wallpaper_set_strength(false, WallpaperRegion::MemberList, 21, cx);
