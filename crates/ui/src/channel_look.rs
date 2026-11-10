@@ -3,7 +3,12 @@
 //! and wallpaper over the global appearance, and the loading of the
 //! wallpapers of the four areas (#962).
 
-use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+};
 
 use cayenchat_media::{CancelFlag, wallpaper, wallpaper::Tone};
 use cayenchat_storage::{
@@ -408,13 +413,129 @@ struct Key {
     saturation: u8,
 }
 
-/// The wallpapers on show, one slot per area (#962).
+impl Key {
+    fn of(request: &WallpaperRequest) -> Self {
+        Self {
+            path: PathBuf::from(&request.path),
+            blur: request.blur,
+            brightness: request.brightness,
+            saturation: request.saturation,
+        }
+    }
+}
+
+/// One picture of a pool: loading, loaded or failed, and how many areas show
+/// it. `cancel` stops its load when the last of them stops showing it.
+struct Entry {
+    key: Key,
+    state: State,
+    users: usize,
+    cancel: CancelFlag,
+}
+
+/// The pictures of the areas that share it, one per key, so the same file and
+/// tone is loaded and held once however many areas show it (#1052).
 #[derive(Default)]
+struct Pool {
+    entries: Vec<Entry>,
+    /// The keys the settings name, for every area at once: it is taken from
+    /// the window's settings whenever a release is decided, never kept per
+    /// area, so one area cannot make it stale for the others.
+    named: Vec<Key>,
+}
+
+impl Pool {
+    fn state(&self, key: &Key) -> Option<&State> {
+        self.entries
+            .iter()
+            .find(|entry| entry.key == *key)
+            .map(|entry| &entry.state)
+    }
+
+    /// Counts one more area showing `key`. A picture not held yet is added as
+    /// loading, and its cancel flag returned for the load to start.
+    fn acquire(&mut self, key: &Key) -> Option<CancelFlag> {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == *key) {
+            entry.users += 1;
+            return None;
+        }
+        let cancel = CancelFlag::default();
+        self.entries.push(Entry {
+            key: key.clone(),
+            state: State::Loading,
+            users: 1,
+            cancel: cancel.clone(),
+        });
+        Some(cancel)
+    }
+
+    /// Counts one area less showing `key`. A load nobody shows any more is
+    /// cancelled and removed, a failure too (it is tried again next time).
+    fn release(&mut self, key: &Key) {
+        let Some(at) = self.entries.iter().position(|entry| entry.key == *key) else {
+            return;
+        };
+        let entry = &mut self.entries[at];
+        entry.users = entry.users.saturating_sub(1);
+        if entry.users == 0 && !matches!(entry.state, State::Ready(_)) {
+            entry.cancel.cancel();
+            self.entries.swap_remove(at);
+        }
+    }
+
+    /// Whether a loaded picture is shown by no area.
+    fn has_unused(&self) -> bool {
+        self.entries.iter().any(|entry| entry.users == 0)
+    }
+
+    /// Takes out the pictures no area shows and `configured` does not name.
+    /// `configured` is not asked while every picture is shown.
+    fn settle(
+        &mut self,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
+    ) -> Vec<Arc<RenderImage>> {
+        if !self.has_unused() {
+            return Vec::new();
+        }
+        self.named = configured().iter().map(Key::of).collect();
+        self.take_unused()
+    }
+
+    /// Takes out the pictures no area shows and no setting names.
+    fn take_unused(&mut self) -> Vec<Arc<RenderImage>> {
+        let named = &self.named;
+        let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|entry| entry.users > 0 || named.contains(&entry.key));
+        self.entries = keep;
+        drop.into_iter()
+            .filter_map(|entry| match entry.state {
+                State::Ready(image) => Some(image),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The wallpapers on show, one slot per area (#962), over one pool.
 pub(crate) struct Wallpapers {
     pub(crate) channel_log: Wallpaper,
     pub(crate) combined_log: Wallpaper,
     member_list: Wallpaper,
     channel_tree: Wallpaper,
+}
+
+impl Default for Wallpapers {
+    fn default() -> Self {
+        let pool = Rc::new(RefCell::new(Pool::default()));
+        let area = || Wallpaper::in_pool(pool.clone());
+        Self {
+            channel_log: area(),
+            combined_log: area(),
+            member_list: area(),
+            channel_tree: area(),
+        }
+    }
 }
 
 impl Wallpapers {
@@ -429,7 +550,7 @@ impl Wallpapers {
             &self.channel_tree,
         ]
         .iter()
-        .all(|wallpaper| wallpaper.slot.is_none())
+        .all(|wallpaper| wallpaper.slot.is_none() && wallpaper.pool.borrow().entries.is_empty())
     }
 
     pub(crate) fn get_mut(&mut self, region: WallpaperRegion) -> &mut Wallpaper {
@@ -443,17 +564,24 @@ impl Wallpapers {
 
     /// The picture for `wanted` in `region` with `background` over it, as
     /// the first child of its pane.
+    ///
+    /// `configured` lists every picture the settings still use, for all
+    /// areas, and is the same for every call. It runs only when a picture
+    /// is unused, and pictures outside it are released then.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn element(
         &mut self,
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
         layers: Layers,
         translucent: bool,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
-        self.get_mut(region).element(
+        self.get_mut(region).element_keeping(
             wanted,
+            configured,
             layers,
             translucent,
             window,
@@ -463,32 +591,51 @@ impl Wallpapers {
     }
 }
 
-/// The wallpaper of one area. Only the one on show is kept, keyed by the
-/// file, the blur and the tone, so a result that arrives after the channel or
-/// one of those changed is dropped.
-#[derive(Default)]
+/// The wallpaper of one area: the one on show, keyed by the file, the blur
+/// and the tone, so a result that arrives after the channel or one of those
+/// changed is dropped. The pictures live in the `pool`, shared with the other
+/// areas; one the settings still use stays there when no area shows it, so
+/// that switching back to it draws at once (#1052).
 pub(crate) struct Wallpaper {
-    slot: Option<(Key, State)>,
-    /// Cancels the load of the slot's key. `release` sets it and takes a new
-    /// one, so a replaced or removed wallpaper's load stops at its next check
-    /// and its result is never applied.
-    cancel: CancelFlag,
+    slot: Option<Key>,
+    pool: Rc<RefCell<Pool>>,
     placed: Rc<Cell<Bounds<Pixels>>>,
 }
 
+impl Default for Wallpaper {
+    /// An area with a pool of its own, as the settings miniatures have.
+    fn default() -> Self {
+        Self::in_pool(Rc::default())
+    }
+}
+
 impl Wallpaper {
+    fn in_pool(pool: Rc<RefCell<Pool>>) -> Self {
+        Self {
+            slot: None,
+            pool,
+            placed: Rc::default(),
+        }
+    }
+
+    /// The loaded picture on show.
+    fn image(&self) -> Option<Arc<RenderImage>> {
+        let key = self.slot.as_ref()?;
+        match self.pool.borrow().state(key) {
+            Some(State::Ready(image)) => Some(image.clone()),
+            _ => None,
+        }
+    }
+
     /// The picture for alternate rows, with the opacities of the pane's
     /// `layers`, when it is shown.
     pub(crate) fn slice(&self, layers: Layers) -> Option<Slice> {
-        match self.slot.as_ref() {
-            Some((_, State::Ready(image))) => Some(Slice {
-                image: image.clone(),
-                placed: self.placed.clone(),
-                picture_alpha: layers.picture,
-                alpha: layers.color.a,
-            }),
-            _ => None,
-        }
+        self.image().map(|image| Slice {
+            image,
+            placed: self.placed.clone(),
+            picture_alpha: layers.picture,
+            alpha: layers.color.a,
+        })
     }
 
     /// The picture for `wanted`, as the first child of the log; starts its
@@ -505,71 +652,88 @@ impl Wallpaper {
         cx: &mut Context<T>,
         slot_of: impl Fn(&mut T) -> &mut Wallpaper + 'static,
     ) -> Option<Div> {
+        self.element_keeping(wanted, Vec::new, layers, translucent, window, cx, slot_of)
+    }
+
+    /// `element` that keeps the pictures `configured` names when the one on
+    /// show changes; the others are released.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn element_keeping<T: 'static>(
+        &mut self,
+        wanted: Option<&WallpaperRequest>,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
+        layers: Layers,
+        translucent: bool,
+        window: &mut Window,
+        cx: &mut Context<T>,
+        slot_of: impl Fn(&mut T) -> &mut Wallpaper + 'static,
+    ) -> Option<Div> {
         let Some(wanted) = wanted else {
-            self.release(window);
+            if self.release() {
+                self.retain(configured, window);
+            }
             return None;
         };
-        let key = Key {
-            path: PathBuf::from(&wanted.path),
-            blur: wanted.blur,
-            brightness: wanted.brightness,
-            saturation: wanted.saturation,
-        };
-        let held = self.slot.as_ref().is_some_and(|(held, _)| *held == key);
-        if !held {
-            self.release(window);
-            self.slot = Some((key.clone(), State::Loading));
-            let loading = key.clone();
-            let cancel = self.cancel.clone();
-            let task_cancel = cancel.clone();
-            let loaded = cx.background_spawn(async move {
-                let tone = Tone {
-                    brightness: loading.brightness,
-                    saturation: loading.saturation,
-                };
-                wallpaper::load(&loading.path, loading.blur, tone, &task_cancel)
-            });
-            cx.spawn(async move |this, cx| {
-                let result = loaded.await;
-                // Keyed by this load's own flag: a slot released and filled
-                // again with the same key must not take this stale result.
-                if cancel.is_cancelled() {
-                    return;
-                }
-                let _ = this.update(cx, |this, cx| {
-                    let Some((held, state)) = slot_of(this).slot.as_mut() else {
-                        return;
+        let key = Key::of(wanted);
+        if self.slot.as_ref() != Some(&key) {
+            self.release();
+            self.slot = Some(key.clone());
+            let started = self.pool.borrow_mut().acquire(&key);
+            self.retain(configured, window);
+            if let Some(cancel) = started {
+                let loading = key.clone();
+                let task_cancel = cancel.clone();
+                let loaded = cx.background_spawn(async move {
+                    let tone = Tone {
+                        brightness: loading.brightness,
+                        saturation: loading.saturation,
                     };
-                    if *held != key {
+                    wallpaper::load(&loading.path, loading.blur, tone, &task_cancel)
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = loaded.await;
+                    // The flag is the picture's own: it is cancelled when the
+                    // last area stops showing it, and a picture added again
+                    // has a new one, so a stale result is never taken.
+                    if cancel.is_cancelled() {
                         return;
                     }
-                    *state = match result {
-                        Ok(thumbnail) => {
-                            let buffer = image::RgbaImage::from_raw(
-                                thumbnail.width,
-                                thumbnail.height,
-                                thumbnail.bgra,
-                            )
-                            .expect("wallpaper buffer matches its size");
-                            State::Ready(Arc::new(RenderImage::new(vec![image::Frame::new(
-                                buffer,
-                            )])))
-                        }
-                        Err(_) => State::Failed,
-                    };
-                    cx.notify();
-                });
-            })
-            .detach();
+                    let _ = this.update(cx, |this, cx| {
+                        let pool = slot_of(this).pool.clone();
+                        let mut pool = pool.borrow_mut();
+                        let Some(entry) = pool.entries.iter_mut().find(|entry| {
+                            entry.key == key && matches!(entry.state, State::Loading)
+                        }) else {
+                            return;
+                        };
+                        entry.state = match result {
+                            Ok(thumbnail) => {
+                                let buffer = image::RgbaImage::from_raw(
+                                    thumbnail.width,
+                                    thumbnail.height,
+                                    thumbnail.bgra,
+                                )
+                                .expect("wallpaper buffer matches its size");
+                                State::Ready(Arc::new(RenderImage::new(vec![image::Frame::new(
+                                    buffer,
+                                )])))
+                            }
+                            Err(_) => State::Failed,
+                        };
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
         }
-        match self.slot.as_ref() {
+        match self.image() {
             // On an opaque pane the picture is the backmost layer, the pane
             // background lies over it, and the rows over both. On a
             // translucent one there is no such layer: it would put its
             // opacity under every row's. This only places the picture;
             // rows and filler paint it (`Slice`).
-            Some((_, State::Ready(image))) => {
-                let (image, fit, shared) = (image.clone(), wanted.fit, self.placed.clone());
+            Some(image) => {
+                let (fit, shared) = (wanted.fit, self.placed.clone());
                 let color = layers.color;
                 let picture = div().absolute().top_0().left_0().size_full().child(
                     canvas(
@@ -595,15 +759,23 @@ impl Wallpaper {
         }
     }
 
-    fn release(&mut self, window: &mut Window) {
-        // Called on every frame a pane has no wallpaper: only a slot has a
-        // load to cancel.
-        let Some((_, state)) = self.slot.take() else {
-            return;
+    /// Takes the picture on show off: a load nobody else shows is cancelled,
+    /// a loaded picture stays in the pool. Whether there was one.
+    fn release(&mut self) -> bool {
+        // Called on every frame a pane has no wallpaper: only a slot has
+        // anything to release.
+        let Some(key) = self.slot.take() else {
+            return false;
         };
-        self.cancel.cancel();
-        self.cancel = CancelFlag::default();
-        if let State::Ready(image) = state {
+        self.pool.borrow_mut().release(&key);
+        true
+    }
+
+    /// Releases the pictures no area shows and `configured` (every picture
+    /// the settings name, for all areas) does not name.
+    fn retain(&mut self, configured: impl FnOnce() -> Vec<WallpaperRequest>, window: &mut Window) {
+        let unused = self.pool.borrow_mut().settle(configured);
+        for image in unused {
             let _ = window.drop_image(image);
         }
     }
@@ -611,7 +783,7 @@ impl Wallpaper {
 
 impl Drop for Wallpaper {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        self.release();
     }
 }
 
@@ -1120,5 +1292,128 @@ mod tests {
         let center = fit_bounds(WallpaperFit::Center, log, picture);
         assert_eq!(center.size, size(px(600.), px(360.)));
         assert_eq!(center.origin, point(px(88.), px(15.5)));
+    }
+
+    fn key(path: &str, blur: u8) -> super::Key {
+        super::Key {
+            path: path.into(),
+            blur,
+            brightness: 0,
+            saturation: 100,
+        }
+    }
+
+    fn ready(pool: &mut super::Pool, key: &super::Key) {
+        let buffer = image::RgbaImage::new(1, 1);
+        let image = std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]));
+        let entry = pool.entries.iter_mut().find(|e| e.key == *key).unwrap();
+        entry.state = super::State::Ready(image);
+    }
+
+    fn named(pool: &mut super::Pool, keys: &[super::Key]) {
+        pool.named = keys.to_vec();
+    }
+
+    #[test]
+    fn areas_share_one_picture_per_key_and_one_load() {
+        let mut pool = super::Pool::default();
+        let a = key("a.png", 0);
+        assert!(pool.acquire(&a).is_some());
+        // The second area finds it loading: no second load.
+        assert!(pool.acquire(&a).is_none());
+        assert_eq!(pool.entries.len(), 1);
+        ready(&mut pool, &a);
+        assert!(pool.acquire(&a).is_none());
+        assert_eq!(pool.entries[0].users, 3);
+    }
+
+    #[test]
+    fn a_load_is_cancelled_with_its_last_user_and_not_before() {
+        let mut pool = super::Pool::default();
+        let a = key("a.png", 0);
+        let cancel = pool.acquire(&a).unwrap();
+        pool.acquire(&a);
+        pool.release(&a);
+        assert!(!cancel.is_cancelled());
+        pool.release(&a);
+        assert!(cancel.is_cancelled());
+        assert!(pool.entries.is_empty());
+        // Shown again: a new load with a flag of its own.
+        let again = pool.acquire(&a).unwrap();
+        assert!(!again.is_cancelled());
+    }
+
+    #[test]
+    fn a_loaded_picture_stays_for_a_return_while_the_settings_name_it() {
+        let mut pool = super::Pool::default();
+        let (a, b) = (key("a.png", 0), key("b.png", 0));
+        pool.acquire(&a);
+        ready(&mut pool, &a);
+        named(&mut pool, &[a.clone(), b.clone()]);
+        // A to B: A stays, and coming back finds it loaded.
+        pool.release(&a);
+        pool.acquire(&b);
+        assert!(pool.take_unused().is_empty());
+        assert!(matches!(pool.state(&a), Some(super::State::Ready(_))));
+        assert!(pool.acquire(&a).is_none());
+        assert!(matches!(pool.state(&a), Some(super::State::Ready(_))));
+    }
+
+    #[test]
+    fn a_picture_the_settings_dropped_is_released_unless_another_area_shows_it() {
+        let mut pool = super::Pool::default();
+        let (a, old, shared) = (key("a.png", 0), key("a.png", 5), key("s.png", 0));
+        for k in [&a, &old, &shared] {
+            pool.acquire(k);
+            ready(&mut pool, k);
+        }
+        // `old` (a slider's earlier blur) is no longer shown nor named;
+        // `shared` is still shown by another area.
+        pool.release(&old);
+        pool.release(&a);
+        named(&mut pool, &[]);
+        assert_eq!(pool.take_unused().len(), 2);
+        assert_eq!(pool.entries.len(), 1);
+        assert!(matches!(pool.state(&shared), Some(super::State::Ready(_))));
+        assert!(pool.state(&a).is_none() && pool.state(&old).is_none());
+    }
+
+    #[test]
+    fn a_shared_picture_survives_another_area_dropping_it_while_the_channel_is_away() {
+        let mut pool = super::Pool::default();
+        let (a, b) = (key("a.png", 0), key("b.png", 0));
+        let request = |k: &super::Key| super::WallpaperRequest {
+            path: k.path.to_string_lossy().into(),
+            blur: k.blur,
+            brightness: k.brightness,
+            saturation: k.saturation,
+            fit: super::WallpaperFit::default(),
+        };
+        // The settings name A (channel A and the member list) and B.
+        let configured = || vec![request(&a), request(&b)];
+        // Channel log and member list both show A.
+        pool.acquire(&a);
+        pool.acquire(&a);
+        ready(&mut pool, &a);
+        // Channel log moves to B: A is still shown, nothing is settled.
+        pool.release(&a);
+        pool.acquire(&b);
+        assert!(pool.settle(configured).is_empty());
+        // The member list drops its wallpaper: the settings still name A
+        // for the channel, so it stays and coming back needs no load.
+        pool.release(&a);
+        assert!(pool.settle(configured).is_empty());
+        assert!(pool.acquire(&a).is_none());
+        assert!(matches!(pool.state(&a), Some(super::State::Ready(_))));
+    }
+
+    #[test]
+    fn a_failed_picture_is_tried_again_when_shown_again() {
+        let mut pool = super::Pool::default();
+        let a = key("a.png", 0);
+        pool.acquire(&a);
+        pool.entries[0].state = super::State::Failed;
+        pool.release(&a);
+        assert!(pool.acquire(&a).is_some());
     }
 }
