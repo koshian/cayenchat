@@ -913,7 +913,7 @@ pub enum WallpaperFit {
     Center,
 }
 
-fn lenient_fit<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn lenient_fit<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<WallpaperFit>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;

@@ -10,10 +10,11 @@
 //! never joins or parts the channel.
 
 mod wallpaper_crop;
+mod wallpaper_preview;
 
 use std::time::Duration;
 
-use wallpaper_crop::CropState;
+use crate::wallpaper_crop::CropState;
 
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
@@ -240,12 +241,17 @@ struct LookFields {
     wallpaper: Entity<TextInput>,
     /// Blur sigma, 0 to [`MAX_WALLPAPER_BLUR`].
     blur: u8,
+    /// Whether the blur is the channel's own, also at the default value or 0:
+    /// an inherited one follows the standard wallpaper's.
+    blur_own: bool,
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
     /// Whether the opacity is the channel's own, also at the default value:
     /// an inherited one follows the standard wallpaper's (#962).
     opacity_own: bool,
-    fit: WallpaperFit,
+    /// The channel's own fit, also an explicit `Cover`; `None` follows the
+    /// standard wallpaper's.
+    fit: Option<WallpaperFit>,
     blur_track: TrackBounds,
     opacity_track: TrackBounds,
     wallpaper_choice: WallpaperChoice,
@@ -303,9 +309,10 @@ impl LookFields {
                 cx,
             ),
             blur: blur_of(&look),
+            blur_own: look.wallpaper_blur.is_some(),
             opacity: background_opacity_of(&look),
             opacity_own: look.background_opacity.is_some(),
-            fit: look.wallpaper_fit.unwrap_or_default(),
+            fit: look.wallpaper_fit,
             background: field(color(look.background), cx),
             alternate: field(color(look.alternate), cx),
             text: field(color(look.text), cx),
@@ -333,15 +340,18 @@ impl LookFields {
             field.update(cx, |field, cx| field.set_text("", cx));
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
+        self.blur_own = false;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
         self.opacity_own = false;
-        self.fit = WallpaperFit::default();
+        self.fit = None;
         self.wallpaper_choice = WallpaperChoice::Inherit;
     }
 
     /// The look the fields hold, or why it cannot be used. A value equal to
     /// its default is stored as unset, so it follows the default later too;
-    /// the opacity is the exception (`opacity_own`).
+    /// the opacity, the blur and the fit are the exception (`opacity_own`,
+    /// `blur_own`, `fit`): a channel can set them equal to, or 0 under, a
+    /// standard one.
     fn read(&self, i18n: &Localizer, cx: &App) -> Result<ChannelLook, String> {
         let text = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let color = |field: &Entity<TextInput>, key: &str| -> Result<Option<String>, String> {
@@ -398,9 +408,9 @@ impl LookFields {
             alternate: color(&self.alternate, "channel_look_alternate")?,
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
-            wallpaper_blur: (self.blur != DEFAULT_WALLPAPER_BLUR).then_some(self.blur),
+            wallpaper_blur: self.blur_own.then_some(self.blur),
             background_opacity: self.opacity_own.then_some(self.opacity),
-            wallpaper_fit: (self.fit != WallpaperFit::default()).then_some(self.fit),
+            wallpaper_fit: self.fit,
             no_wallpaper: choice == WallpaperChoice::Off,
             ..ChannelLook::default()
         })
@@ -419,11 +429,12 @@ struct Controls {
     encode: FocusHandle,
     char_refs: [FocusHandle; CHAR_REF_COUNT],
     wallpaper_choice: [FocusHandle; 3],
-    browse: FocusHandle,
     /// The range editor's buttons, reachable while it is open.
     crop_use: FocusHandle,
     crop_whole: FocusHandle,
     crop_cancel: FocusHandle,
+    /// The miniature's "choose an image" button.
+    pub(super) choose: FocusHandle,
     blur: FocusHandle,
     opacity: FocusHandle,
     fit: [FocusHandle; FIT_COUNT],
@@ -439,10 +450,10 @@ impl Controls {
             encode: handle(),
             char_refs: std::array::from_fn(|_| handle()),
             wallpaper_choice: std::array::from_fn(|_| handle()),
-            browse: handle(),
             crop_use: handle(),
             crop_whole: handle(),
             crop_cancel: handle(),
+            choose: handle(),
             blur: handle(),
             opacity: handle(),
             fit: std::array::from_fn(|_| handle()),
@@ -477,8 +488,6 @@ impl Controls {
                 .iter()
                 .map(|handle| (handle.clone(), Some(5))),
         );
-        order.push(field(fields[4]));
-        order.push((self.browse.clone(), Some(5)));
         if crop_open {
             order.extend(
                 [&self.crop_use, &self.crop_whole, &self.crop_cancel]
@@ -486,6 +495,7 @@ impl Controls {
             );
         }
         order.extend([
+            (self.choose.clone(), Some(5)),
             (self.blur.clone(), Some(5)),
             (self.opacity.clone(), Some(5)),
         ]);
@@ -516,6 +526,8 @@ pub(crate) struct ChannelSettingsView {
     look: LookFields,
     /// The wallpaper image being chosen and its range.
     crop: CropState,
+    /// The miniature's picture, loaded like the chat window's.
+    miniature: crate::channel_look::Wallpaper,
     /// What was last written (or read), so an edit that changes nothing
     /// writes nothing.
     saved: Option<(Choices, ChannelLook)>,
@@ -606,6 +618,7 @@ impl ChannelSettingsView {
             error: None,
             controls: Controls::new(cx),
             crop: CropState::new(),
+            miniature: Default::default(),
             saved,
             base,
             autosave: None,
@@ -769,6 +782,7 @@ impl ChannelSettingsView {
     #[cfg(test)]
     pub(crate) fn set_blur(&mut self, blur: u8, cx: &mut Context<Self>) {
         self.look.blur = blur;
+        self.look.blur_own = true;
         self.edited(cx);
     }
 
@@ -821,13 +835,60 @@ impl ChannelSettingsView {
         self.edited(cx);
     }
 
+    /// The blur and the opacity the sliders show: the effective ones, so an
+    /// inherited value is the standard wallpaper's, as the miniature and the
+    /// channel log use it. They become the channel's own only when moved.
+    pub(crate) fn shown_strengths(&self, cx: &App) -> (u8, u8) {
+        let Some(standard) = self.inherited_standard(cx) else {
+            return (self.look.blur, self.look.opacity);
+        };
+        (
+            if self.look.blur_own {
+                self.look.blur
+            } else {
+                standard.blur_tenths()
+            },
+            if self.look.opacity_own {
+                self.look.opacity
+            } else {
+                standard.opacity_percent()
+            },
+        )
+    }
+
+    /// The channel log's standard wallpaper while the channel follows it:
+    /// inheriting, with a picture set there.
+    fn inherited_standard(&self, cx: &App) -> Option<cayenchat_storage::RegionWallpaper> {
+        let inherits = self.look.wallpaper_choice == WallpaperChoice::Inherit
+            && self.look.wallpaper.read(cx).text().trim().is_empty();
+        if !inherits {
+            return None;
+        }
+        let dark = crate::theme::current(cx).dark;
+        self.owner
+            .read(cx)
+            .ok()
+            .map(|chat| chat.appearance.wallpapers(dark).channel_log.clone())
+            .filter(|standard| standard.path.is_some())
+    }
+
+    /// The fit the buttons mark: the channel's own, else the one it uses.
+    pub(crate) fn shown_fit(&self, cx: &App) -> WallpaperFit {
+        self.look.fit.unwrap_or_else(|| {
+            self.inherited_standard(cx)
+                .and_then(|standard| standard.fit)
+                .unwrap_or_default()
+        })
+    }
+
     pub(crate) fn set_fit(&mut self, fit: WallpaperFit, cx: &mut Context<Self>) {
-        self.look.fit = fit;
+        self.look.fit = Some(fit);
         self.edited(cx);
     }
 
-    fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
+    pub(crate) fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
         self.look.blur = blur.min(u32::from(MAX_WALLPAPER_BLUR)) as u8;
+        self.look.blur_own = true;
         self.edited(cx);
     }
 
@@ -1051,14 +1112,10 @@ impl Render for ChannelSettingsView {
                     .child(self.i18n.text("iso2022jp_char_refs_hint")),
             );
 
+        let preview = self.render_wallpaper_preview(window, cx);
         let row = |key: &str, input: &Entity<TextInput>| {
             settings_field(&self.i18n.text(key), input.clone())
         };
-        let browse = settings_theme::button("channel-look-browse", false, cx)
-            .track_focus(&self.controls.browse)
-            .focus(move |style| style.border_color(ring))
-            .child(self.i18n.text("channel_look_browse"))
-            .on_click(cx.listener(|this, _, window, cx| this.browse_wallpaper(window, cx)));
         let mut wallpaper_choices = div().flex().flex_wrap().gap_1();
         let shown = match self.look.wallpaper_choice {
             WallpaperChoice::Inherit if !self.look.wallpaper.read(cx).text().trim().is_empty() => {
@@ -1078,9 +1135,10 @@ impl Render for ChannelSettingsView {
             );
         }
         let mut fits = div().flex().flex_wrap().gap_1();
+        let shown_fit = self.shown_fit(cx);
         for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
             fits = fits.child(
-                settings_theme::button(("channel-look-fit", index), self.look.fit == fit, cx)
+                settings_theme::button(("channel-look-fit", index), shown_fit == fit, cx)
                     .track_focus(&self.controls.fit[index])
                     .focus(move |style| style.border_color(ring))
                     .child(self.i18n.text(key))
@@ -1094,19 +1152,17 @@ impl Render for ChannelSettingsView {
             knob: palette.surface,
             ring,
         };
+        let (shown_blur, shown_opacity) = self.shown_strengths(cx);
         let blur = Self::field(
             self.i18n.format(
-                "channel_look_blur",
-                &[(
-                    "value",
-                    &format!("{}.{}", self.look.blur / 10, self.look.blur % 10),
-                )],
+                "wallpaper_blur",
+                &[("value", &format!("{}.{}", shown_blur / 10, shown_blur % 10))],
             ),
             &palette,
         )
         .child(slider::slider(
             "channel-look-blur",
-            u32::from(self.look.blur),
+            u32::from(shown_blur),
             u32::from(MAX_WALLPAPER_BLUR),
             &self.look.blur_track,
             &self.controls.blur,
@@ -1114,29 +1170,24 @@ impl Render for ChannelSettingsView {
             cx,
             |this, value, _, cx| this.set_blur_value(value, cx),
         ));
+        // The same "strength" as the Appearance tab: the share of the picture,
+        // the rest of the background color's opacity.
+        let strength = 100 - shown_opacity.min(100);
         let opacity = Self::field(
-            self.i18n.format(
-                "channel_look_opacity",
-                &[("value", &self.look.opacity.to_string())],
-            ),
+            self.i18n
+                .format("wallpaper_strength", &[("value", &strength.to_string())]),
             &palette,
         )
         .child(slider::slider(
             "channel-look-opacity",
-            u32::from(self.look.opacity),
+            u32::from(strength),
             100,
             &self.look.opacity_track,
             &self.controls.opacity,
             colors,
             cx,
-            |this, value, _, cx| this.set_opacity(value, cx),
-        ))
-        .child(
-            div()
-                .text_sm()
-                .text_color(palette.text_secondary)
-                .child(self.i18n.text("channel_look_opacity_hint")),
-        );
+            |this, value, _, cx| this.set_opacity(100 - value.min(100), cx),
+        ));
         let look = div()
             .id("channel-look")
             .debug_selector(|| "channel-look".into())
@@ -1165,26 +1216,8 @@ impl Render for ChannelSettingsView {
                     .child(self.i18n.text("channel_look_wallpaper_choice")),
             )
             .child(wallpaper_choices)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(row("channel_look_wallpaper", &self.look.wallpaper)),
-                    )
-                    .child(browse),
-            )
+            .child(preview)
             .children(self.render_crop(&palette, ring, cx))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(palette.text_secondary)
-                    .child(self.i18n.text("channel_look_drop_hint")),
-            )
             .child(blur)
             .child(opacity)
             .child(fit);
