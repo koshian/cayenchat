@@ -925,17 +925,18 @@ impl Appearance {
     /// switching back and forth loses nothing.
     pub fn set_split_wallpapers(&mut self, on: bool, shown_dark: bool) {
         if on && !self.split_wallpapers() {
-            let shared = self.shared_wallpapers.clone();
-            for own in [&mut self.wallpapers, &mut self.dark.wallpapers] {
-                if *own == RegionWallpapers::default() {
-                    *own = shared.clone();
+            if !self.split_wallpapers_started {
+                let shared = self.shared_wallpapers.clone();
+                for own in [&mut self.wallpapers, &mut self.dark.wallpapers] {
+                    if *own == RegionWallpapers::default() {
+                        *own = shared.clone();
+                    }
                 }
+                self.split_wallpapers_started = true;
             }
-        } else if !on
-            && self.split_wallpapers()
-            && self.shared_wallpapers == RegionWallpapers::default()
-        {
+        } else if !on && self.split_wallpapers() && self.shared_wallpapers_unset {
             self.shared_wallpapers = self.wallpapers(shown_dark).clone();
+            self.shared_wallpapers_unset = false;
         }
         self.split_wallpapers = Some(on);
     }
@@ -952,6 +953,7 @@ impl Appearance {
             self.wallpapers = self.shared_wallpapers.clone();
             self.dark.wallpapers = self.shared_wallpapers.clone();
             self.split_wallpapers = Some(true);
+            self.split_wallpapers_started = true;
         }
         *self.wallpapers_mut(dark) = wallpapers;
     }
@@ -977,6 +979,8 @@ impl Appearance {
         }
         if self.wallpapers != self.dark.wallpapers {
             self.split_wallpapers = Some(true);
+            self.split_wallpapers_started = true;
+            self.shared_wallpapers_unset = true;
         } else if self.wallpapers != RegionWallpapers::default() {
             self.shared_wallpapers = self.wallpapers.clone();
             self.split_wallpapers = Some(false);

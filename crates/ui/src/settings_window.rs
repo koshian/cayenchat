@@ -577,6 +577,8 @@ impl SettingsForm {
             wallpapers: self.values.appearance.wallpapers.clone(),
             split_wallpapers: self.values.appearance.split_wallpapers,
             shared_wallpapers: self.values.appearance.shared_wallpapers.clone(),
+            split_wallpapers_started: self.values.appearance.split_wallpapers_started,
+            shared_wallpapers_unset: self.values.appearance.shared_wallpapers_unset,
             origin: self.values.appearance.origin.clone(),
             saved_colors: self.values.appearance.saved_colors.clone(),
             channel_looks: self.values.appearance.channel_looks.clone(),

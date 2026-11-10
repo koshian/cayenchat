@@ -558,15 +558,53 @@ fn switching_modes_back_and_forth_loses_and_mixes_nothing() {
 }
 
 #[test]
-fn turning_the_shared_set_on_without_one_starts_it_from_the_shown_theme() {
-    let mut appearance = Appearance::default();
-    appearance.set_split_wallpapers(true, false);
-    *appearance.wallpapers_mut(false) = picture("light", 20);
-    *appearance.wallpapers_mut(true) = picture("dark", 40);
+fn turning_the_shared_set_on_for_older_separate_settings_starts_it_from_the_shown_theme() {
+    let json = r#"{"wallpapers":{"channel_log":{"path":"light","opacity":20}},
+        "dark":{"wallpapers":{"channel_log":{"path":"dark","opacity":40}}}}"#;
+    let mut appearance: Appearance = serde_json::from_str(json).unwrap();
+    appearance.clean_themes();
+    assert!(appearance.split_wallpapers());
     appearance.set_split_wallpapers(false, true);
-    assert_eq!(*appearance.wallpapers(false), picture("dark", 40));
+    assert_eq!(
+        appearance.wallpapers(false).channel_log.path.as_deref(),
+        Some("dark")
+    );
     appearance.set_split_wallpapers(true, true);
-    assert_eq!(*appearance.wallpapers(false), picture("light", 20));
+    assert_eq!(
+        appearance.wallpapers(false).channel_log.path.as_deref(),
+        Some("light")
+    );
+}
+
+#[test]
+fn an_emptied_set_stays_empty_through_switches_saves_and_loads() {
+    let reload = |a: &Appearance| {
+        let mut back: Appearance =
+            serde_json::from_str(&serde_json::to_string(a).unwrap()).unwrap();
+        back.clean_themes();
+        back
+    };
+    let mut appearance = Appearance::default();
+    *appearance.wallpapers_mut(false) = picture("shared", 10);
+    appearance.set_split_wallpapers(true, false);
+    // Dark is deliberately emptied.
+    *appearance.wallpapers_mut(true) = RegionWallpapers::default();
+    appearance.set_split_wallpapers(false, false);
+    appearance.set_split_wallpapers(true, false);
+    assert_eq!(*appearance.wallpapers(true), RegionWallpapers::default());
+    assert_eq!(*appearance.wallpapers(false), picture("shared", 10));
+    let mut appearance = reload(&appearance);
+    appearance.set_split_wallpapers(false, false);
+    appearance.set_split_wallpapers(true, true);
+    assert_eq!(*appearance.wallpapers(true), RegionWallpapers::default());
+    // The shared set emptied on purpose stays empty too.
+    *appearance.wallpapers_mut(false) = picture("light", 20);
+    appearance.set_split_wallpapers(false, false);
+    *appearance.wallpapers_mut(false) = RegionWallpapers::default();
+    let mut appearance = reload(&appearance);
+    appearance.set_split_wallpapers(true, false);
+    appearance.set_split_wallpapers(false, true);
+    assert_eq!(*appearance.wallpapers(false), RegionWallpapers::default());
 }
 
 #[test]

@@ -3902,11 +3902,12 @@ the start of the session.
   both themes and the settings show one miniature without the light / dark
   buttons. Separate: `wallpapers` (light) and `dark.wallpapers`, one side at a
   time by the buttons. Switching keeps every set, so nothing is deleted or
-  copied over; a set with nothing in it is the only one that is filled, from
-  the set in use before (separate on: from the shared set; shared on with
-  none: from the theme shown). So a side that was deliberately emptied is
-  filled again by a switch, an accepted limitation in place of a flag per
-  side. The key is unset until chosen: settings from before it read as
+  copied over. A set is filled only once, when it is started: the first
+  switch to separate fills the empty light / dark sets from the shared set
+  (`split_wallpapers_started`), and settings that moved to separate from
+  older ones fill the shared set from the theme shown at the first switch
+  back (`shared_wallpapers_unset`). After that an empty set is a choice
+  ("no wallpaper") and is kept through switches, saves and loads. The key is unset until chosen: settings from before it read as
   separate when the two sides differ, as shared (starting from that picture)
   when they are the same, and as shared when neither is set; an unset key is
   not written. Applying a theme sets its own side through
