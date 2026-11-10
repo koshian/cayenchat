@@ -42,6 +42,9 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
     match verb.as_str() {
         "OPER" | "PASS" | "AUTH" | "AUTHENTICATE" | "NS" | "NICKSERV" | "CS" | "CHANSERV"
         | "AUTHSERV" => true,
+        // Server-side aliases for service logins; unknown slash commands are
+        // sent as raw lines, so these also go out as typed.
+        "IDENTIFY" | "ID" | "LOGIN" | "REGAIN" => true,
         // `/join #channel key`: the second word is a channel key.
         "JOIN" => words.nth(1).is_some(),
         "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => {
@@ -61,17 +64,7 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
         _ if private_peer.is_some_and(is_credential_service) => true,
         "RAW" | "QUOTE" => command
             .split_once(char::is_whitespace)
-            .is_some_and(|(_, raw)| {
-                let raw = raw.trim_start();
-                // Server-side aliases for service logins.
-                let alias = raw
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_ascii_uppercase();
-                matches!(alias.as_str(), "IDENTIFY" | "ID" | "LOGIN" | "REGAIN")
-                    || is_sensitive(&format!("/{raw}"), None)
-            }),
+            .is_some_and(|(_, raw)| is_sensitive(&format!("/{}", raw.trim_start()), None)),
         _ => false,
     }
 }
@@ -242,6 +235,13 @@ mod tests {
             "/squery NickServ identify pw",
             "/quote IDENTIFY pw",
             "/raw regain me pw",
+            "/identify pw",
+            "/ID pw",
+            "/Login alice pw",
+            "/regain me pw",
+            "/raw id pw",
+            "/quote LOGIN alice pw",
+            "/ identify pw",
         ];
         let mut history = InputHistory::default();
         for line in secret {
@@ -273,6 +273,8 @@ mod tests {
             "/join #a,#b",
             "/me waves",
             "/raw WHO #c",
+            "identify yourself",
+            "/idle",
             "/nick alice",
         ];
         for line in harmless {
