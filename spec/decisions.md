@@ -3915,7 +3915,10 @@ the start of the session.
   `set_theme_wallpapers`; while shared and different from the shared set it
   moves to separate first, the other side starting as what it shows now
   (never an older separate set), like the fonts. `wallpaper_paths` lists all
-  three sets so no kept file is pruned.
+  three sets so no kept file is pruned. The checkbox is worded like the
+  fonts': "Use different wallpapers for light and dark", checked while
+  separate (#1050). The sliders have the same order in the Appearance tab and
+  the channel settings: strength, blur, brightness, saturation.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
   `dark.wallpapers` for dark while separate): a file path, a background opacity and a blur
   per area (opacity: percent of the area's background color laid over the
@@ -4235,7 +4238,8 @@ background blur (#1018): none changes another's value or drawing.
   blur; measured as in `spec/performance.md`, "Wallpaper brightness and saturation".
 - **Range and defaults.** Brightness −100 to 100 (`i8`), saturation 0 to 200
   (`u8`, percent). Unset: brightness −40 in the dark theme and +40 in the
-  light one, saturation 80 in both. A value outside the range is capped when a
+  light one, saturation 80 in the dark theme and 110 in the light one (#1050,
+  below). A value outside the range is capped when a
   settings file is read (`clean`, as the blur is) and when it is used, and
   when a theme file (`.cayentheme`) is imported (the blur and opacity of a
   theme file are still refused when out of range).
@@ -4246,8 +4250,51 @@ background blur (#1018): none changes another's value or drawing.
   6.2, 7.2, 8.3. ±40 puts both above 4.5. Links and
   NOTICE stay below 4.5 at ±40 in that worst case (dark link 2.9, light 4.0);
   that is not a reason to default stronger. The saturation 80 is a feel, not a
-  computation, to be changed after trying it on real pictures. The opacity
-  default (50 %) is unchanged.
+  computation, to be changed after trying it on real pictures. (Dark: opacity
+  50 %, unchanged. The light defaults changed in #1050, below.)
+- **Light defaults (#1050).** The light theme showed the wallpaper as through
+  a white fog: with a white background, "toward white" and "the white
+  background laid over it" are the same computation, so brightness +40 and a
+  50 % overlay both pushed every channel to 70 % or more. The light defaults
+  are now brightness **+40** (unchanged), saturation **110 %** and strength
+  **30 %** (stored `background_opacity` 70: the picture shows less than the
+  50 % of before, for readability); dark stays −40, 80 %, strength 50 %. The
+  saturation is a little above 100 because the white that is mixed in takes
+  color out; it is applied before the pull toward white, so the relation of
+  natural pictures (the lighter a part, the paler its color) is kept. A user
+  who wants more of the picture raises the strength slider. The saturation
+  and opacity defaults are per theme (`default_wallpaper_saturation(dark)`,
+  `default_background_opacity(dark)`, as `default_wallpaper_brightness(dark)`
+  is). Terms: the screen's "strength" (濃さ) is the share the picture shows;
+  `background_opacity` is the opposite, the share of the background color laid
+  over it (the screen shows `100 − value`), so strength 30 % is
+  `background_opacity` 70. A channel's opacity is one value for both themes
+  (not a pair like the tone); unset it follows the standard wallpaper's when
+  that has a picture, else the default of the theme on show.
+  Contrast over the worst pixel (black: brightness +40 gives 0.4, 30 % of it
+  over white is 0.82, so every channel of every pixel is at least 82 %; the
+  worst case is the gray #D1D1D1, relative luminance 0.638), with the real
+  colors, new default (old default, strength 50 %, in brackets): body text
+  #20262D **10.0** (7.2), link #0645AD **5.6** (4.0), event #007D00 **3.5**
+  (2.5), NOTICE #7A838C **2.5** (1.8). Text and link are above 4.5; the event
+  and NOTICE colors are not in that worst case, but are better than before
+  (against white: 5.3 and 3.9).
+- **Tried and not adopted (#1050).** Raising the brightness while keeping the
+  color differences (lift only the luma, `g' = g + (1 − g) b`, and scale the
+  differences from gray by a factor so that no channel passes 1), with
+  brightness +65, saturation 130 % and strength 100 %, was tried in test
+  builds and dropped. Natural pictures are paler where they are lighter (snow,
+  cloud, haze); keeping the differences breaks that relation: the faint blue
+  of a snow shadow stays a bright vivid blue, the yellow of grass goes toward
+  fluorescent, so some pictures look unnatural. The plain "toward white" is
+  pale but never breaks: it looks like a scene through haze or frosted glass,
+  had the least spread of light and dark, and colored text read best with it.
+  Another way to keep color (flattening only the lightness in a perceptual
+  color space) was tried and dropped for the same reason. **Do not propose
+  this direction again** (maintainer, 2026-11-10).
+- **Existing users (#1050).** Light-theme users with a wallpaper see it become
+  paler after the update (fields absent read as the new defaults; accepted by
+  the maintainer, 2026-11-10). The formula is that of #1047.
 - **Where it is stored.** The standard wallpapers (D089) hold `brightness` and
   `saturation` per area and per theme (`RegionWallpaper`), also in the
   `.cayentheme` wallpaper entries. A channel's look (`ChannelLook`) holds

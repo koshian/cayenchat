@@ -1176,11 +1176,11 @@ impl SettingsWindow {
             knob: palette.surface,
             ring: primary.into(),
         };
-        let strength = 100 - wallpaper.opacity_percent();
+        let strength = 100 - wallpaper.opacity_percent(dark);
         let blur = wallpaper.blur_tenths();
         let max_brightness = i32::from(cayenchat_storage::MAX_WALLPAPER_BRIGHTNESS);
         let brightness = i32::from(wallpaper.brightness_value(dark));
-        let saturation = wallpaper.saturation_percent();
+        let saturation = wallpaper.saturation_percent(dark);
         let sliders = wallpaper.path.is_some().then(|| {
             let row = |label: String, slider: Stateful<Div>| {
                 div()
@@ -1351,7 +1351,7 @@ impl SettingsWindow {
                     .flex()
                     .gap_2()
                     .cursor_pointer()
-                    .child(settings_theme::checkbox(!split, true, cx))
+                    .child(settings_theme::checkbox(split, true, cx))
                     .child(self.i18n.text("wallpaper_shared"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.wallpaper_set_shared(cx);
@@ -1805,11 +1805,11 @@ mod tests {
                     .appearance
                     .wallpapers
                     .member_list
-                    .opacity_percent()
+                    .opacity_percent(false)
             })
         };
         // The picture's strength is the rest of the background's opacity.
-        assert_eq!(100 - strength(&form, cx), 50);
+        assert_eq!(100 - strength(&form, cx), 30);
         // One percent at a time, and the blur in tenths up to its limit.
         form.update(cx, |form, cx| {
             form.wallpaper_set_strength(false, WallpaperRegion::MemberList, 21, cx);

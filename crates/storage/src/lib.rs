@@ -928,14 +928,14 @@ pub struct ChannelLook {
     /// Saturation of the wallpaper in percent (0 to
     /// [`MAX_WALLPAPER_SATURATION`]) in the light and in the dark theme;
     /// unset follows the standard wallpaper, or
-    /// [`DEFAULT_WALLPAPER_SATURATION`] without one.
+    /// [`default_wallpaper_saturation`] without one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_saturation_light: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper_saturation_dark: Option<u8>,
     /// Opacity of the background color laid over the wallpaper, in percent
     /// (0 to 100; 100 hides the picture); unset is
-    /// [`DEFAULT_BACKGROUND_OPACITY`]. Only a wallpaper makes it visible.
+    /// [`default_background_opacity`]. Only a wallpaper makes it visible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_opacity: Option<u8>,
     /// Show no wallpaper in this channel even where the standard has one
@@ -993,8 +993,11 @@ pub const MAX_WALLPAPER_BRIGHTNESS: i8 = 100;
 /// The range of a wallpaper's saturation in percent: 0 is gray, 100 leaves
 /// the picture.
 pub const MAX_WALLPAPER_SATURATION: u8 = 200;
-/// Unset saturation, for both themes (a feel, not a computed value).
-pub const DEFAULT_WALLPAPER_SATURATION: u8 = 80;
+/// Unset saturation: 80 in the dark theme and 110 in the light one (a feel,
+/// not a computed value; D092).
+pub fn default_wallpaper_saturation(dark: bool) -> u8 {
+    if dark { 80 } else { 110 }
+}
 
 /// Unset brightness: toward black in the dark theme and toward white in the
 /// light one, the side away from the text color, so the text stays readable
@@ -1007,9 +1010,12 @@ pub fn default_wallpaper_brightness(dark: bool) -> i8 {
 pub fn clamp_wallpaper_brightness(brightness: i8) -> i8 {
     brightness.clamp(-MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_BRIGHTNESS)
 }
-/// The background color over a wallpaper is 50 % opaque unless set (the
-/// wallpaper shows at 50 %; the UI shows `100 - value`).
-pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
+/// The share of the background color over a wallpaper unless set: 50 % in the
+/// dark theme and 70 in the light one. The UI
+/// shows `100 - value` ("strength"), so 30 % in the light theme.
+pub fn default_background_opacity(dark: bool) -> u8 {
+    if dark { 50 } else { 70 }
+}
 
 impl ChannelLook {
     /// The brightness set for the theme `dark`, if any.

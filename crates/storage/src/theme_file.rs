@@ -26,9 +26,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Appearance, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_SATURATION,
-    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION, clamp_font_size, clamp_wallpaper_brightness,
-    color_value, default_wallpaper_brightness, private_file,
+    Appearance, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION,
+    clamp_font_size, clamp_wallpaper_brightness, color_value, default_background_opacity,
+    default_wallpaper_brightness, default_wallpaper_saturation, private_file,
 };
 
 /// The file name extension of a theme file, without the dot.
@@ -87,7 +87,7 @@ pub struct RegionWallpaper {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// How much of it shows over the background, in percent; unset is
-    /// [`DEFAULT_BACKGROUND_OPACITY`].
+    /// [`default_background_opacity`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
     /// Blur sigma of the picture in tenths of a pixel (0 to
@@ -99,7 +99,7 @@ pub struct RegionWallpaper {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brightness: Option<i8>,
     /// Saturation of the picture in percent (0 to 200); unset is
-    /// [`DEFAULT_WALLPAPER_SATURATION`].
+    /// [`default_wallpaper_saturation`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saturation: Option<u8>,
     /// How the picture fits the area; unset is [`WallpaperFit::default`]. A
@@ -112,8 +112,10 @@ pub struct RegionWallpaper {
 }
 
 impl RegionWallpaper {
-    pub fn opacity_percent(&self) -> u8 {
-        self.opacity.unwrap_or(DEFAULT_BACKGROUND_OPACITY).min(100)
+    pub fn opacity_percent(&self, dark: bool) -> u8 {
+        self.opacity
+            .unwrap_or_else(|| default_background_opacity(dark))
+            .min(100)
     }
 
     pub fn blur_tenths(&self) -> u8 {
@@ -130,9 +132,9 @@ impl RegionWallpaper {
         )
     }
 
-    pub fn saturation_percent(&self) -> u8 {
+    pub fn saturation_percent(&self, dark: bool) -> u8 {
         self.saturation
-            .unwrap_or(DEFAULT_WALLPAPER_SATURATION)
+            .unwrap_or_else(|| default_wallpaper_saturation(dark))
             .min(MAX_WALLPAPER_SATURATION)
     }
 }
@@ -1079,7 +1081,7 @@ impl Appearance {
                 let mut entry = vec![
                     Value::from(region.key()),
                     Value::from(wallpaper.path.as_deref()),
-                    Value::from(wallpaper.opacity_percent()),
+                    Value::from(wallpaper.opacity_percent(dark)),
                 ];
                 if wallpaper.blur_tenths() != DEFAULT_WALLPAPER_BLUR {
                     entry.push(Value::from(wallpaper.blur_tenths()));
@@ -1091,10 +1093,10 @@ impl Appearance {
                         wallpaper.brightness_value(dark)
                     )));
                 }
-                if wallpaper.saturation_percent() != DEFAULT_WALLPAPER_SATURATION {
+                if wallpaper.saturation_percent(dark) != default_wallpaper_saturation(dark) {
                     entry.push(Value::from(format!(
                         "saturation {}",
-                        wallpaper.saturation_percent()
+                        wallpaper.saturation_percent(dark)
                     )));
                 }
                 if let Some(fit) = wallpaper

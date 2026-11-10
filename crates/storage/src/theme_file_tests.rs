@@ -441,7 +441,10 @@ fn brightness_and_saturation_default_by_theme_and_stay_out_of_the_fingerprint_un
     let wallpaper = RegionWallpaper::default();
     assert_eq!(wallpaper.brightness_value(true), -40);
     assert_eq!(wallpaper.brightness_value(false), 40);
-    assert_eq!(wallpaper.saturation_percent(), 80);
+    assert_eq!(wallpaper.saturation_percent(true), 80);
+    assert_eq!(wallpaper.saturation_percent(false), 110);
+    assert_eq!(wallpaper.opacity_percent(true), 50);
+    assert_eq!(wallpaper.opacity_percent(false), 70);
     // An explicit default is the same appearance as unset.
     // Separate wallpapers, so each theme has its own set to change.
     let mut appearance = Appearance::default();
@@ -449,6 +452,7 @@ fn brightness_and_saturation_default_by_theme_and_stay_out_of_the_fingerprint_un
     let plain = (appearance.fingerprint(true), appearance.fingerprint(false));
     appearance.wallpapers_mut(true).channel_log.brightness = Some(-40);
     appearance.wallpapers_mut(false).channel_log.brightness = Some(40);
+    appearance.wallpapers_mut(false).channel_log.saturation = Some(110);
     appearance.wallpapers_mut(true).channel_log.saturation = Some(80);
     assert_eq!(
         (appearance.fingerprint(true), appearance.fingerprint(false)),

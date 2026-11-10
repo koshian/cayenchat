@@ -18,16 +18,16 @@ use crate::wallpaper_crop::CropState;
 
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
-    AutoJoinEntry, ChannelLook, CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR,
-    MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_PATH_BYTES,
+    AutoJoinEntry, ChannelLook, CharRefMode, DEFAULT_WALLPAPER_BLUR, MAX_FONT_SIZE,
+    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_PATH_BYTES,
     MAX_WALLPAPER_SATURATION, MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, WallpaperFit,
-    clamp_wallpaper_brightness, color_value, format_auto_join,
+    clamp_wallpaper_brightness, color_value, default_background_opacity, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, FocusNextField, FocusPreviousField,
-    channel_look::{background_opacity_of, blur_of, own_brightness, own_saturation},
+    channel_look::{blur_of, own_brightness, own_saturation},
     decorations,
     input::TextInput,
     localization::Localizer,
@@ -325,7 +325,7 @@ impl LookFields {
             blur_own: look.wallpaper_blur.is_some(),
             brightness: [false, true].map(|dark| own_brightness(&look, dark)),
             saturation: [false, true].map(|dark| own_saturation(&look, dark)),
-            opacity: background_opacity_of(&look),
+            opacity: look.background_opacity.unwrap_or(0).min(100),
             opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit,
             background: field(color(look.background), cx),
@@ -360,7 +360,7 @@ impl LookFields {
         self.blur_own = false;
         self.brightness = [None; 2];
         self.saturation = [None; 2];
-        self.opacity = DEFAULT_BACKGROUND_OPACITY;
+        self.opacity = 0;
         self.opacity_own = false;
         self.fit = None;
         self.wallpaper_choice = WallpaperChoice::Inherit;
@@ -868,8 +868,14 @@ impl ChannelSettingsView {
     /// inherited value is the standard wallpaper's, as the miniature and the
     /// channel log use it. They become the channel's own only when moved.
     pub(crate) fn shown_strengths(&self, cx: &App) -> (u8, u8) {
+        let dark = crate::theme::current(cx).dark;
         let Some(standard) = self.inherited_standard(cx) else {
-            return (self.look.blur, self.look.opacity);
+            let opacity = if self.look.opacity_own {
+                self.look.opacity
+            } else {
+                default_background_opacity(dark)
+            };
+            return (self.look.blur, opacity);
         };
         (
             if self.look.blur_own {
@@ -880,7 +886,7 @@ impl ChannelSettingsView {
             if self.look.opacity_own {
                 self.look.opacity
             } else {
-                standard.opacity_percent()
+                standard.opacity_percent(dark)
             },
         )
     }
@@ -897,7 +903,7 @@ impl ChannelSettingsView {
             self.look.brightness[usize::from(dark)]
                 .unwrap_or_else(|| standard.brightness_value(dark)),
             self.look.saturation[usize::from(dark)]
-                .unwrap_or_else(|| standard.saturation_percent()),
+                .unwrap_or_else(|| standard.saturation_percent(dark)),
         )
     }
 
@@ -1319,10 +1325,10 @@ impl Render for ChannelSettingsView {
             .child(wallpaper_choices)
             .child(preview)
             .children(self.render_crop(&palette, ring, cx))
+            .child(opacity)
             .child(blur)
             .child(brightness)
             .child(saturation)
-            .child(opacity)
             .child(fit);
 
         let body = div()
