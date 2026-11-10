@@ -134,7 +134,6 @@
   "wallpaper_saturation": "Saturation: {value}%",
   "wallpaper_detail": "Details…",
   "wallpaper_detail_close": "Close",
-  "wallpaper_range": "Choose a range…",
   "wallpaper_failed": "The wallpaper could not be set (the earlier one is kept): {error}",
   "channel_look_wallpaper_choice": "Wallpaper",
   "channel_look_wallpaper_inherit": "Use the standard",
