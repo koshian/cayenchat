@@ -1664,6 +1664,9 @@ mod tests {
         });
     }
 
+    // macOS and Windows refuse to create a path this long (PATH_MAX, MAX_PATH),
+    // so the save fails before the length check there.
+    #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_cut_whose_path_is_too_long_says_so_and_sets_nothing(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();
