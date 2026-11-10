@@ -425,8 +425,22 @@ impl PeerAvatars {
         }
     }
 
+    /// The server's name comparison changed (RPL_ISUPPORT). The nickname keys
+    /// already kept were made with the old one, so what depends on them is
+    /// dropped; the server announces its mapping before anyone is seen, so
+    /// this is empty in practice.
     pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
+        if self.casemapping != casemapping {
+            self.casemapping = casemapping;
+            self.avatars.clear();
+            self.stages.clear();
+            self.queue.clear();
+            self.in_flight.clear();
+            self.next_probe = None;
+            self.replied.clear();
+            self.askers.clear();
+            self.next_notify = None;
+        }
     }
 
     /// Changes the URL answered to queries; `None` stops answering. The
@@ -444,7 +458,7 @@ impl PeerAvatars {
         if !valid_sender(sender) || !presence.shares(sender, None) {
             return;
         }
-        let key = nickname_key(sender);
+        let key = nickname_key(self.casemapping, sender);
         if !self.askers.contains_key(&key) && self.askers.len() >= MAX_NOTIFIED_USERS {
             return;
         }
@@ -463,7 +477,7 @@ impl PeerAvatars {
         if !valid_sender(sender) || !presence.shares(sender, None) {
             return None;
         }
-        let key = nickname_key(sender);
+        let key = nickname_key(self.casemapping, sender);
         let from_metadata = self
             .avatars
             .get(&key)
@@ -476,7 +490,7 @@ impl PeerAvatars {
 
     /// Records that an asker was just given what we share now.
     fn mark_told(&mut self, sender: &str) {
-        if let Some(asker) = self.askers.get_mut(&nickname_key(sender)) {
+        if let Some(asker) = self.askers.get_mut(&nickname_key(self.casemapping, sender)) {
             asker.known = self.share.clone();
         }
     }
@@ -501,7 +515,7 @@ impl PeerAvatars {
                 .find(|(_, asker)| asker.known != self.share)
                 .map(|(key, _)| key.clone())?;
             let asker = self.askers.get_mut(&key)?;
-            if same_nickname(&asker.nickname, current_nick)
+            if same_nickname(self.casemapping, &asker.nickname, current_nick)
                 || !valid_sender(&asker.nickname)
                 || !presence.shares(&asker.nickname, None)
             {
@@ -539,8 +553,8 @@ impl PeerAvatars {
                 let mut handled = Handled::default();
                 if let Some(sender) = sender
                     && !replayed
-                    && !same_nickname(sender, current_nick)
-                    && same_nickname(target, current_nick)
+                    && !same_nickname(self.casemapping, sender, current_nick)
+                    && same_nickname(self.casemapping, target, current_nick)
                 {
                     self.remember_asker(sender, presence);
                     handled.notes.extend(self.ask_back(sender, presence));
@@ -560,14 +574,16 @@ impl PeerAvatars {
                 let params = avatar_ctcp(text)?;
                 let mut handled = Handled::default();
                 let Some(sender) = sender.filter(|sender| {
-                    !replayed && valid_sender(sender) && !same_nickname(sender, current_nick)
+                    !replayed
+                        && valid_sender(sender)
+                        && !same_nickname(self.casemapping, sender, current_nick)
                 }) else {
                     return Some(handled);
                 };
                 // Only the user present now under that name, as the server
                 // names them: sent to us by someone we share a channel
                 // with, or to a channel they are in.
-                let present = if same_nickname(target, current_nick) {
+                let present = if same_nickname(self.casemapping, target, current_nick) {
                     presence.shares(sender, None)
                 } else {
                     valid_channel(target) && presence.in_channel(target, sender)
@@ -575,7 +591,7 @@ impl PeerAvatars {
                 if !present {
                     return Some(handled);
                 }
-                let key = nickname_key(sender);
+                let key = nickname_key(self.casemapping, sender);
                 self.in_flight
                     .retain(|probe| probe.kind != ProbeKind::Query || probe.key != key);
                 if self.stages.contains_key(&key) || self.stages.len() < MAX_PROBED_USERS {
@@ -604,7 +620,7 @@ impl PeerAvatars {
     ) -> Option<Handled> {
         let (code, args) = numeric(message)?;
         let ours = |kind: ProbeKind, nick: &str| {
-            let key = nickname_key(nick);
+            let key = nickname_key(self.casemapping, nick);
             self.in_flight
                 .iter()
                 .position(|probe| probe.kind == kind && probe.key == key)
@@ -654,7 +670,7 @@ impl PeerAvatars {
             }
             // ERR_NOSUCHNICK for a lookup or query of ours: they are gone.
             401 => {
-                let key = nickname_key(without_network(args.get(1)?));
+                let key = nickname_key(self.casemapping, without_network(args.get(1)?));
                 let before = self.in_flight.len();
                 self.in_flight.retain(|probe| probe.key != key);
                 (self.in_flight.len() != before).then(Handled::default)
@@ -692,11 +708,13 @@ impl PeerAvatars {
         current_nick: &str,
         presence: &PresenceIndex,
     ) -> Option<Event> {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) || !presence.shares(nick, None)
+        if same_nickname(self.casemapping, nick, current_nick)
+            || !valid_sender(nick)
+            || !presence.shares(nick, None)
         {
             return None;
         }
-        let key = nickname_key(nick);
+        let key = nickname_key(self.casemapping, nick);
         if !advertises_avatar(real) {
             if !self.stages.contains_key(&key) && self.stages.len() < MAX_PROBED_USERS {
                 self.stages.insert(key, Stage::Seen);
@@ -724,7 +742,7 @@ impl PeerAvatars {
     /// someone not looked at yet (the only case `remembered` can use), so
     /// the usual message copies nothing.
     pub(crate) fn unseen_speaker_identity(&self, message: &IrcMessage) -> Option<(String, String)> {
-        let key = nickname_key(message.source_nickname()?);
+        let key = nickname_key(self.casemapping, message.source_nickname()?);
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
             return None;
         }
@@ -762,7 +780,7 @@ impl PeerAvatars {
         current_nick: &str,
         presence: Option<&PresenceIndex>,
     ) -> Option<Event> {
-        if same_nickname(nick, current_nick)
+        if same_nickname(self.casemapping, nick, current_nick)
             || !valid_sender(nick)
             || presence.is_some_and(|presence| !presence.shares(nick, None))
         {
@@ -770,7 +788,7 @@ impl PeerAvatars {
         }
         // Like `speaker`: anyone already looked at is not looked up again,
         // which also keeps this off the per-message path.
-        let key = nickname_key(nick);
+        let key = nickname_key(self.casemapping, nick);
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
             return None;
         }
@@ -790,10 +808,10 @@ impl PeerAvatars {
         current_nick: &str,
         presence: &PresenceIndex,
     ) -> Option<String> {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) {
+        if same_nickname(self.casemapping, nick, current_nick) || !valid_sender(nick) {
             return None;
         }
-        let key = nickname_key(nick);
+        let key = nickname_key(self.casemapping, nick);
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
             return None;
         }
@@ -812,7 +830,7 @@ impl PeerAvatars {
         current_nick: &str,
         presence: &PresenceIndex,
     ) -> Option<String> {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) {
+        if same_nickname(self.casemapping, nick, current_nick) || !valid_sender(nick) {
             return None;
         }
         if !presence.shares(nick, None) {
@@ -820,7 +838,7 @@ impl PeerAvatars {
                 "Not asking {nick} for an avatar: no channel is shared with them."
             ));
         }
-        let key = nickname_key(nick);
+        let key = nickname_key(self.casemapping, nick);
         self.in_flight
             .retain(|probe| probe.kind != ProbeKind::Query || probe.key != key);
         self.enqueue(ProbeKind::Query, nick, key)
@@ -886,7 +904,7 @@ impl PeerAvatars {
             return handled;
         }
         while let Some(mut probe) = self.queue.pop_front() {
-            if same_nickname(&probe.nickname, current_nick)
+            if same_nickname(self.casemapping, &probe.nickname, current_nick)
                 || !presence.shares(&probe.nickname, None)
             {
                 continue;
@@ -924,7 +942,7 @@ impl PeerAvatars {
         let Some(actor) = message.source_nickname() else {
             return Vec::new();
         };
-        let ours = |nick: &str| same_nickname(nick, current_nick);
+        let ours = |nick: &str| same_nickname(self.casemapping, nick, current_nick);
         if let IrcCommand::NICK(new) = &message.command {
             return self.rename(actor, new, prefix_identity(message));
         }
@@ -948,7 +966,7 @@ impl PeerAvatars {
     /// The user left: what we were asking about them is dropped (answers
     /// still out are swallowed unused).
     fn forget(&mut self, nick: &str) {
-        let key = nickname_key(nick);
+        let key = nickname_key(self.casemapping, nick);
         self.stages.remove(&key);
         self.askers.remove(&key);
         self.queue.retain(|probe| probe.key != key);
@@ -965,7 +983,10 @@ impl PeerAvatars {
     /// `identity` is the username and host of the NICK message's prefix; the
     /// picture is remembered for the new name's mask too.
     fn rename(&mut self, from: &str, to: &str, identity: Option<(String, String)>) -> Vec<Event> {
-        let (from_key, to_key) = (nickname_key(from), nickname_key(to));
+        let (from_key, to_key) = (
+            nickname_key(self.casemapping, from),
+            nickname_key(self.casemapping, to),
+        );
         if from_key == to_key {
             if let Some(sources) = self.avatars.get_mut(&from_key) {
                 sources.nickname = to.to_owned();
@@ -1031,7 +1052,7 @@ impl PeerAvatars {
     /// application keeps names across the user's absences, and this table
     /// does not.
     fn set_peer(&mut self, nickname: &str, url: Option<String>) -> Option<Event> {
-        let key = nickname_key(nickname);
+        let key = nickname_key(self.casemapping, nickname);
         if url.is_some() || self.avatars.contains_key(&key) {
             self.track(nickname, |sources| sources.peer = url.clone());
         }
@@ -1043,7 +1064,7 @@ impl PeerAvatars {
 
     /// Applies one source's change. A new user beyond the bound is ignored.
     fn track(&mut self, nickname: &str, change: impl FnOnce(&mut Sources)) {
-        let key = nickname_key(nickname);
+        let key = nickname_key(self.casemapping, nickname);
         if !self.avatars.contains_key(&key) && self.avatars.len() >= MAX_AVATAR_USERS {
             return;
         }
@@ -1089,7 +1110,7 @@ impl PeerAvatars {
         }
         self.replied
             .retain(|_, sent| now.duration_since(*sent) < REPLY_INTERVAL_PER_USER);
-        let key = nickname_key(sender);
+        let key = nickname_key(self.casemapping, sender);
         if self.replies.len() >= MAX_REPLIES_PER_WINDOW
             || self.replied.contains_key(&key)
             || self.replied.len() >= MAX_REPLY_RECIPIENTS

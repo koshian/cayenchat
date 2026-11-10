@@ -208,9 +208,18 @@ impl MetadataState {
         }
     }
 
-    /// The server's channel-name comparison changed (RPL_ISUPPORT).
+    /// The server's name comparison changed (RPL_ISUPPORT). The nickname keys
+    /// already kept were made with the old one, so what depends on them is
+    /// dropped; the server announces its mapping before anyone is seen, so
+    /// this is empty in practice.
     pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
+        if self.casemapping != casemapping {
+            self.casemapping = casemapping;
+            self.known.clear();
+            self.lookups.clear();
+            self.next_lookup = None;
+            self.lookups_skipped = 0;
+        }
     }
 
     /// What to send once registered with metadata enabled: the subscription
@@ -459,7 +468,7 @@ impl MetadataState {
         reply: bool,
         current_nick: &str,
     ) -> Vec<Event> {
-        let own = same_nickname(target, current_nick) || (reply && target == "*");
+        let own = same_nickname(self.casemapping, target, current_nick) || (reply && target == "*");
         if own {
             let request = if reply {
                 self.own.take().and_then(|own| own.request)
@@ -472,7 +481,7 @@ impl MetadataState {
                 .collect();
         }
         if !valid_channel(target) && valid_nickname(target) {
-            let key = nickname_key(target);
+            let key = nickname_key(self.casemapping, target);
             if let Some(index) = self.lookups.iter().position(|lookup| lookup.key == key) {
                 match self.lookups[index].state {
                     // Announced without asking: nothing to look up.
@@ -498,7 +507,7 @@ impl MetadataState {
         if target == "*" || valid_channel(target) || !valid_nickname(target) {
             return None;
         }
-        let key = nickname_key(target);
+        let key = nickname_key(self.casemapping, target);
         let url = value.and_then(|value| avatar_value(value, self.utf8));
         if url.is_some() {
             if !self.known.contains(&key) && self.known.len() >= MAX_AVATAR_USERS {
@@ -549,7 +558,9 @@ impl MetadataState {
                 .is_some_and(|key| key != AVATAR_KEY && key != "*");
         let names_us = if target_first {
             !other_key
-                && first.is_none_or(|target| target == "*" || same_nickname(target, current_nick))
+                && first.is_none_or(|target| {
+                    target == "*" || same_nickname(self.casemapping, target, current_nick)
+                })
         } else {
             key_first && first.is_none_or(|key| key == AVATAR_KEY)
         };
@@ -585,7 +596,7 @@ impl MetadataState {
             return vec![Event::OwnAvatarFailed { request, failure }];
         }
         if target_first && let Some(target) = first {
-            let key = nickname_key(target);
+            let key = nickname_key(self.casemapping, target);
             if let Some(index) = self
                 .lookups
                 .iter()
@@ -641,7 +652,7 @@ impl MetadataState {
         let Some(actor) = message.source_nickname() else {
             return handled;
         };
-        let ours = |nick: &str| same_nickname(nick, current_nick);
+        let ours = |nick: &str| same_nickname(self.casemapping, nick, current_nick);
         // A lookup for a name someone renamed onto is left alone: it was
         // scheduled for that user just now.
         let renamed = matches!(message.command, IrcCommand::NICK(_));
@@ -659,8 +670,8 @@ impl MetadataState {
             }
             IrcCommand::NICK(new) => {
                 self.rename_lookup(actor, new, now);
-                if self.known.remove(&nickname_key(actor)) {
-                    self.known.insert(nickname_key(new));
+                if self.known.remove(&nickname_key(self.casemapping, actor)) {
+                    self.known.insert(nickname_key(self.casemapping, new));
                     handled.events.push(Event::AvatarMoved {
                         from: actor.to_owned(),
                         to: new.clone(),
@@ -675,12 +686,12 @@ impl MetadataState {
         };
         if !renamed {
             for nick in &gone {
-                self.cancel_lookup(&nickname_key(nick), now);
+                self.cancel_lookup(&nickname_key(self.casemapping, nick), now);
             }
         }
         handled.events.extend(
             gone.into_iter()
-                .filter(|nick| self.known.remove(&nickname_key(nick)))
+                .filter(|nick| self.known.remove(&nickname_key(self.casemapping, nick)))
                 .map(|nickname| Event::UserAvatar {
                     nickname,
                     url: None,
@@ -690,7 +701,7 @@ impl MetadataState {
     }
 
     fn schedule_lookup(&mut self, nickname: &str, now: Instant) -> Option<String> {
-        let key = nickname_key(nickname);
+        let key = nickname_key(self.casemapping, nickname);
         if self.known.contains(&key) {
             return None;
         }
@@ -739,7 +750,7 @@ impl MetadataState {
     /// A user with a pending lookup changed name: look them up under the
     /// new one.
     fn rename_lookup(&mut self, from: &str, to: &str, now: Instant) {
-        let key = nickname_key(from);
+        let key = nickname_key(self.casemapping, from);
         let Some(lookup) = self.lookups.iter().find(|lookup| lookup.key == key) else {
             return;
         };
@@ -749,7 +760,7 @@ impl MetadataState {
         let due = lookup.due;
         let waiting = lookup.state == LookupState::Waiting;
         self.cancel_lookup(&key, now);
-        let to_key = nickname_key(to);
+        let to_key = nickname_key(self.casemapping, to);
         if !self.lookups.iter().any(|lookup| lookup.key == to_key) {
             self.lookups.push(Lookup {
                 nickname: to.to_owned(),

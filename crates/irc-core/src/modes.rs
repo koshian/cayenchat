@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use cayenchat_model::names::CaseMapping;
 use irc::proto::{Command, Message, Response};
 
 /// Modes per `MODE` line when the server announces no `MODES` limit: the
@@ -78,6 +79,7 @@ pub(crate) fn effective_limit(announced: usize) -> usize {
 /// `per_line` modes or an over-long parameter list. Nicknames repeat at most
 /// once; their order is kept.
 pub(crate) fn mode_lines(
+    mapping: CaseMapping,
     channel: &str,
     mode: MemberMode,
     nicknames: &[String],
@@ -88,7 +90,7 @@ pub(crate) fn mode_lines(
     for nickname in nicknames {
         if !unique
             .iter()
-            .any(|seen| crate::text::same_nickname(seen, nickname))
+            .any(|seen| crate::text::same_nickname(mapping, seen, nickname))
         {
             unique.push(nickname);
         }
@@ -136,6 +138,7 @@ mod tests {
     fn groups_nicknames_by_the_per_line_limit() {
         assert_eq!(
             wire(mode_lines(
+                CaseMapping::Rfc1459,
                 "#c",
                 MemberMode::Op,
                 &nicks(&["a", "b", "c", "d", "e"]),
@@ -144,20 +147,33 @@ mod tests {
             ["MODE #c +ooo a b c", "MODE #c +oo d e"]
         );
         assert_eq!(
-            wire(mode_lines("#c", MemberMode::Devoice, &nicks(&["a"]), 3)),
+            wire(mode_lines(
+                CaseMapping::Rfc1459,
+                "#c",
+                MemberMode::Devoice,
+                &nicks(&["a"]),
+                3
+            )),
             ["MODE #c -v a"]
         );
         assert_eq!(
-            wire(mode_lines("#c", MemberMode::Voice, &nicks(&["a", "b"]), 1)),
+            wire(mode_lines(
+                CaseMapping::Rfc1459,
+                "#c",
+                MemberMode::Voice,
+                &nicks(&["a", "b"]),
+                1
+            )),
             ["MODE #c +v a", "MODE #c +v b"]
         );
-        assert!(mode_lines("#c", MemberMode::Op, &[], 3).is_empty());
+        assert!(mode_lines(CaseMapping::Rfc1459, "#c", MemberMode::Op, &[], 3).is_empty());
     }
 
     #[test]
     fn repeated_nicknames_are_sent_once() {
         assert_eq!(
             wire(mode_lines(
+                CaseMapping::Rfc1459,
                 "#c",
                 MemberMode::Deop,
                 &nicks(&["Al", "bo", "AL"]),
@@ -173,7 +189,7 @@ mod tests {
             .iter()
             .map(|letter| letter.repeat(100))
             .collect();
-        let lines = mode_lines("#c", MemberMode::Op, &names, 12);
+        let lines = mode_lines(CaseMapping::Rfc1459, "#c", MemberMode::Op, &names, 12);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(wire(lines).iter().all(|line| line.len() < 450));
     }
