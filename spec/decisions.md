@@ -4323,3 +4323,37 @@ background blur (#1018): none changes another's value or drawing.
   channel settings window, where they show the effective value while inherited
   and become the channel's own only when moved. The clear button and "reset"
   return them to unset.
+
+## D093 — Loaded wallpapers stay while the settings use them (#1052)
+
+A channel switch to a different wallpaper released the picture on show and
+loaded the next one, so the pane was without a wallpaper for a frame or more
+(flicker), also when going back (A → B → A).
+
+- **Decision.** The four areas of the chat window share one `Pool` of
+  pictures, one entry per key (file, blur, brightness, saturation), each with
+  the number of areas showing it and its own cancel flag. An area's `slot` is
+  just a key. A key already in the pool (loading or loaded) is shared: it is
+  not loaded twice, and a loaded one is on show at once, in the same frame,
+  with no `State::Loading`, also when going back (A → B → A). Only a key never
+  loaded starts a background load. The load is cancelled (#986) and its entry
+  removed when the last area stops showing it before it ends; a result is
+  taken only by a still loading entry of its key, so a stale one is dropped.
+  The fit and opacities are not part of the key, so they never decode again.
+  A failure is removed when no area shows it, so it is tried again.
+- **What stays.** A loaded picture no area shows stays while a setting names
+  it; when the picture on show of an area changes (or is removed), the ones
+  that no area shows and the settings do not name are released
+  (`window.drop_image`). The settings are asked in one place for all areas
+  together, each time a release is decided (never kept per area): every
+  channel look and the standard resolved for the theme on show
+  (`channel_look::resolve`), and the standard of the other three areas. A version left by a
+  slider, a changed file or a cleared wallpaper therefore goes at the next
+  change, and the pool is bounded by the number of configured pictures. The
+  settings window and the channel settings window's miniatures have a pool of
+  their own and keep nothing. No LRU or count limit; a user who sets many
+  wallpapers pays their memory (about 1.6 MB each). Without a wallpaper
+  nothing is loaded or kept.
+- **Limits.** Pictures of the theme not on show are not kept. A picture whose
+  setting was removed while another channel is on show stays until the picture
+  on show of an area changes next.
