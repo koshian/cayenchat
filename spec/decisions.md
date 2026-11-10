@@ -3901,13 +3901,14 @@ the start of the session.
   them). Shared (the default for new settings): `shared_wallpapers` serves
   both themes and the settings show one miniature without the light / dark
   buttons. Separate: `wallpapers` (light) and `dark.wallpapers`, one side at a
-  time by the buttons. Switching keeps every set, so nothing is deleted or
-  copied over. A set is filled only once, when it is started: the first
-  switch to separate fills the empty light / dark sets from the shared set
-  (`split_wallpapers_started`), and settings that moved to separate from
-  older ones fill the shared set from the theme shown at the first switch
-  back (`shared_wallpapers_unset`). After that an empty set is a choice
-  ("no wallpaper") and is kept through switches, saves and loads. The key is unset until chosen: settings from before it read as
+  time by the buttons. Switching keeps every set that was set by the user. A
+  side that was never set while separate (`light_wallpapers_own`,
+  `dark_wallpapers_own`) follows the shared set at every switch to separate,
+  so what was set while shared does not vanish; a side that was set while
+  separate is kept as it is, empty ("no wallpaper") included, through
+  switches, saves and loads. Settings that moved to separate from older ones
+  count both sides as set and fill the shared set from the theme shown at the
+  first switch back (`shared_wallpapers_unset`). The key is unset until chosen: settings from before it read as
   separate when the two sides differ, as shared (starting from that picture)
   when they are the same, and as shared when neither is set; an unset key is
   not written. Applying a theme sets its own side through

@@ -608,6 +608,23 @@ fn an_emptied_set_stays_empty_through_switches_saves_and_loads() {
 }
 
 #[test]
+fn a_side_never_set_while_separate_follows_what_was_set_while_shared() {
+    let mut appearance = Appearance::default();
+    appearance.set_split_wallpapers(true, false);
+    appearance.set_split_wallpapers(false, false);
+    *appearance.wallpapers_mut(false) = picture("shared", 10);
+    // Only light is set while separate; dark still follows the shared set.
+    appearance.set_split_wallpapers(true, false);
+    assert_eq!(*appearance.wallpapers(true), picture("shared", 10));
+    *appearance.wallpapers_mut(false) = picture("light", 20);
+    appearance.set_split_wallpapers(false, false);
+    *appearance.wallpapers_mut(false) = picture("shared2", 30);
+    appearance.set_split_wallpapers(true, false);
+    assert_eq!(*appearance.wallpapers(false), picture("light", 20));
+    assert_eq!(*appearance.wallpapers(true), picture("shared2", 30));
+}
+
+#[test]
 fn settings_from_before_read_as_separate_when_the_sides_differ() {
     let load = |json: &str| {
         let mut appearance: Appearance = serde_json::from_str(json).unwrap();

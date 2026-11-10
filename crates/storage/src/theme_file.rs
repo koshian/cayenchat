@@ -911,28 +911,28 @@ impl Appearance {
         if !self.split_wallpapers() {
             &mut self.shared_wallpapers
         } else if dark {
+            self.dark_wallpapers_own = true;
             &mut self.dark.wallpapers
         } else {
+            self.light_wallpapers_own = true;
             &mut self.wallpapers
         }
     }
 
-    /// Turns the separate light and dark wallpapers on or off. A set with
-    /// nothing in it takes its turn's starting point from the set in use
-    /// before: turning separate on, a theme without wallpapers starts as the
-    /// shared ones; turning it off with no shared ones, they start as what
-    /// `shown_dark` shows. Sets that hold something are kept as they are, so
-    /// switching back and forth loses nothing.
+    /// Turns the separate light and dark wallpapers on or off. Turning
+    /// separate on, a side that was never set while separate follows the
+    /// shared set (so what was set while shared does not vanish); a side
+    /// that was keeps its own, empty included. Turning it off, the shared
+    /// set is kept as it is, except that settings which moved to separate
+    /// from older ones start it from what `shown_dark` shows, once. Nothing
+    /// set is lost by switching back and forth.
     pub fn set_split_wallpapers(&mut self, on: bool, shown_dark: bool) {
         if on && !self.split_wallpapers() {
-            if !self.split_wallpapers_started {
-                let shared = self.shared_wallpapers.clone();
-                for own in [&mut self.wallpapers, &mut self.dark.wallpapers] {
-                    if *own == RegionWallpapers::default() {
-                        *own = shared.clone();
-                    }
-                }
-                self.split_wallpapers_started = true;
+            if !self.light_wallpapers_own {
+                self.wallpapers = self.shared_wallpapers.clone();
+            }
+            if !self.dark_wallpapers_own {
+                self.dark.wallpapers = self.shared_wallpapers.clone();
             }
         } else if !on && self.split_wallpapers() && self.shared_wallpapers_unset {
             self.shared_wallpapers = self.wallpapers(shown_dark).clone();
@@ -953,7 +953,8 @@ impl Appearance {
             self.wallpapers = self.shared_wallpapers.clone();
             self.dark.wallpapers = self.shared_wallpapers.clone();
             self.split_wallpapers = Some(true);
-            self.split_wallpapers_started = true;
+            self.light_wallpapers_own = true;
+            self.dark_wallpapers_own = true;
         }
         *self.wallpapers_mut(dark) = wallpapers;
     }
@@ -979,7 +980,8 @@ impl Appearance {
         }
         if self.wallpapers != self.dark.wallpapers {
             self.split_wallpapers = Some(true);
-            self.split_wallpapers_started = true;
+            self.light_wallpapers_own = true;
+            self.dark_wallpapers_own = true;
             self.shared_wallpapers_unset = true;
         } else if self.wallpapers != RegionWallpapers::default() {
             self.shared_wallpapers = self.wallpapers.clone();

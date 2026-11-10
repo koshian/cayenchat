@@ -800,12 +800,15 @@ pub struct Appearance {
     /// The standard wallpapers both themes use while `split_wallpapers` is
     /// off. Kept when it is turned on.
     pub shared_wallpapers: RegionWallpapers,
-    /// Whether the separate sets have been started (from the shared ones, or
-    /// by settings that already had them). Until then switching to separate
-    /// fills them from the shared set; afterwards an empty set is a choice
-    /// and is kept (#990).
+    /// Whether the light side's separate wallpapers were set while separate
+    /// (or by settings that already had them). A side that was not follows
+    /// the shared set whenever separate is turned on; one that was is kept
+    /// as it is, empty included ("no wallpaper") (#990).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub split_wallpapers_started: bool,
+    pub light_wallpapers_own: bool,
+    /// The same for the dark side.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dark_wallpapers_own: bool,
     /// Set for settings that moved to separate wallpapers before the shared
     /// set was ever used: the shared set has not been started yet, so
     /// switching to shared fills it once from the theme shown (#990).
@@ -1087,7 +1090,8 @@ impl Default for Appearance {
             wallpapers: RegionWallpapers::default(),
             split_wallpapers: None,
             shared_wallpapers: RegionWallpapers::default(),
-            split_wallpapers_started: false,
+            light_wallpapers_own: false,
+            dark_wallpapers_own: false,
             shared_wallpapers_unset: false,
             origin: ThemeOrigin::default(),
             saved_colors: Vec::new(),
