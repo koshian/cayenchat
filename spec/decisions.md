@@ -4283,23 +4283,29 @@ A channel switch to a different wallpaper released the picture on show and
 loaded the next one, so the pane was without a wallpaper for a frame or more
 (flicker), also when going back (A → B → A).
 
-- **Decision.** `channel_look::Wallpaper` keeps the loaded pictures it took off
-  (`spare`) as well as the one on show (`slot`). A key (file, blur, brightness,
-  saturation) found in `spare` becomes the slot at once, in the same frame,
-  with no `State::Loading`. Only a key never loaded starts a background load,
-  as before (the `CancelFlag` of #986 and the key check on the result are
-  unchanged). The fit and opacities are not part of the key, so they never
-  decode again.
-- **What stays.** When the picture on show changes (or is removed), the spares
-  not named by the settings are released (`window.drop_image`). For the channel
-  log the settings are the standard wallpaper and every channel look resolved
-  for the theme on show (`channel_look::resolve`), so a version left by a
-  slider, a changed file or a cleared wallpaper goes at the next change; the
-  spares are bounded by the number of configured pictures. The other areas keep
-  nothing (a spare is released at once), as do the settings window and the
-  channel settings window's miniatures. No LRU or count limit; a user who sets
-  many wallpapers pays their memory (about 1.6 MB each). Without a wallpaper
+- **Decision.** The four areas of the chat window share one `Pool` of
+  pictures, one entry per key (file, blur, brightness, saturation), each with
+  the number of areas showing it and its own cancel flag. An area's `slot` is
+  just a key. A key already in the pool (loading or loaded) is shared: it is
+  not loaded twice, and a loaded one is on show at once, in the same frame,
+  with no `State::Loading`, also when going back (A → B → A). Only a key never
+  loaded starts a background load. The load is cancelled (#986) and its entry
+  removed when the last area stops showing it before it ends; a result is
+  taken only by a still loading entry of its key, so a stale one is dropped.
+  The fit and opacities are not part of the key, so they never decode again.
+  A failure is removed when no area shows it, so it is tried again.
+- **What stays.** A loaded picture no area shows stays while a setting names
+  it; when the picture on show of an area changes (or is removed), the ones
+  that no area shows and no area's settings name are released
+  (`window.drop_image`). For the channel log the settings are the standard
+  wallpaper and every channel look resolved for the theme on show
+  (`channel_look::resolve`); the other areas name nothing. A version left by a
+  slider, a changed file or a cleared wallpaper therefore goes at the next
+  change, and the pool is bounded by the number of configured pictures. The
+  settings window and the channel settings window's miniatures have a pool of
+  their own and keep nothing. No LRU or count limit; a user who sets many
+  wallpapers pays their memory (about 1.6 MB each). Without a wallpaper
   nothing is loaded or kept.
-- **Limits.** Pictures are kept per area, not shared between areas. Pictures
-  of the theme not on show are not kept. A spare whose setting was removed
-  while another channel is on show stays until the picture on show changes next.
+- **Limits.** Pictures of the theme not on show are not kept. A picture whose
+  setting was removed while another channel is on show stays until the picture
+  on show of an area changes next.
