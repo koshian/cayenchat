@@ -27,8 +27,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Appearance, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_SATURATION,
-    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_SATURATION, clamp_font_size,
-    clamp_wallpaper_brightness, color_value, default_wallpaper_brightness, private_file,
+    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION, clamp_font_size, clamp_wallpaper_brightness,
+    color_value, default_wallpaper_brightness, private_file,
 };
 
 /// The file name extension of a theme file, without the dot.
