@@ -82,7 +82,7 @@ pub(crate) struct Accounts {
     queue: VecDeque<String>,
     outstanding: Option<Outstanding>,
     token: u16,
-    /// How the server compares channel names; nicknames always use RFC 1459.
+    /// How the server compares names (`CASEMAPPING`), nicknames included.
     casemapping: CaseMapping,
 }
 
@@ -155,7 +155,7 @@ impl Accounts {
         channels: impl IntoIterator<Item = String>,
         events: &mut Vec<Event>,
     ) {
-        let key = nickname_key(nickname);
+        let key = nickname_key(self.casemapping, nickname);
         let channels: Vec<String> = channels.into_iter().collect();
         if !self.users.contains_key(&key) {
             if channels.is_empty() || self.users.len() >= MAX_USERS {
@@ -218,7 +218,7 @@ impl Accounts {
         if let Some(outstanding) = self.outstanding.as_mut()
             && channel.is_none_or(|channel| mapping.same(channel, &outstanding.channel))
         {
-            let key = nickname_key(nickname);
+            let key = nickname_key(self.casemapping, nickname);
             if outstanding.departed.contains(&key) {
                 return;
             }
@@ -253,7 +253,9 @@ impl Accounts {
                 if let Some(outstanding) = self.outstanding.as_mut()
                     && mapping.same(channel, &outstanding.channel)
                 {
-                    outstanding.departed.remove(&nickname_key(nickname));
+                    outstanding
+                        .departed
+                        .remove(&nickname_key(self.casemapping, nickname));
                 }
                 let (account, realname) = match (account, realname) {
                     (Some(account), Some(realname)) => {
@@ -271,7 +273,10 @@ impl Accounts {
                     );
                 } else {
                     let channel = self.channel_key(channel);
-                    if let Some(known) = self.users.get_mut(&nickname_key(nickname)) {
+                    if let Some(known) = self
+                        .users
+                        .get_mut(&nickname_key(self.casemapping, nickname))
+                    {
                         known.channels.insert(channel);
                     }
                 }
@@ -280,27 +285,35 @@ impl Accounts {
                 let Some(nickname) = source else {
                     return events;
                 };
-                if crate::text::same_nickname(nickname, current_nick) {
+                if crate::text::same_nickname(self.casemapping, nickname, current_nick) {
                     self.forget_channel(channel, &mut events);
                 } else {
                     self.departed(nickname, Some(channel));
                     let channel = self.channel_key(channel);
-                    self.leave(&nickname_key(nickname), &channel, &mut events);
+                    self.leave(
+                        &nickname_key(self.casemapping, nickname),
+                        &channel,
+                        &mut events,
+                    );
                 }
             }
             IrcCommand::KICK(channel, nickname, _) => {
-                if crate::text::same_nickname(nickname, current_nick) {
+                if crate::text::same_nickname(self.casemapping, nickname, current_nick) {
                     self.forget_channel(channel, &mut events);
                 } else {
                     self.departed(nickname, Some(channel));
                     let channel = self.channel_key(channel);
-                    self.leave(&nickname_key(nickname), &channel, &mut events);
+                    self.leave(
+                        &nickname_key(self.casemapping, nickname),
+                        &channel,
+                        &mut events,
+                    );
                 }
             }
             IrcCommand::QUIT(_) => {
                 if let Some(nickname) = source {
                     self.departed(nickname, None);
-                    self.forget(&nickname_key(nickname), &mut events);
+                    self.forget(&nickname_key(self.casemapping, nickname), &mut events);
                 }
             }
             IrcCommand::NICK(new_nick) => {
@@ -310,10 +323,12 @@ impl Accounts {
                     // appear in it.
                     self.departed(old, None);
                     if let Some(outstanding) = self.outstanding.as_mut() {
-                        outstanding.departed.remove(&nickname_key(new_nick));
+                        outstanding
+                            .departed
+                            .remove(&nickname_key(self.casemapping, new_nick));
                     }
-                    let old_key = nickname_key(old);
-                    let key = nickname_key(new_nick);
+                    let old_key = nickname_key(self.casemapping, old);
+                    let key = nickname_key(self.casemapping, new_nick);
                     let moved = self.users.remove(&old_key);
                     // A stale holder of the new name (it quit unseen) is
                     // another user; it must not be replaced silently. A
@@ -369,7 +384,7 @@ impl Accounts {
         let key = self.channel_key(channel);
         let present: HashSet<String> = users
             .iter()
-            .map(|user| nickname_key(display_nickname(user)))
+            .map(|user| nickname_key(self.casemapping, display_nickname(user)))
             .collect();
         let mut departed = Vec::new();
         for (user, known) in &mut self.users {
@@ -455,7 +470,10 @@ impl Accounts {
                 let channel = self.casemapping.fold(&outstanding.channel);
                 // Somebody who left after the query was made: the line
                 // describes the channel as it was, not as it is.
-                if outstanding.departed.contains(&nickname_key(nickname)) {
+                if outstanding
+                    .departed
+                    .contains(&nickname_key(self.casemapping, nickname))
+                {
                     return Some(events);
                 }
                 let account = (account != "0").then(|| account_value(account)).flatten();

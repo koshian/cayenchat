@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Nicknames and channel names compared the way IRC servers compare them.
 //! The case mapping a server uses is advertised as `CASEMAPPING` in
-//! RPL_ISUPPORT; RFC 1459 applies until it says otherwise. Nicknames are
-//! always compared with RFC 1459 ([`fold`], [`same`]); channel names follow
-//! the network's [`CaseMapping`] ([`CaseMapping::fold`], [`CaseMapping::same`])
-//! so two channels the server keeps apart never share a conversation.
+//! RPL_ISUPPORT; RFC 1459 applies until it says otherwise. Nicknames and
+//! channel names both follow the network's [`CaseMapping`]
+//! ([`CaseMapping::fold`], [`CaseMapping::same`]) so two names the server keeps
+//! apart never share a conversation or a user.
 
 /// How a server folds names for comparison.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -62,34 +62,19 @@ impl CaseMapping {
     }
 }
 
-/// `ch` in its RFC 1459 folded form.
-pub fn fold_char(ch: char) -> char {
-    CaseMapping::Rfc1459.fold_char(ch)
-}
-
-/// `name` folded with RFC 1459, for use as a key.
-pub fn fold(name: &str) -> String {
-    CaseMapping::Rfc1459.fold(name)
-}
-
-/// Whether two names are the same under RFC 1459.
-pub fn same(left: &str, right: &str) -> bool {
-    CaseMapping::Rfc1459.same(left, right)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn rfc1459_pairs_and_ascii_letters_fold_and_nothing_else() {
-        assert!(same("#Foo[1]\\~", "#foo{1}|^"));
-        assert_eq!(fold("#Foo[1]\\~"), "#foo{1}|^");
+        assert!(CaseMapping::Rfc1459.same("#Foo[1]\\~", "#foo{1}|^"));
+        assert_eq!(CaseMapping::Rfc1459.fold("#Foo[1]\\~"), "#foo{1}|^");
         // Only ASCII letters change case; other scripts compare exactly.
-        assert!(!same("#Ä", "#ä"));
-        assert!(same("#日本語", "#日本語"));
-        assert!(!same("#a", "#ab"));
-        assert_eq!(fold("#Ä日本").len(), "#Ä日本".len());
+        assert!(!CaseMapping::Rfc1459.same("#Ä", "#ä"));
+        assert!(CaseMapping::Rfc1459.same("#日本語", "#日本語"));
+        assert!(!CaseMapping::Rfc1459.same("#a", "#ab"));
+        assert_eq!(CaseMapping::Rfc1459.fold("#Ä日本").len(), "#Ä日本".len());
     }
 
     #[test]

@@ -2459,7 +2459,15 @@ impl Connection {
             return Err(format!("Invalid nickname: {bad}"));
         }
         let announced = self.modes_per_line.load(Ordering::Relaxed);
-        let lines = modes::mode_lines(channel, mode, nicknames, modes::effective_limit(announced));
+        let lines = modes::mode_lines(
+            // The connection does not know the mapping: merging the fewest names
+            // only means a duplicate is sent, never that someone else is skipped.
+            CaseMapping::Ascii,
+            channel,
+            mode,
+            nicknames,
+            modes::effective_limit(announced),
+        );
         let outgoing = lines
             .into_iter()
             .map(|args| {
@@ -4037,6 +4045,10 @@ impl Worker {
             self.accounts.rekey(announced);
             self.channel_modes.rekey(announced);
             self.regain.rekey(announced);
+            self.metadata.rekey(announced);
+            if let Some(peers) = self.peers.as_mut() {
+                peers.rekey(announced);
+            }
             self.emit(Event::CaseMapping(announced)).await?;
         }
         ControlFlow::Continue(history_started)
@@ -4184,7 +4196,6 @@ impl Worker {
         if self.metadata_enabled {
             let handled = self.metadata.observe(
                 message,
-                self.casemapping,
                 tokio::time::Instant::now(),
                 &self.current_nick,
                 |channel| is_joined(&self.client, self.casemapping, channel),
@@ -4203,12 +4214,8 @@ impl Worker {
         // a history batch.
         if !self.replay.in_history_batch(message)
             && let Some(peers) = self.peers.as_mut()
-            && let Some(event) = peers.remembered_who(
-                message,
-                self.casemapping,
-                &self.current_nick,
-                &self.roster.presence,
-            )
+            && let Some(event) =
+                peers.remembered_who(message, &self.current_nick, &self.roster.presence)
         {
             self.emit(event).await?;
         }
@@ -4217,7 +4224,6 @@ impl Worker {
         if let Some(peers) = self.peers.as_mut()
             && let Some(handled) = peers.observe(
                 message,
-                self.casemapping,
                 &self.current_nick,
                 &self.roster.presence,
                 replayed,
@@ -4261,14 +4267,10 @@ impl Worker {
             .peers
             .as_mut()
             .map(|peers| {
-                let mut events = peers.lifecycle(
-                    &message,
-                    self.casemapping,
-                    &self.roster.presence,
-                    &self.current_nick,
-                );
+                let mut events =
+                    peers.lifecycle(&message, &self.roster.presence, &self.current_nick);
                 if !replayed {
-                    events.extend(peers.joined(&message, self.casemapping, &self.current_nick));
+                    events.extend(peers.joined(&message, &self.current_nick));
                 }
                 events
             })
@@ -4294,7 +4296,7 @@ impl Worker {
                 _ => None,
             };
             if let Some(channel) = left {
-                self.metadata.forget_channel(self.casemapping, channel);
+                self.metadata.forget_channel(channel);
             }
             let handled = self.metadata.lifecycle(
                 &message,
@@ -4375,7 +4377,6 @@ impl Worker {
                         Some(peers) => (
                             speaker_identity.as_ref().and_then(|(user, host)| {
                                 peers.remembered(
-                                    self.casemapping,
                                     sender,
                                     user,
                                     host,
@@ -4614,6 +4615,7 @@ impl Worker {
             None
         } else {
             self.echoes.observe(
+                self.casemapping,
                 message,
                 &self.current_nick,
                 self.negotiation.enabled(cap::LABELED_RESPONSE),
@@ -5048,6 +5050,7 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
 
 /// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
 fn private_message(
+    mapping: CaseMapping,
     message: &IrcMessage,
     current_nick: &str,
     replayed: bool,
@@ -5068,8 +5071,8 @@ fn private_message(
         return None;
     }
     // Our own line to someone else, relayed by a bouncer.
-    if crate::text::same_nickname(sender, current_nick)
-        && !crate::text::same_nickname(target, current_nick)
+    if crate::text::same_nickname(mapping, sender, current_nick)
+        && !crate::text::same_nickname(mapping, target, current_nick)
         && valid_nickname(target)
     {
         return Some(Event::OwnPrivateMessage {
@@ -5082,7 +5085,7 @@ fn private_message(
             replayed,
         });
     }
-    if !crate::text::same_nickname(target, current_nick) {
+    if !crate::text::same_nickname(mapping, target, current_nick) {
         return None;
     }
     Some(Event::PrivateMessage {
@@ -5247,7 +5250,9 @@ fn translate_message(
         _ => {}
     }
     let replayed = replay.replayed(&message);
-    if let Some(private) = private_message(&message, current_nick, replayed, server_time) {
+    if let Some(private) =
+        private_message(casemapping, &message, current_nick, replayed, server_time)
+    {
         return vec![private];
     }
     let mut translated = match &message.command {

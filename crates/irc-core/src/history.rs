@@ -493,7 +493,7 @@ impl HistoryRequests {
     /// The direct-message peers worth asking history for: nicknames only
     /// (joined channels ask on join), each once whatever its case, the
     /// newest first, at most [`MAX_DISCOVERED`].
-    pub(crate) fn direct_targets(targets: &[HistoryTarget]) -> Vec<String> {
+    pub(crate) fn direct_targets(mapping: CaseMapping, targets: &[HistoryTarget]) -> Vec<String> {
         let mut peers: Vec<&HistoryTarget> = targets
             .iter()
             .filter(|target| {
@@ -510,7 +510,7 @@ impl HistoryRequests {
             }
             if !names
                 .iter()
-                .any(|name| crate::text::same_nickname(name, &target.name))
+                .any(|name| crate::text::same_nickname(mapping, name, &target.name))
             {
                 names.push(target.name.clone());
             }
@@ -852,7 +852,7 @@ impl HistoryRequests {
             if matches!(outstanding.page, Page::Targets { .. }) {
                 // Each direct-message peer asks for its latest lines like a
                 // joined channel; the caller sends them one at a time.
-                let peers = Self::direct_targets(&outstanding.targets);
+                let peers = Self::direct_targets(mapping, &outstanding.targets);
                 for peer in &peers {
                     if let Some(full) = self.enqueue(mapping, peer) {
                         note = Some(full);
@@ -989,8 +989,8 @@ fn history_line(
         // A conversation with `channel`: they wrote to us (the target is
         // us, whoever we are) or we wrote to them.
         let from_peer = matches!(&message.prefix,
-            Some(Prefix::Nickname(nickname, _, _)) if crate::text::same_nickname(nickname, channel));
-        if !from_peer && !crate::text::same_nickname(target, channel) {
+            Some(Prefix::Nickname(nickname, _, _)) if crate::text::same_nickname(mapping, nickname, channel));
+        if !from_peer && !crate::text::same_nickname(mapping, target, channel) {
             return None;
         }
     }
