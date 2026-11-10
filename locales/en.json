@@ -118,7 +118,7 @@
   "theme_error": "Theme error: {error}",
   "wallpaper_heading": "Standard wallpapers",
   "wallpaper_hint": "A miniature of the chat window's layout. Drop an image on an area or use its Choose image… button; without the option above, switch between light and dark with the buttons to edit each. A channel can use its own or none in its channel settings.",
-  "wallpaper_shared": "Use the same wallpapers for light and dark",
+  "wallpaper_shared": "Use different wallpapers for light and dark",
   "wallpaper_none": "No wallpaper",
   "wallpaper_choose": "Choose image…",
   "wallpaper_change": "Change…",

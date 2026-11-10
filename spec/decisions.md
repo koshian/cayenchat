@@ -3915,7 +3915,10 @@ the start of the session.
   `set_theme_wallpapers`; while shared and different from the shared set it
   moves to separate first, the other side starting as what it shows now
   (never an older separate set), like the fonts. `wallpaper_paths` lists all
-  three sets so no kept file is pruned.
+  three sets so no kept file is pruned. The checkbox is worded like the
+  fonts': "Use different wallpapers for light and dark", checked while
+  separate (#1050). The sliders have the same order in the Appearance tab and
+  the channel settings: strength, blur, brightness, saturation.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
   `dark.wallpapers` for dark while separate): a file path, a background opacity and a blur
   per area (opacity: percent of the area's background color laid over the

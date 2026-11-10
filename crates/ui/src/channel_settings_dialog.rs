@@ -1325,10 +1325,10 @@ impl Render for ChannelSettingsView {
             .child(wallpaper_choices)
             .child(preview)
             .children(self.render_crop(&palette, ring, cx))
+            .child(opacity)
             .child(blur)
             .child(brightness)
             .child(saturation)
-            .child(opacity)
             .child(fit);
 
         let body = div()

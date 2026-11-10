@@ -1351,7 +1351,7 @@ impl SettingsWindow {
                     .flex()
                     .gap_2()
                     .cursor_pointer()
-                    .child(settings_theme::checkbox(!split, true, cx))
+                    .child(settings_theme::checkbox(split, true, cx))
                     .child(self.i18n.text("wallpaper_shared"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.wallpaper_set_shared(cx);
