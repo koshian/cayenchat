@@ -429,7 +429,7 @@ impl PeerAvatars {
     /// already kept were made with the old one, so what depends on them is
     /// dropped; the server announces its mapping before anyone is seen, so
     /// this is empty in practice.
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+    pub(crate) fn rekey(&mut self, casemapping: CaseMapping) {
         if self.casemapping != casemapping {
             self.casemapping = casemapping;
             self.avatars.clear();
