@@ -114,7 +114,11 @@ def check_wallpaper(app, pane, wallpaper):
                                    "channel_looks": [
                                        {"server": "local", "channel": "#demo",
                                         "wallpaper": picture, "wallpaper_fit": "contain",
-                                        "background_opacity": wallpaper}]}}
+                                        "background_opacity": wallpaper,
+                                        # The tone defaults would lighten the
+                                        # black picture in the light theme (#1047).
+                                        "wallpaper_brightness": 0,
+                                        "wallpaper_saturation": 100}]}}
         with FixtureSession(app, settings, lines=LINES) as session:
             log = session.pane(LOG_PANE, f"wallpaper-{pane}-{wallpaper}")
             for where, (rect, allowed) in wanted.items():
@@ -149,7 +153,9 @@ def check_combined(app, pane, wallpaper):
                                    "combined_log_alternate": COMBINED_ALTERNATE,
                                    "combined_log_opacity": pane,
                                    "wallpapers": {"combined_log": {"path": picture,
-                                                                   "opacity": wallpaper}}}}
+                                                                   "opacity": wallpaper,
+                                                                   "brightness": 0,
+                                                                   "saturation": 100}}}}
         with FixtureSession(app, settings, lines=LINES, channel="#demo,#other") as session:
             cut = session.screen(f"combined-{pane}-{wallpaper}").cut(COMBINED_ROWS)
             seen = [False, False]
