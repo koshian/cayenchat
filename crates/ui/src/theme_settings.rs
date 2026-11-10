@@ -1775,7 +1775,7 @@ mod tests {
         let source = root.path().join("original.png");
         std::fs::write(&source, png()).unwrap();
         let mut settings = settings_with_channels("#a");
-        settings.appearance.wallpapers.channel_tree.path =
+        settings.appearance.shared_wallpapers.channel_tree.path =
             Some(source.to_string_lossy().into_owned());
         let _file = TestFile::with(&settings);
         crate::settings_file::use_theme_root(root.path());
