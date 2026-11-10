@@ -61,13 +61,16 @@ the peer's name), and drops its avatar keys. The worker decides "is this
 nickname ours" in one place (`Worker::is_own_nick`, or the `CaseMapping`
 passed to the free functions that cannot reach it), and the UI asks
 `AppState::casemapping` (`is_own_nickname`, avatar, member-selection and log
-keys). The metadata state uses the same value, and so do the worker's presence
-index (re-keyed, channels and nicknames), accounts, peer avatars and metadata
-(they drop what they keyed, which is empty in practice because the server
-announces the mapping before anyone is seen), history requests (channel names
-only), and WHOIS's joined marks, request keys and window keys. A mapping
-announced late therefore forgets avatars already learned for the network; two
-nicknames the new mapping folds alike keep one presence entry. Rebuilding the index reads only
+keys). In `irc-core` the worker alone owns the value and passes it as an
+argument on each call to CTCP and history (channel names only); only the
+modules that key stored state by it (presence index, accounts, channel modes,
+regain, charsets, peer avatars, metadata) keep a copy, and the worker re-keys
+them through `rekey` when it changes. Presence re-keys channels and nicknames
+(two nicknames the new mapping folds alike keep one presence entry); accounts,
+peer avatars and metadata drop what they keyed, which is empty in practice
+because the server announces the mapping before anyone is seen, so a mapping
+announced late forgets avatars already learned for the network. WHOIS's joined
+marks, request keys and window keys follow it too. Rebuilding the index reads only
 names and IDs. Configured channels are added before the server advertises
 anything and are never merged then (only an identical name is the same
 conversation); `set_casemapping` decides which one the index reaches. Channels
@@ -2656,7 +2659,8 @@ Each item is its own task; the order is the suggested one.
 4. **One owner for per-connection protocol state.** Our nickname is held by
    the worker (`current_nick`) and by `ServerSession::own_nickname`. Other
    ISUPPORT values could follow `CaseMapping`: one value per network, reported
-   by an event.
+   by an event. The worker owns `CaseMapping` and passes it to the modules
+   per call; the five that key state by it keep a copy only to re-key.
 5. **Vendored crates.** `vendor/gpui`, `vendor/irc-proto` and
    `vendor/zed-xim` cost a merge on every upstream update. Check the
    switch-back conditions in `vendor/README.md` when updating dependencies.
