@@ -8,7 +8,6 @@
 //! current light or dark appearance can be exported.
 
 use std::{
-    hash::{Hash, Hasher},
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
@@ -96,9 +95,10 @@ const FIT_CHOICES: [(WallpaperFit, &str); 4] = [
 /// it, and equal images share one file.
 fn keep_image(directory: &Path, bytes: &[u8], extension: &str) -> Result<String, String> {
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    let path = directory.join(format!("wallpaper-{:016x}.{extension}", hasher.finish()));
+    let path = directory.join(format!(
+        "wallpaper-{}.{extension}",
+        crate::wallpaper_crop::content_hex(bytes)
+    ));
     if !path.is_file() {
         std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
     }
