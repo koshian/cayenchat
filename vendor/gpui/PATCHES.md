@@ -314,3 +314,12 @@ defaults to `true` (macOS, Windows); X11 answers `false`; Wayland answers
 whether the KDE blur manager global was bound. CayenChat uses it to disable
 its background blur switch. To re-apply: add the trait method, the `Window`
 wrapper and the two Linux overrides.
+
+In `src/platform/mac/window.rs`, `blurred_view_init_with_frame` uses
+`NSVisualEffectMaterial::UnderWindowBackground` with
+`NSVisualEffectBlendingMode::BehindWindow` instead of `Selection` (CayenChat
+#1018; upstream Zed commit `90d8514`, PR 65361). On macOS 27 the `Selection`
+material has no `CABackdropLayer`, so `remove_layer_background` stripping its
+tint left a transparent window with no blur. `remove_layer_background` stays.
+To re-apply: swap the material and add the `setBlendingMode_` call (import
+`NSVisualEffectBlendingMode`). Not buildable on Linux; check on macOS.

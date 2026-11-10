@@ -4159,3 +4159,8 @@ the issue rules out. The maintainer chose the switch (issue comments).
   disabled with the reason; the stored value is kept.
 - **Not verifiable under Xvfb.** The effect on macOS and Windows depends on
   the OS and needs a person with that machine.
+- **macOS 27.** The bundled GPUI's `BlurredView` used the `Selection`
+  material, which has no backdrop layer on macOS 27; with its tint stripped
+  nothing was blurred (maintainer report on 27.2). The gpui patch uses
+  `UnderWindowBackground` with the behind-window blending mode, as upstream
+  Zed does (`vendor/gpui/PATCHES.md`).
