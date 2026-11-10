@@ -333,3 +333,15 @@ macOS and removes any `BlurredView` (CayenChat #1018, trial step 1: the
 `CGS_BLUR_ON_ALL_MACOS ||` condition, the radius choice and the
 `blurred_view.take()` removal in the first branch. Not buildable on Linux;
 check on macOS.
+
+In `src/platform.rs`, `src/window.rs` and `src/platform/mac/window.rs`,
+`Window::supports_background_blur_radius` and
+`Window::set_background_blur_radius(u32)` choose the strength of the
+`Blurred` background (CayenChat #1018, step 2). The `PlatformWindow` defaults
+are `false` and a no-op; macOS answers `CGS_BLUR_ON_ALL_MACOS`, keeps the
+radius in `blur_radius` (with `background_blurred`) and re-applies it with
+`CGSSetWindowBackgroundBlurRadius` at once while blurred;
+`set_background_appearance` uses that radius instead of the fixed
+`CGS_TRIAL_BLUR_RADIUS`, which is now only the initial value. To re-apply: add
+the two trait methods, the two `Window` wrappers, the two state fields and the
+macOS overrides. Not buildable on Linux; check on macOS.

@@ -4174,3 +4174,15 @@ the issue rules out. The maintainer chose the switch (issue comments).
   is private and may break in a future macOS; the way back is
   `CGS_BLUR_ON_ALL_MACOS = false`, which restores `BlurredView`
   (`vendor/gpui/PATCHES.md`).
+- **macOS strength slider.** The trial held on 27.2 (switching on and off,
+  wallpaper and shadow were fine) but a radius of 20 was still too strong, so
+  the strength is now set by `Appearance::background_blur_radius` (1–80,
+  default 6, kept while the blur is off, files without it read as 6). The
+  Appearance tab shows a "blur strength" slider with the radius beside the
+  switch only where `Window::supports_background_blur_radius` is true (macOS,
+  gpui patch). On Windows and KDE Wayland the OS fixes the strength, so no
+  slider is shown and the hint says so. `ChatWindow::render` gives the radius
+  to the window with `Window::set_background_blur_radius` when it changes,
+  before the appearance, and the macOS window re-applies it at once while
+  blurred. The slider is window-wide, not per pane, and independent of the
+  panes' opacity, the wallpaper share and the wallpaper blur (#950).

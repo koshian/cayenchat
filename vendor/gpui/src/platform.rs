@@ -561,6 +561,15 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn supports_background_blur(&self) -> bool {
         true
     }
+    /// Whether the strength of the `Blurred` appearance can be chosen with
+    /// `set_background_blur_radius` (CayenChat #1018). Only macOS can.
+    fn supports_background_blur_radius(&self) -> bool {
+        false
+    }
+    /// Sets the blur radius used while the appearance is `Blurred`; it
+    /// applies at once when the window is blurred now. No-op where
+    /// `supports_background_blur_radius` is false.
+    fn set_background_blur_radius(&self, _radius: u32) {}
     fn set_app_id(&mut self, _app_id: &str) {}
     fn map_window(&mut self) -> anyhow::Result<()> {
         Ok(())

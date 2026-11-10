@@ -396,6 +396,10 @@ struct MacWindowState {
     native_window: id,
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
+    /// CayenChat #1018: whether the window is `Blurred` now, and the CGS
+    /// radius used then.
+    background_blurred: bool,
+    blur_radius: i64,
     display_link: Option<DisplayLink>,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -715,6 +719,8 @@ impl MacWindow {
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
+                background_blurred: false,
+                blur_radius: CGS_TRIAL_BLUR_RADIUS,
                 display_link: None,
                 renderer: renderer::new_renderer(
                     renderer_context,
@@ -1281,6 +1287,28 @@ impl PlatformWindow for MacWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
+    fn supports_background_blur_radius(&self) -> bool {
+        CGS_BLUR_ON_ALL_MACOS
+    }
+
+    fn set_background_blur_radius(&self, radius: u32) {
+        if !CGS_BLUR_ON_ALL_MACOS {
+            return;
+        }
+        let mut this = self.0.as_ref().lock();
+        this.blur_radius = i64::from(radius);
+        if this.background_blurred {
+            unsafe {
+                let window_number = this.native_window.windowNumber();
+                CGSSetWindowBackgroundBlurRadius(
+                    CGSMainConnectionID(),
+                    window_number,
+                    this.blur_radius,
+                );
+            }
+        }
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
 
@@ -1304,9 +1332,11 @@ impl PlatformWindow for MacWindow {
                 //
                 // CayenChat #1018 (trial): the same API is used on every macOS with a
                 // fixed radius, to see whether a weak blur works on current macOS.
-                let blur_radius = if background_appearance == WindowBackgroundAppearance::Blurred {
+                this.background_blurred =
+                    background_appearance == WindowBackgroundAppearance::Blurred;
+                let blur_radius = if this.background_blurred {
                     if CGS_BLUR_ON_ALL_MACOS {
-                        CGS_TRIAL_BLUR_RADIUS
+                        this.blur_radius
                     } else {
                         80
                     }

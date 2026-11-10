@@ -281,6 +281,8 @@
   "combined_log_opacity": "全体ログの不透明度",
   "background_blur": "半透明のペイン越しのデスクトップをぼかす",
   "background_blur_hint": "ペインの隙間も含めウィンドウ全体をぼかします。強さはOSが決めます。いずれかのペインの不透明度が100%未満のときだけ働きます。壁紙の画像そのものはぼかしません。",
+  "background_blur_hint_adjustable": "ペインの隙間も含めウィンドウ全体をぼかします。いずれかのペインの不透明度が100%未満のときだけ働きます。壁紙の画像そのものはぼかしません。",
+  "background_blur_radius": "ぼかしの強さ",
   "background_blur_unsupported": "この環境では使えません。ウィンドウの背後をぼかせない環境です(X11、またはKDEのぼかしプロトコルがないWaylandコンポジタ。GNOMEなど)。設定値は保持されます。",
   "link_color": "チャンネルログのリンク文字",
   "link_background": "チャンネルログのリンク背景",

@@ -281,6 +281,8 @@
   "combined_log_opacity": "Combined log opacity",
   "background_blur": "Blur the desktop behind see-through panes",
   "background_blur_hint": "Blurs the whole window, including the gaps between panes, at a strength set by the OS. It applies only while a pane is below 100 % opacity. The wallpaper image itself is not blurred.",
+  "background_blur_hint_adjustable": "Blurs the whole window, including the gaps between panes. It applies only while a pane is below 100 % opacity. The wallpaper image itself is not blurred.",
+  "background_blur_radius": "Blur strength",
   "background_blur_unsupported": "Not available here: this system cannot blur behind the window (X11, or a Wayland compositor without the KDE blur protocol, such as GNOME). The choice is kept.",
   "link_color": "Channel log link text",
   "link_background": "Channel log link background",
