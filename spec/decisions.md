@@ -3894,8 +3894,30 @@ the start of the session.
   show the number and have a − / + button (1 px; dimmed at 8 and 40) beside
   them. A channel's own size keeps 0 for "follow the pane" (D084). Since the
   time size is always set now, it no longer follows a larger channel log size.
+- **Standard wallpapers: shared, or separate per theme (#990).** One option
+  for all four areas, `Appearance.split_wallpapers`, decided only by
+  `Appearance::wallpapers(dark)` / `wallpapers_mut(dark)` (drawing, the
+  settings, the theme export and a channel's inheritance all go through
+  them). Shared (the default for new settings): `shared_wallpapers` serves
+  both themes and the settings show one miniature without the light / dark
+  buttons. Separate: `wallpapers` (light) and `dark.wallpapers`, one side at a
+  time by the buttons. Switching keeps every set that was set by the user. A
+  side that was never set while separate (`light_wallpapers_own`,
+  `dark_wallpapers_own`) follows the shared set at every switch to separate,
+  so what was set while shared does not vanish; a side that was set while
+  separate is kept as it is, empty ("no wallpaper") included, through
+  switches, saves and loads. Settings that moved to separate from older ones
+  count both sides as set and fill the shared set from the theme shown at the
+  first switch back (`shared_wallpapers_unset`). The key is unset until chosen: settings from before it read as
+  separate when the two sides differ, as shared (starting from that picture)
+  when they are the same, and as shared when neither is set; an unset key is
+  not written. Applying a theme sets its own side through
+  `set_theme_wallpapers`; while shared and different from the shared set it
+  moves to separate first, the other side starting as what it shows now
+  (never an older separate set), like the fonts. `wallpaper_paths` lists all
+  three sets so no kept file is pruned.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
-  `dark.wallpapers` for dark): a file path, a background opacity and a blur
+  `dark.wallpapers` for dark while separate): a file path, a background opacity and a blur
   per area (opacity: percent of the area's background color laid over the
   picture, 100 hides it, as in D088; blur: tenths of a pixel, 0 to 30, as in
   D088; both with the sliders of the Appearance tab, one percent / tenth at a

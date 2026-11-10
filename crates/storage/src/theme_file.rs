@@ -617,7 +617,7 @@ impl PreparedTheme {
         if let Some(fonts) = &self.fonts {
             appearance.set_theme_fonts(dark, fonts);
         }
-        *appearance.wallpapers_mut(dark) = self.wallpapers.clone();
+        appearance.set_theme_wallpapers(dark, self.wallpapers.clone());
         *appearance.origin_mut(dark) = ThemeOrigin {
             name: (!self.builtin).then(|| self.name.clone()),
             fingerprint: (!self.builtin).then(|| appearance.fingerprint(dark)),
@@ -888,19 +888,104 @@ impl Appearance {
         *self.fonts_mut(dark) = set;
     }
 
+    /// Whether the light and dark theme have standard wallpapers of their
+    /// own (#990); otherwise both use `shared_wallpapers`.
+    pub fn split_wallpapers(&self) -> bool {
+        self.split_wallpapers == Some(true)
+    }
+
+    /// The standard wallpapers in use for the light or dark theme: the one
+    /// place that decides which set that is.
     pub fn wallpapers(&self, dark: bool) -> &RegionWallpapers {
-        if dark {
+        if !self.split_wallpapers() {
+            &self.shared_wallpapers
+        } else if dark {
             &self.dark.wallpapers
         } else {
             &self.wallpapers
         }
     }
 
+    /// The standard wallpapers to edit for the light or dark theme.
     pub fn wallpapers_mut(&mut self, dark: bool) -> &mut RegionWallpapers {
-        if dark {
+        if !self.split_wallpapers() {
+            &mut self.shared_wallpapers
+        } else if dark {
+            self.dark_wallpapers_own = true;
             &mut self.dark.wallpapers
         } else {
+            self.light_wallpapers_own = true;
             &mut self.wallpapers
+        }
+    }
+
+    /// Turns the separate light and dark wallpapers on or off. Turning
+    /// separate on, a side that was never set while separate follows the
+    /// shared set (so what was set while shared does not vanish); a side
+    /// that was keeps its own, empty included. Turning it off, the shared
+    /// set is kept as it is, except that settings which moved to separate
+    /// from older ones start it from what `shown_dark` shows, once. Nothing
+    /// set is lost by switching back and forth.
+    pub fn set_split_wallpapers(&mut self, on: bool, shown_dark: bool) {
+        if on && !self.split_wallpapers() {
+            if !self.light_wallpapers_own {
+                self.wallpapers = self.shared_wallpapers.clone();
+            }
+            if !self.dark_wallpapers_own {
+                self.dark.wallpapers = self.shared_wallpapers.clone();
+            }
+        } else if !on && self.split_wallpapers() && self.shared_wallpapers_unset {
+            self.shared_wallpapers = self.wallpapers(shown_dark).clone();
+            self.shared_wallpapers_unset = false;
+        }
+        self.split_wallpapers = Some(on);
+    }
+
+    /// Sets the wallpapers of the light or dark side, as a theme does. While
+    /// they are shared and `wallpapers` differ from them, the appearance
+    /// moves to separate wallpapers first, the other side starting as what
+    /// it shows now (never an older separate set), so its picture stays.
+    pub fn set_theme_wallpapers(&mut self, dark: bool, wallpapers: RegionWallpapers) {
+        if *self.wallpapers(dark) == wallpapers {
+            return;
+        }
+        if !self.split_wallpapers() {
+            self.wallpapers = self.shared_wallpapers.clone();
+            self.dark.wallpapers = self.shared_wallpapers.clone();
+            self.split_wallpapers = Some(true);
+            self.light_wallpapers_own = true;
+            self.dark_wallpapers_own = true;
+        }
+        *self.wallpapers_mut(dark) = wallpapers;
+    }
+
+    /// Every set of standard wallpapers the settings hold, whether in use or
+    /// kept for later.
+    fn all_wallpaper_sets_mut(&mut self) -> [&mut RegionWallpapers; 3] {
+        [
+            &mut self.wallpapers,
+            &mut self.dark.wallpapers,
+            &mut self.shared_wallpapers,
+        ]
+    }
+
+    /// Settings from before the shared wallpapers (`split_wallpapers`
+    /// unset): different pictures for the two themes stay separate, and a
+    /// picture both share starts the shared set. Nothing set at all stays
+    /// unset.
+    fn migrate_wallpapers(&mut self) {
+        if self.split_wallpapers.is_some() || self.shared_wallpapers != RegionWallpapers::default()
+        {
+            return;
+        }
+        if self.wallpapers != self.dark.wallpapers {
+            self.split_wallpapers = Some(true);
+            self.light_wallpapers_own = true;
+            self.dark_wallpapers_own = true;
+            self.shared_wallpapers_unset = true;
+        } else if self.wallpapers != RegionWallpapers::default() {
+            self.shared_wallpapers = self.wallpapers.clone();
+            self.split_wallpapers = Some(false);
         }
     }
 
@@ -995,8 +1080,11 @@ impl Appearance {
 
     /// Makes the light or dark wallpapers and origin usable after reading.
     pub(crate) fn clean_themes(&mut self) {
+        for set in self.all_wallpaper_sets_mut() {
+            set.clean();
+        }
+        self.migrate_wallpapers();
         for dark in [false, true] {
-            self.wallpapers_mut(dark).clean();
             let origin = self.origin_mut(dark);
             origin.name = origin
                 .name
@@ -1013,9 +1101,15 @@ impl Appearance {
     /// the app still needs.
     pub fn wallpaper_paths(&self) -> BTreeSet<&str> {
         let mut paths = BTreeSet::new();
-        for dark in [false, true] {
+        // The sets kept for later too: turning the other mode on brings
+        // them back.
+        for set in [
+            &self.wallpapers,
+            &self.dark.wallpapers,
+            &self.shared_wallpapers,
+        ] {
             for region in WallpaperRegion::ALL {
-                paths.extend(self.wallpapers(dark).get(region).path.as_deref());
+                paths.extend(set.get(region).path.as_deref());
             }
         }
         paths.extend(
