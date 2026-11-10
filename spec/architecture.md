@@ -54,9 +54,12 @@ value counts as `ascii`, which merges the fewest names). RFC 1459 applies
 until the server advertises one, and again on each new connection. The worker
 sends `Event::CaseMapping` when it changes; `AppState::set_casemapping` re-keys
 the network's channel index (behind `AppState::channel_id`, a hash lookup
-rather than a scan of every conversation), the metadata state uses the same
-value, and so do the worker's presence index, accounts and history requests
-(channel names only), and WHOIS's joined marks, request keys and window keys
+rather than a scan of every conversation). In `irc-core` the worker alone
+owns the value and passes it as an argument on each call to CTCP, history
+(channel names only), metadata and peer avatars; only the modules that key
+stored state by it (presence index, accounts, channel modes, regain,
+charsets) keep a copy, and the worker re-keys them through `rekey` when it
+changes. WHOIS's joined marks, request keys and window keys
 (the nickname there follows the server too). Rebuilding the index reads only
 names and IDs. Configured channels are added before the server advertises
 anything and are never merged then (only an identical name is the same
@@ -2647,7 +2650,8 @@ Each item is its own task; the order is the suggested one.
 4. **One owner for per-connection protocol state.** Our nickname is held by
    the worker (`current_nick`) and by `ServerSession::own_nickname`. Other
    ISUPPORT values could follow `CaseMapping`: one value per network, reported
-   by an event.
+   by an event. The worker owns `CaseMapping` and passes it to the modules
+   per call; the five that key state by it keep a copy only to re-key.
 5. **Vendored crates.** `vendor/gpui`, `vendor/irc-proto` and
    `vendor/zed-xim` cost a merge on every upstream update. Check the
    switch-back conditions in `vendor/README.md` when updating dependencies.
