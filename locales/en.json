@@ -84,6 +84,7 @@
   "channel_look_crop_use": "Use This Range",
   "channel_look_crop_saving": "Saving the wallpaper…",
   "channel_look_crop_failed": "The wallpaper could not be saved: {error}",
+  "channel_look_crop_path_long": "The cut image was saved, but its path is too long to record in the settings: {path}",
   "channel_look_fit": "Wallpaper fit",
   "channel_look_fit_stretch": "Stretch",
   "channel_look_fit_cover": "Fill, keep proportions",
