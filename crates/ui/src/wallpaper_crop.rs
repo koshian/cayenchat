@@ -183,8 +183,16 @@ impl CropState {
                 get(this).task = None;
                 match result {
                     Ok(path) => {
-                        get(this).close();
-                        kept(this, path.to_string_lossy().into_owned(), cx);
+                        let path = path.to_string_lossy().into_owned();
+                        if path.len() > cayenchat_storage::MAX_WALLPAPER_PATH_BYTES {
+                            // The file is kept, but the settings cannot name it.
+                            let text =
+                                i18n.format("channel_look_crop_path_long", &[("path", &path)]);
+                            get(this).status = Some((text, true));
+                        } else {
+                            get(this).close();
+                            kept(this, path, cx);
+                        }
                     }
                     Err(error) => {
                         let text = i18n.format("channel_look_crop_failed", &[("error", &error)]);
