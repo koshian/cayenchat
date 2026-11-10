@@ -291,7 +291,7 @@ impl ChannelCharsets {
     }
 
     /// The network compares channel names with this mapping from now on.
-    pub(crate) fn set_casemapping(&self, mapping: CaseMapping) {
+    pub(crate) fn rekey(&self, mapping: CaseMapping) {
         if let Ok(mut state) = self.state.write() {
             state.mapping = mapping;
         }
@@ -450,7 +450,7 @@ mod tests {
         // `~` and `^` are the same only under RFC 1459 itself.
         let charsets = one("#a~", Some("Big5"), None);
         assert!(charsets.decoder("#a^").is_some());
-        charsets.set_casemapping(CaseMapping::Ascii);
+        charsets.rekey(CaseMapping::Ascii);
         assert!(charsets.decoder("#a^").is_none());
     }
 
@@ -463,7 +463,7 @@ mod tests {
         };
         let charsets =
             ChannelCharsets::new(&[entry("#a[", "Shift_JIS"), entry("#a{", "UTF-8")]).unwrap();
-        charsets.set_casemapping(CaseMapping::Ascii);
+        charsets.rekey(CaseMapping::Ascii);
         assert_eq!(charsets.decoder("#a["), Some(encoding_rs::SHIFT_JIS));
         assert_eq!(charsets.decoder("#a{"), Some(encoding_rs::UTF_8));
         // The same name twice is one entry, the later one.

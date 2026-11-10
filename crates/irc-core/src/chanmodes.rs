@@ -213,7 +213,7 @@ impl ChannelModes {
 
     /// The server changed its case mapping: fold the names again. Names
     /// that now collide keep one entry, with unknown modes.
-    pub(crate) fn set_casemapping(&mut self, mapping: CaseMapping) {
+    pub(crate) fn rekey(&mut self, mapping: CaseMapping) {
         let old = std::mem::take(&mut self.channels);
         for (name, flags) in old.into_values() {
             match self.channels.entry(mapping.fold(&name)) {
@@ -397,10 +397,10 @@ mod tests {
                 let bracket = if n % 2 == 0 { '[' } else { '{' };
                 modes.joined(&format!("#r{round}x{n}{bracket}"), ascii);
             }
-            modes.set_casemapping(rfc);
+            modes.rekey(rfc);
             assert!(modes.pending.len() <= modes.channels.len());
             assert!(modes.pending.len() <= MAX_TRACKED);
-            modes.set_casemapping(ascii);
+            modes.rekey(ascii);
             assert!(modes.pending.len() <= modes.channels.len());
             assert!(modes.pending.len() <= MAX_TRACKED);
         }
@@ -422,7 +422,7 @@ mod tests {
                     false,
                 );
             }
-            modes.set_casemapping(CaseMapping::default());
+            modes.rekey(CaseMapping::default());
             assert_eq!(modes.channels.len(), 1);
             assert!(modes.channels.values().all(|(_, flags)| flags.is_none()));
         }
@@ -433,7 +433,7 @@ mod tests {
         let mut modes = ChannelModes::default();
         modes.joined("#foo[", CaseMapping::default());
         feed(&mut modes, ":s 324 me #foo[ +n");
-        modes.set_casemapping(CaseMapping::Ascii);
+        modes.rekey(CaseMapping::Ascii);
         let seen = modes.observe(&parse(":a!u@h MODE #foo[ +m"), CaseMapping::Ascii, false);
         assert_eq!(seen, Some(("#foo[".into(), "nm".into())));
         modes.left("#foo[", CaseMapping::Ascii);
