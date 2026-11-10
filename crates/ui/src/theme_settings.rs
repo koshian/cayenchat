@@ -515,9 +515,14 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Opens the range editor on the image the area already has; with none,
-    /// asks for one first.
-    fn wallpaper_range(&mut self, dark: bool, region: WallpaperRegion, cx: &mut Context<Self>) {
+    /// Opens the range editor on the image the area already has (the details
+    /// open with it); an area with no image has nothing to edit yet.
+    fn wallpaper_open_range(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        cx: &mut Context<Self>,
+    ) {
         let current = self
             .settings
             .values
@@ -526,9 +531,8 @@ impl SettingsWindow {
             .get(region)
             .path
             .clone();
-        match current {
-            Some(path) => self.wallpaper_offer_range(dark, region, vec![PathBuf::from(path)], cx),
-            None => self.wallpaper_choose(dark, region, true, cx),
+        if let Some(path) = current {
+            self.wallpaper_offer_range(dark, region, vec![PathBuf::from(path)], cx);
         }
     }
 
@@ -994,6 +998,7 @@ impl SettingsWindow {
                                                 let dark = this.themes.wallpaper.dark;
                                                 this.themes.wallpaper.select(dark, region);
                                                 this.themes.wallpaper.detail = true;
+                                                this.wallpaper_open_range(dark, region, cx);
                                                 cx.notify();
                                             })),
                                     ),
@@ -1148,7 +1153,6 @@ impl SettingsWindow {
             let ui = &self.themes.wallpaper;
             let ring: Rgba = primary.into();
             let current_fit = wallpaper.fit.unwrap_or_default();
-            let has_image = wallpaper.path.is_some();
             let mut fits = div().flex().flex_wrap().gap_1();
             for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
                 fits = fits.child(
@@ -1182,22 +1186,6 @@ impl SettingsWindow {
                             self.i18n.text(area_name),
                             self.theme_kind_label(dark)
                         ))
-                        .child(
-                            settings_theme::button("wallpaper-range", false, cx)
-                                .child(self.i18n.text("wallpaper_range"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                                    this.wallpaper_range(dark, region, cx)
-                                })),
-                        )
-                        .children(has_image.then(|| {
-                            settings_theme::button("wallpaper-range-other", false, cx)
-                                .child(self.i18n.text("wallpaper_range_other"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                                    this.wallpaper_choose(dark, region, true, cx)
-                                }))
-                        }))
                         .child(
                             settings_theme::button("wallpaper-detail-close", false, cx)
                                 .child(self.i18n.text("wallpaper_detail_close"))
