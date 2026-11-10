@@ -237,6 +237,18 @@ impl SettingsWindow {
         self.theme_message(message, cx);
     }
 
+    /// The theme whose standard wallpaper the section shows. One set serves
+    /// both themes while they are shared, so the miniature and the tone
+    /// follow the theme in use; the side picked in the section only matters
+    /// while the themes differ.
+    fn wallpaper_side(&self, appearance: &Appearance, cx: &App) -> bool {
+        if appearance.split_wallpapers() {
+            self.themes.wallpaper.dark
+        } else {
+            crate::theme::current(cx).dark
+        }
+    }
+
     /// The appearance as the form shows it now.
     fn shown_appearance(&self, cx: &App) -> Appearance {
         self.settings
@@ -933,12 +945,9 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Div {
         let palette = settings_theme::palette(cx);
-        let WallpaperUi {
-            dark,
-            region: selected,
-            ..
-        } = self.themes.wallpaper;
+        let selected = self.themes.wallpaper.region;
         let appearance = self.shown_appearance(cx);
+        let dark = self.wallpaper_side(&appearance, cx);
         // The chat window's own resolution (`channel_look::region_wallpaper`)
         // over the pane colors of the theme being edited.
         let theme = crate::theme::Theme::new(
@@ -1170,7 +1179,7 @@ impl SettingsWindow {
         let strength = 100 - wallpaper.opacity_percent();
         let blur = wallpaper.blur_tenths();
         let max_brightness = i32::from(cayenchat_storage::MAX_WALLPAPER_BRIGHTNESS);
-        let brightness = i32::from(wallpaper.brightness_value(self.themes.wallpaper.dark));
+        let brightness = i32::from(wallpaper.brightness_value(dark));
         let saturation = wallpaper.saturation_percent();
         let sliders = wallpaper.path.is_some().then(|| {
             let row = |label: String, slider: Stateful<Div>| {
@@ -1642,6 +1651,37 @@ mod tests {
         form.read_with(cx, |form, _| assert!(form.themes.wallpaper.dark));
         let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
         form.read_with(cx, |form, _| assert!(!form.themes.wallpaper.dark));
+    }
+
+    #[gpui::test]
+    fn shared_wallpapers_follow_the_theme_in_use(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
+        let side = |form: &Entity<SettingsWindow>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                form.read(cx)
+                    .wallpaper_side(&form.read(cx).settings.values.appearance, cx)
+            })
+        };
+        assert!(!side(&form, cx));
+        cx.update(|_, cx| {
+            cx.set_global(crate::theme::Theme::new(
+                ThemeMode::Dark,
+                WindowAppearance::Light,
+                &Appearance::default(),
+            ));
+        });
+        assert!(side(&form, cx));
+        // Separate wallpapers keep the side picked in the section.
+        form.update(cx, |form, _| {
+            form.settings
+                .values
+                .appearance
+                .set_split_wallpapers(true, true);
+            form.themes.wallpaper.dark = false;
+        });
+        assert!(!side(&form, cx));
     }
 
     #[gpui::test]

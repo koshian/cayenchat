@@ -117,8 +117,10 @@ def check_wallpaper(app, pane, wallpaper):
                                         "background_opacity": wallpaper,
                                         # The tone defaults would lighten the
                                         # black picture in the light theme (#1047).
-                                        "wallpaper_brightness": 0,
-                                        "wallpaper_saturation": 100}]}}
+                                        "wallpaper_brightness_light": 0,
+                                        "wallpaper_saturation_light": 100,
+                                        "wallpaper_brightness_dark": 0,
+                                        "wallpaper_saturation_dark": 100}]}}
         with FixtureSession(app, settings, lines=LINES) as session:
             log = session.pane(LOG_PANE, f"wallpaper-{pane}-{wallpaper}")
             for where, (rect, allowed) in wanted.items():
