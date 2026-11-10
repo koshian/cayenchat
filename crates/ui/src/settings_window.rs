@@ -575,6 +575,8 @@ impl SettingsForm {
                 origin: self.values.appearance.dark.origin.clone(),
             },
             wallpapers: self.values.appearance.wallpapers.clone(),
+            split_wallpapers: self.values.appearance.split_wallpapers,
+            shared_wallpapers: self.values.appearance.shared_wallpapers.clone(),
             origin: self.values.appearance.origin.clone(),
             saved_colors: self.values.appearance.saved_colors.clone(),
             channel_looks: self.values.appearance.channel_looks.clone(),

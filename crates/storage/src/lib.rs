@@ -785,7 +785,21 @@ pub struct Appearance {
     /// Standard wallpapers of the four areas while the light theme is active
     /// (#962); the dark theme's are in `dark`. Added after version 15
     /// without a version change; files without it read as none.
+    /// With `split_wallpapers` on these are the light theme's own; otherwise
+    /// they are kept for the next time it is turned on (#990).
     pub wallpapers: RegionWallpapers,
+    /// Whether the light and dark theme have wallpapers of their own
+    /// (`wallpapers`, `dark.wallpapers`) instead of the `shared_wallpapers`
+    /// (#990). Unset until chosen: read as shared, except that settings from
+    /// before it whose two sides differ read as separate, and ones whose two
+    /// sides are the same picture start the shared ones from it
+    /// (`Appearance::clean_themes`). Added after version 15 without a
+    /// version change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_wallpapers: Option<bool>,
+    /// The standard wallpapers both themes use while `split_wallpapers` is
+    /// off. Kept when it is turned on.
+    pub shared_wallpapers: RegionWallpapers,
     /// The theme the light values came from (#962); unset is the built-in
     /// default.
     pub origin: ThemeOrigin,
@@ -994,8 +1008,9 @@ pub struct DarkColors {
     pub link_background: String,
     pub url_tooltip_link_color: String,
     pub url_tooltip_text_color: String,
-    /// Standard wallpapers of the four areas while the dark theme is active
-    /// (#962). Added after version 15 without a version change.
+    /// Standard wallpapers of the four areas of the dark theme while
+    /// `Appearance::split_wallpapers` is on (#962, #990). Added after
+    /// version 15 without a version change.
     pub wallpapers: RegionWallpapers,
     /// The theme the dark values came from (#962).
     pub origin: ThemeOrigin,
@@ -1059,6 +1074,8 @@ impl Default for Appearance {
             combined_log_line_height: DEFAULT_LINE_HEIGHT_PERCENT,
             dark: DarkColors::default(),
             wallpapers: RegionWallpapers::default(),
+            split_wallpapers: None,
+            shared_wallpapers: RegionWallpapers::default(),
             origin: ThemeOrigin::default(),
             saved_colors: Vec::new(),
             channel_looks: Vec::new(),

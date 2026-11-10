@@ -3894,8 +3894,28 @@ the start of the session.
   show the number and have a − / + button (1 px; dimmed at 8 and 40) beside
   them. A channel's own size keeps 0 for "follow the pane" (D084). Since the
   time size is always set now, it no longer follows a larger channel log size.
+- **Standard wallpapers: shared, or separate per theme (#990).** One option
+  for all four areas, `Appearance.split_wallpapers`, decided only by
+  `Appearance::wallpapers(dark)` / `wallpapers_mut(dark)` (drawing, the
+  settings, the theme export and a channel's inheritance all go through
+  them). Shared (the default for new settings): `shared_wallpapers` serves
+  both themes and the settings show one miniature without the light / dark
+  buttons. Separate: `wallpapers` (light) and `dark.wallpapers`, one side at a
+  time by the buttons. Switching keeps every set, so nothing is deleted or
+  copied over; a set with nothing in it is the only one that is filled, from
+  the set in use before (separate on: from the shared set; shared on with
+  none: from the theme shown). So a side that was deliberately emptied is
+  filled again by a switch, an accepted limitation in place of a flag per
+  side. The key is unset until chosen: settings from before it read as
+  separate when the two sides differ, as shared (starting from that picture)
+  when they are the same, and as shared when neither is set; an unset key is
+  not written. Applying a theme sets its own side through
+  `set_theme_wallpapers`; while shared and different from the shared set it
+  moves to separate first, the other side starting as what it shows now
+  (never an older separate set), like the fonts. `wallpaper_paths` lists all
+  three sets so no kept file is pruned.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
-  `dark.wallpapers` for dark): a file path, a background opacity and a blur
+  `dark.wallpapers` for dark while separate): a file path, a background opacity and a blur
   per area (opacity: percent of the area's background color laid over the
   picture, 100 hides it, as in D088; blur: tenths of a pixel, 0 to 30, as in
   D088; both with the sliders of the Appearance tab, one percent / tenth at a

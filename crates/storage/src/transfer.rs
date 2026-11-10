@@ -155,6 +155,7 @@ fn drop_wallpaper_paths(appearance: &mut crate::Appearance) -> bool {
     for region in crate::WallpaperRegion::ALL {
         clear(&mut appearance.wallpapers.get_mut(region).path);
         clear(&mut appearance.dark.wallpapers.get_mut(region).path);
+        clear(&mut appearance.shared_wallpapers.get_mut(region).path);
     }
     for look in &mut appearance.channel_looks {
         clear(&mut look.wallpaper);

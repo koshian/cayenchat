@@ -27,6 +27,7 @@ fn sample() -> Appearance {
     appearance.dark.member_list_background = "#0A0B0C".into();
     appearance.fonts.channel_log_font = "Noto Serif".into();
     appearance.fonts.channel_log_font_size = 18;
+    appearance.split_wallpapers = Some(true);
     appearance.dark.wallpapers.channel_tree = RegionWallpaper {
         path: Some("/home/me/secret-name/tree.png".into()),
         opacity: Some(55),
@@ -135,7 +136,7 @@ fn editing_after_applying_marks_the_theme_modified_and_undoing_clears_it() {
     appearance.fonts_mut(true).input_font = "Mono".into();
     assert!(appearance.theme_status(true).1);
     appearance.fonts_mut(true).input_font.clear();
-    appearance.dark.wallpapers.channel_tree.path = None;
+    appearance.wallpapers_mut(true).channel_tree.path = None;
     assert!(appearance.theme_status(true).1);
 }
 
@@ -275,7 +276,7 @@ fn sizes_are_limited_before_and_after_expanding_and_per_image() {
     );
     // Exporting a picture over the limit fails instead of dropping it.
     let mut appearance = Appearance::default();
-    appearance.wallpapers.channel_log.path = Some("x".into());
+    appearance.wallpapers_mut(false).channel_log.path = Some("x".into());
     let error = ThemeFile::capture(&appearance, false, "T", &check, |_| {
         Ok(vec![0; MAX_THEME_WALLPAPER_BYTES + 1])
     })
@@ -507,4 +508,128 @@ fn a_theme_without_fonts_leaves_edited_fonts_alone() {
     assert_eq!(live.fonts(false).input_font_size, 24);
     assert_eq!(live.fonts(true).input_font_size, 24);
     assert!(!live.split_fonts);
+}
+
+fn picture(name: &str, opacity: u8) -> RegionWallpapers {
+    RegionWallpapers {
+        channel_log: RegionWallpaper {
+            path: Some(name.into()),
+            opacity: Some(opacity),
+            ..RegionWallpaper::default()
+        },
+        ..RegionWallpapers::default()
+    }
+}
+
+#[test]
+fn a_new_appearance_shares_one_set_of_wallpapers_between_the_themes() {
+    let mut appearance = Appearance::default();
+    assert!(!appearance.split_wallpapers());
+    *appearance.wallpapers_mut(false) = picture("a", 30);
+    assert_eq!(appearance.wallpapers(true), appearance.wallpapers(false));
+    assert_eq!(appearance.wallpapers(true).channel_log.opacity, Some(30));
+}
+
+#[test]
+fn switching_modes_back_and_forth_loses_and_mixes_nothing() {
+    let mut appearance = Appearance::default();
+    *appearance.wallpapers_mut(false) = picture("shared", 10);
+    // Separate: both sides start as what they showed.
+    appearance.set_split_wallpapers(true, false);
+    assert_eq!(*appearance.wallpapers(false), picture("shared", 10));
+    assert_eq!(*appearance.wallpapers(true), picture("shared", 10));
+    *appearance.wallpapers_mut(false) = picture("light", 20);
+    *appearance.wallpapers_mut(true) = picture("dark", 40);
+    // Shared again: the shared set, untouched by the edits above.
+    appearance.set_split_wallpapers(false, false);
+    assert_eq!(*appearance.wallpapers(true), picture("shared", 10));
+    *appearance.wallpapers_mut(true) = picture("shared2", 15);
+    // Separate again: the earlier separate sets come back.
+    appearance.set_split_wallpapers(true, true);
+    assert_eq!(*appearance.wallpapers(false), picture("light", 20));
+    assert_eq!(*appearance.wallpapers(true), picture("dark", 40));
+    appearance.set_split_wallpapers(false, true);
+    assert_eq!(*appearance.wallpapers(false), picture("shared2", 15));
+    // Every set is still referred to, so none of the files is pruned.
+    let paths = appearance.wallpaper_paths();
+    for name in ["light", "dark", "shared2"] {
+        assert!(paths.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn turning_the_shared_set_on_without_one_starts_it_from_the_shown_theme() {
+    let mut appearance = Appearance::default();
+    appearance.set_split_wallpapers(true, false);
+    *appearance.wallpapers_mut(false) = picture("light", 20);
+    *appearance.wallpapers_mut(true) = picture("dark", 40);
+    appearance.set_split_wallpapers(false, true);
+    assert_eq!(*appearance.wallpapers(false), picture("dark", 40));
+    appearance.set_split_wallpapers(true, true);
+    assert_eq!(*appearance.wallpapers(false), picture("light", 20));
+}
+
+#[test]
+fn settings_from_before_read_as_separate_when_the_sides_differ() {
+    let load = |json: &str| {
+        let mut appearance: Appearance = serde_json::from_str(json).unwrap();
+        appearance.clean_themes();
+        appearance
+    };
+    let light = r#""wallpapers":{"channel_log":{"path":"l","opacity":20}}"#;
+    let dark = r#""dark":{"wallpapers":{"channel_log":{"path":"d","opacity":40}}}"#;
+    // Different pictures: separate, each side as before.
+    let both = load(&format!("{{{light},{dark}}}"));
+    assert!(both.split_wallpapers());
+    assert_eq!(
+        both.wallpapers(false).channel_log.path.as_deref(),
+        Some("l")
+    );
+    assert_eq!(both.wallpapers(true).channel_log.path.as_deref(), Some("d"));
+    // One side only: the other shows none, so they stay separate.
+    let one = load(&format!("{{{light}}}"));
+    assert!(one.split_wallpapers());
+    assert_eq!(one.wallpapers(true), &RegionWallpapers::default());
+    assert_eq!(one.wallpapers(false).channel_log.opacity, Some(20));
+    // The same picture: shared, shown unchanged on both sides.
+    let same_dark = r#""dark":{"wallpapers":{"channel_log":{"path":"l","opacity":20}}}"#;
+    let same = load(&format!("{{{light},{same_dark}}}"));
+    assert!(!same.split_wallpapers());
+    assert_eq!(same.wallpapers(true).channel_log.path.as_deref(), Some("l"));
+    assert_eq!(same.wallpapers(false).channel_log.opacity, Some(20));
+    // Neither: shared, and nothing is written for a mode nobody chose.
+    let none = load("{}");
+    assert_eq!(none, Appearance::default());
+    assert!(
+        !serde_json::to_string(&none)
+            .unwrap()
+            .contains("split_wallpapers")
+    );
+    // The choice is kept through a save and load.
+    let mut chosen = Appearance::default();
+    chosen.set_split_wallpapers(true, false);
+    let back = load(&serde_json::to_string(&chosen).unwrap());
+    assert!(back.split_wallpapers());
+}
+
+#[test]
+fn applying_a_theme_never_changes_the_other_side_while_shared() {
+    let mut appearance = Appearance::default();
+    *appearance.wallpapers_mut(false) = picture("shared", 10);
+    // The same wallpapers as shown: nothing to separate.
+    appearance.set_theme_wallpapers(true, picture("shared", 10));
+    assert!(!appearance.split_wallpapers());
+    // Different ones for dark: dark changes, light keeps what it showed.
+    appearance.set_theme_wallpapers(true, picture("themed", 70));
+    assert!(appearance.split_wallpapers());
+    assert_eq!(*appearance.wallpapers(true), picture("themed", 70));
+    assert_eq!(*appearance.wallpapers(false), picture("shared", 10));
+    // An older separate set is not restored for the other side.
+    let mut again = Appearance::default();
+    again.set_split_wallpapers(true, false);
+    *again.wallpapers_mut(false) = picture("old light", 5);
+    again.set_split_wallpapers(false, false);
+    *again.wallpapers_mut(false) = picture("shared", 10);
+    again.set_theme_wallpapers(true, picture("themed", 70));
+    assert_eq!(*again.wallpapers(false), picture("shared", 10));
 }
