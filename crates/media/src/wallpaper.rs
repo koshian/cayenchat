@@ -133,30 +133,18 @@ fn apply(thumbnail: &mut Thumbnail, blur: u8, tone: Tone) {
 }
 
 /// Saturation, then brightness, on the sRGB values of one BGRA pixel as they
-/// are (0 to 1). Brightness is not an offset: below 0 it scales toward black
-/// (keeping the ratios of the channels); above 0 it lifts the pixel's luma
-/// `g` to `g + (1 - g) * b` and keeps the differences of the channels from
-/// `g`, shrunk by `t` only as far as the brightest channel needs to stay
-/// within 1. Clamping per channel would lower the luma and turn the hue.
+/// are (0 to 1). Brightness is not an offset: it moves toward black or
+/// white, so the picture's tones keep their order.
 fn tone_pixel(pixel: &mut [u8; 4], brightness: f32, saturation: f32) {
     let [b, g, r] = [pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.);
     let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-    let saturated = [b, g, r].map(|c| (gray + (c - gray) * saturation).clamp(0., 1.));
-    let [b, g, r] = saturated;
-    let luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    let toned = if brightness < 0. {
-        saturated.map(|c| c * (1. + brightness))
-    } else {
-        let lifted = luma + (1. - luma) * brightness;
-        let max = r.max(g).max(b);
-        let t = if max > luma {
-            ((1. - lifted) / (max - luma)).min(1.)
+    for (out, c) in pixel.iter_mut().zip([b, g, r]) {
+        let c = (gray + (c - gray) * saturation).clamp(0., 1.);
+        let c = if brightness < 0. {
+            c * (1. + brightness)
         } else {
-            1.
+            c + (1. - c) * brightness
         };
-        saturated.map(|c| lifted + (c - luma) * t)
-    };
-    for (out, c) in pixel.iter_mut().zip(toned) {
         *out = (c * 255.).round().clamp(0., 255.) as u8;
     }
 }
@@ -270,66 +258,10 @@ mod tests {
             brightness: 50,
             saturation: 100,
         });
-        // Gray pixels move as before: black becomes gray, white stays.
+        // 30 + (255 - 30) * 0.5 (red of the first pixel), black becomes gray.
+        assert_eq!(lighter[2], 143);
         assert_eq!(lighter[8], 128);
         assert_eq!(lighter[12], 255);
-    }
-
-    fn luma(p: &[u8]) -> f32 {
-        (0.299 * f32::from(p[2]) + 0.587 * f32::from(p[1]) + 0.114 * f32::from(p[0])) / 255.
-    }
-
-    #[test]
-    fn positive_brightness_lifts_the_luma_exactly_and_keeps_the_colors_apart() {
-        let source = toned(Tone::NEUTRAL);
-        for brightness in [10, 40, 65, 90] {
-            let result = toned(Tone {
-                brightness,
-                saturation: 100,
-            });
-            for (before, after) in source.chunks(4).zip(result.chunks(4)) {
-                let g = luma(before);
-                let want = g + (1. - g) * f32::from(brightness) / 100.;
-                // Rounding each channel moves the luma by under one step.
-                assert!(
-                    (luma(after) - want).abs() < 1.5 / 255.,
-                    "{brightness}: {} vs {want}",
-                    luma(after)
-                );
-            }
-            // The blue pixel stays blue-ish: the old formula would have
-            // pulled the channels together by (1 - b).
-            let spread = |p: &[u8]| i32::from(p[0]) - i32::from(p[2]);
-            assert!(spread(&result[0..4]) > 0);
-            if brightness == 10 {
-                assert_eq!(spread(&result[0..4]), spread(&source[0..4]));
-            }
-        }
-    }
-
-    #[test]
-    fn positive_brightness_shrinks_the_colors_instead_of_clamping_them() {
-        // Saturated red: lifting the luma by 65 % cannot keep the full red.
-        let mut image = Thumbnail {
-            width: 1,
-            height: 1,
-            source_width: 1,
-            source_height: 1,
-            bgra: vec![0, 0, 255, 255],
-        };
-        apply(
-            &mut image,
-            0,
-            Tone {
-                brightness: 65,
-                saturation: 100,
-            },
-        );
-        let g = 0.299;
-        let want = g + (1. - g) * 0.65;
-        assert!((luma(&image.bgra) - want).abs() < 1.5 / 255.);
-        assert!(image.bgra[2] > image.bgra[1], "{:?}", image.bgra);
-        assert_eq!(image.bgra[0], image.bgra[1]);
     }
 
     #[test]
@@ -429,14 +361,6 @@ mod tests {
         for (label, blur, tone) in [
             ("neutral, no blur", 0, Tone::NEUTRAL),
             ("tone only", 0, tone),
-            (
-                "tone only, light default",
-                0,
-                Tone {
-                    brightness: 65,
-                    saturation: 130,
-                },
-            ),
             ("blur 30 only", 30, Tone::NEUTRAL),
             ("blur 30 and tone", 30, tone),
         ] {
