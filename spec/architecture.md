@@ -786,7 +786,10 @@ case before this check existed; it is not handed back to the input.
 Splitting longer text into several lines and `draft/multiline` are not done.
 Connection-stage diagnostics and directional, decoded IRC lines flow as owned
 events from `irc-core` to the UI. The transcript includes message bodies and
-masks known credential commands (always, whatever the switch). The UI appends
+masks known credential commands (always, whatever the switch): every
+`PRIVMSG`/`NOTICE`/`SQUERY` to a credential service, the `NS`/`CS`/`NICKSERV`/
+`CHANSERV`/`AUTHSERV` aliases, and `IDENTIFY`/`ID`/`LOGIN`/`REGAIN`, with no
+list of service commands (ZNC's `*status` is not covered). The UI appends
 each stage note and each IRC line to the server log of its network
 (`AppState::append_diagnostic_message`, D080), in time order with the server's
 notices, drawn muted (`DIAGNOSTIC_SENDER`); the log is selected, copied and
@@ -1629,9 +1632,10 @@ IRC routing (the adapter):
 - Our own messages to a nickname (the draft of a private conversation,
   `/msg nick`, the member and WHOIS "private message" prompt) appear in
   its conversation when the connection accepts them (`OutgoingAccepted`),
-  without an unread mark; credentials sent to those services (`IDENTIFY`,
-  `AUTH`, `LOGIN`, `NEWPASS`, ...) are shown as `[redacted]`, like the
-  transcript. A PRIVMSG/NOTICE from our own nickname to someone else (a
+  without an unread mark; everything sent to a credential service
+  (`irc-core::is_credential_target`: any recipient of a `,` list is one) is
+  shown as `[redacted]`, whatever the command, like the transcript. The
+  words sent on the wire are not changed. A PRIVMSG/NOTICE from our own nickname to someone else (a
   bouncer relaying another client of ours, or its playback) is
   `OwnPrivateMessage`, redacted the same way, and goes to that conversation too;
   after our nickname changed, such old lines stay in the server log.

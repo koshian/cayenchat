@@ -2076,7 +2076,7 @@ mod tests {
             line(":me!u@h NOTICE NickServ :IDENTIFY dummy", "NickServ"),
             "[redacted]"
         );
-        assert_eq!(line(":me!u@h PRIVMSG Q :WHOIS #chan", "Q"), "WHOIS #chan");
+        assert_eq!(line(":me!u@h PRIVMSG Q :WHOIS #chan", "Q"), "[redacted]");
         assert_eq!(
             line(
                 ":Q!TheQBot@CServe.quakenet.org NOTICE me :You are now logged in",

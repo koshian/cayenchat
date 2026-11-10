@@ -577,6 +577,21 @@ impl SettingsWindow {
         );
     }
 
+    /// Switches between one set of standard wallpapers for both themes and a
+    /// set each (#990). Neither side's picture is dropped or copied over the
+    /// other's (`Appearance::set_split_wallpapers`). An image still being
+    /// read is dropped: it was meant for the other arrangement.
+    pub(crate) fn wallpaper_set_shared(&mut self, cx: &mut Context<Self>) {
+        let ui = &mut self.themes.wallpaper;
+        ui.task = None;
+        ui.status = None;
+        ui.crop.close();
+        let appearance = &mut self.settings.values.appearance;
+        let split = !appearance.split_wallpapers();
+        appearance.set_split_wallpapers(split, ui.dark);
+        cx.notify();
+    }
+
     /// Sets how the picture fits the area.
     pub(crate) fn wallpaper_set_fit(
         &mut self,
@@ -1040,6 +1055,7 @@ impl SettingsWindow {
             );
 
         let wallpaper = appearance.wallpapers(dark).get(selected).clone();
+        let split = appearance.split_wallpapers();
         let area_name = AREAS
             .iter()
             .find(|(region, _)| *region == selected)
@@ -1052,6 +1068,12 @@ impl SettingsWindow {
                     .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
             },
         );
+        // Which theme the area belongs to matters only while they differ.
+        let side_suffix = if split {
+            format!(" ({})", self.theme_kind_label(dark))
+        } else {
+            String::new()
+        };
         let mode_button = |mode: bool, cx: &mut Context<Self>| {
             settings_theme::button(("wallpaper-mode", usize::from(mode)), mode == dark, cx)
                 .child(self.theme_kind_label(mode))
@@ -1068,9 +1090,9 @@ impl SettingsWindow {
             .items_center()
             .gap_2()
             .child(format!(
-                "{} ({}): {}",
+                "{}{}: {}",
                 self.i18n.text(area_name),
-                self.theme_kind_label(dark),
+                side_suffix,
                 shown
             ))
             .child(
@@ -1187,11 +1209,7 @@ impl SettingsWindow {
                         .flex_wrap()
                         .items_center()
                         .gap_2()
-                        .child(format!(
-                            "{} ({})",
-                            self.i18n.text(area_name),
-                            self.theme_kind_label(dark)
-                        ))
+                        .child(format!("{}{}", self.i18n.text(area_name), side_suffix))
                         .child(
                             settings_theme::button("wallpaper-detail-close", false, cx)
                                 .child(self.i18n.text("wallpaper_detail_close"))
@@ -1231,12 +1249,27 @@ impl SettingsWindow {
             )
             .child(
                 div()
+                    .id("split-wallpapers")
                     .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
-                    .child(mode_button(false, cx))
-                    .child(mode_button(true, cx)),
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(!split, true, cx))
+                    .child(self.i18n.text("wallpaper_shared"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.wallpaper_set_shared(cx);
+                    })),
             )
+            .when(split, |d| {
+                d.child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .flex()
+                        .gap_2()
+                        .child(mode_button(false, cx))
+                        .child(mode_button(true, cx)),
+                )
+            })
             .child(preview)
             .child(controls)
             .children(sliders)
@@ -1362,7 +1395,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let root = tempfile::tempdir().unwrap();
-        let settings = settings_with_channels("#a");
+        let mut settings = settings_with_channels("#a");
+        settings.appearance.split_wallpapers = Some(true);
         let _file = TestFile::with(&settings);
         crate::settings_file::use_theme_root(root.path());
         let (form, cx) = open(&settings, cx);
@@ -1530,7 +1564,10 @@ mod tests {
         crate::settings_file::use_theme_root(root.path());
 
         // A dark theme with a wallpaper for the channel tree, in the library.
-        let mut source = Appearance::default();
+        let mut source = Appearance {
+            split_wallpapers: Some(true),
+            ..Appearance::default()
+        };
         source.dark.channel_log_background = "#102030".into();
         source.dark.wallpapers.channel_tree.path = Some("tree.png".into());
         source.dark.wallpapers.channel_tree.opacity = Some(70);
@@ -1583,8 +1620,53 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_sides_share_their_wallpapers_until_told_apart_and_nothing_is_lost(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let strength = |form: &Entity<SettingsWindow>, cx: &mut VisualTestContext, dark: bool| {
+            form.read_with(cx, |form, _| {
+                form.settings
+                    .values
+                    .appearance
+                    .wallpapers(dark)
+                    .member_list
+                    .opacity
+            })
+        };
+        let region = WallpaperRegion::MemberList;
+        // New settings share: an edit on one side is the other's too.
+        form.update(cx, |form, cx| {
+            assert!(!form.settings.values.appearance.split_wallpapers());
+            form.wallpaper_set_strength(false, region, 80, cx)
+        });
+        assert_eq!(strength(&form, cx, true), Some(20));
+        // Separate: both start the same, then differ.
+        form.update(cx, |form, cx| {
+            form.wallpaper_set_shared(cx);
+            form.wallpaper_set_strength(true, region, 10, cx)
+        });
+        assert_eq!(strength(&form, cx, false), Some(20));
+        assert_eq!(strength(&form, cx, true), Some(90));
+        // Shared again, then separate again: the dark side's own is back.
+        form.update(cx, |form, cx| form.wallpaper_set_shared(cx));
+        assert_eq!(strength(&form, cx, true), Some(20));
+        form.update(cx, |form, cx| form.wallpaper_set_shared(cx));
+        assert_eq!(strength(&form, cx, true), Some(90));
+        assert_eq!(strength(&form, cx, false), Some(20));
+        // The choice is what is saved.
+        let saved = form
+            .read_with(cx, |form, cx| form.settings.snapshot_with(cx, false))
+            .unwrap();
+        assert!(saved.appearance.split_wallpapers());
+    }
+
+    #[gpui::test]
     fn the_wallpaper_strength_steps_and_clearing_forgets_the_picture(cx: &mut TestAppContext) {
         let mut settings = settings_with_channels("#a");
+        settings.appearance.split_wallpapers = Some(true);
         settings.appearance.wallpapers.member_list.path = Some("/pic.png".into());
         let _file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
@@ -1631,7 +1713,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let root = tempfile::tempdir().unwrap();
-        let settings = settings_with_channels("#a");
+        let mut settings = settings_with_channels("#a");
+        settings.appearance.split_wallpapers = Some(true);
         let _file = TestFile::with(&settings);
         crate::settings_file::use_theme_root(root.path());
         let (form, cx) = open(&settings, cx);

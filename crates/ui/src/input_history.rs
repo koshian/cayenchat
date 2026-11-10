@@ -31,7 +31,7 @@ struct Browsing {
 /// the core hides from the transcript, but wider: any message to those
 /// services counts.
 pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
-    use cayenchat_irc_core::is_credential_service;
+    use cayenchat_irc_core::is_credential_target as is_credential_service;
     let Some(command) = text.strip_prefix('/') else {
         return private_peer.is_some_and(is_credential_service);
     };
@@ -42,6 +42,9 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
     match verb.as_str() {
         "OPER" | "PASS" | "AUTH" | "AUTHENTICATE" | "NS" | "NICKSERV" | "CS" | "CHANSERV"
         | "AUTHSERV" => true,
+        // Server-side aliases for service logins; unknown slash commands are
+        // sent as raw lines, so these also go out as typed.
+        "IDENTIFY" | "ID" | "LOGIN" | "REGAIN" => true,
         // `/join #channel key`: the second word is a channel key.
         "JOIN" => words.nth(1).is_some(),
         "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => {
@@ -228,6 +231,17 @@ mod tests {
             "/join #secret hunter2",
             "/ JOIN #a,#b k1,k2",
             "/raw JOIN #secret hunter2",
+            "/msg NickServ,bob regain me pw",
+            "/squery NickServ identify pw",
+            "/quote IDENTIFY pw",
+            "/raw regain me pw",
+            "/identify pw",
+            "/ID pw",
+            "/Login alice pw",
+            "/regain me pw",
+            "/raw id pw",
+            "/quote LOGIN alice pw",
+            "/ identify pw",
         ];
         let mut history = InputHistory::default();
         for line in secret {
@@ -259,6 +273,8 @@ mod tests {
             "/join #a,#b",
             "/me waves",
             "/raw WHO #c",
+            "identify yourself",
+            "/idle",
             "/nick alice",
         ];
         for line in harmless {
