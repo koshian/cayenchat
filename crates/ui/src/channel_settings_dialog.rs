@@ -1224,6 +1224,7 @@ impl Render for ChannelSettingsView {
 
         let body = div()
             .id("channel-settings-body")
+            .debug_selector(|| "channel-settings-body".into())
             .track_scroll(&self.body_scroll)
             .flex_1()
             .min_h_0()
