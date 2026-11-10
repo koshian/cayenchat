@@ -4276,3 +4276,30 @@ background blur (#1018): none changes another's value or drawing.
   channel settings window, where they show the effective value while inherited
   and become the channel's own only when moved. The clear button and "reset"
   return them to unset.
+
+## D093 — Loaded wallpapers stay while the settings use them (#1052)
+
+A channel switch to a different wallpaper released the picture on show and
+loaded the next one, so the pane was without a wallpaper for a frame or more
+(flicker), also when going back (A → B → A).
+
+- **Decision.** `channel_look::Wallpaper` keeps the loaded pictures it took off
+  (`spare`) as well as the one on show (`slot`). A key (file, blur, brightness,
+  saturation) found in `spare` becomes the slot at once, in the same frame,
+  with no `State::Loading`. Only a key never loaded starts a background load,
+  as before (the `CancelFlag` of #986 and the key check on the result are
+  unchanged). The fit and opacities are not part of the key, so they never
+  decode again.
+- **What stays.** When the picture on show changes (or is removed), the spares
+  not named by the settings are released (`window.drop_image`). For the channel
+  log the settings are the standard wallpaper and every channel look resolved
+  for the theme on show (`channel_look::resolve`), so a version left by a
+  slider, a changed file or a cleared wallpaper goes at the next change; the
+  spares are bounded by the number of configured pictures. The other areas keep
+  nothing (a spare is released at once), as do the settings window and the
+  channel settings window's miniatures. No LRU or count limit; a user who sets
+  many wallpapers pays their memory (about 1.6 MB each). Without a wallpaper
+  nothing is loaded or kept.
+- **Limits.** Pictures are kept per area, not shared between areas. Pictures
+  of the theme not on show are not kept. A spare whose setting was removed
+  while another channel is on show stays until the picture on show changes next.

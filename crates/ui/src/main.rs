@@ -8225,6 +8225,15 @@ impl ChatWindow {
         let wallpaper = self.wallpapers.element(
             WallpaperRegion::ChannelLog,
             look.wallpaper.as_ref(),
+            || {
+                // Every picture a channel, or the standard, may show in the
+                // log, so switching between channels does not load again.
+                let standard = &self.appearance.wallpapers(theme.dark).channel_log;
+                std::iter::once(None)
+                    .chain(self.appearance.channel_looks.iter().map(Some))
+                    .filter_map(|look| channel_look::resolve(look, standard, theme).wallpaper)
+                    .collect()
+            },
             look.background,
             look.theme.panes.channel_log.a < 1.,
             window,
@@ -8239,6 +8248,7 @@ impl ChatWindow {
         let combined_wallpaper = self.wallpapers.element(
             WallpaperRegion::CombinedLog,
             request.as_ref(),
+            Vec::new,
             background,
             theme.panes.combined_log.a < 1.,
             window,
@@ -8253,6 +8263,7 @@ impl ChatWindow {
         let members_wallpaper = self.wallpapers.element(
             WallpaperRegion::MemberList,
             request.as_ref(),
+            Vec::new,
             background,
             false,
             window,
@@ -8266,6 +8277,7 @@ impl ChatWindow {
         let tree_wallpaper = self.wallpapers.element(
             WallpaperRegion::ChannelTree,
             request.as_ref(),
+            Vec::new,
             background,
             false,
             window,

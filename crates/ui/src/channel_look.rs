@@ -408,6 +408,17 @@ struct Key {
     saturation: u8,
 }
 
+impl Key {
+    fn of(request: &WallpaperRequest) -> Self {
+        Self {
+            path: PathBuf::from(&request.path),
+            blur: request.blur,
+            brightness: request.brightness,
+            saturation: request.saturation,
+        }
+    }
+}
+
 /// The wallpapers on show, one slot per area (#962).
 #[derive(Default)]
 pub(crate) struct Wallpapers {
@@ -443,17 +454,24 @@ impl Wallpapers {
 
     /// The picture for `wanted` in `region` with `background` over it, as
     /// the first child of its pane.
+    ///
+    /// `configured` lists every picture the settings still use for the area.
+    /// It runs only when the picture on show changes, and pictures outside it
+    /// are released then.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn element(
         &mut self,
         region: WallpaperRegion,
         wanted: Option<&WallpaperRequest>,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
         layers: Layers,
         translucent: bool,
         window: &mut Window,
         cx: &mut Context<ChatWindow>,
     ) -> Option<Div> {
-        self.get_mut(region).element(
+        self.get_mut(region).element_keeping(
             wanted,
+            configured,
             layers,
             translucent,
             window,
@@ -463,12 +481,14 @@ impl Wallpapers {
     }
 }
 
-/// The wallpaper of one area. Only the one on show is kept, keyed by the
-/// file, the blur and the tone, so a result that arrives after the channel or
-/// one of those changed is dropped.
+/// The wallpaper of one area: the one on show, keyed by the file, the blur
+/// and the tone, so a result that arrives after the channel or one of those
+/// changed is dropped. Loaded pictures the settings still use stay in `spare`
+/// so that switching back to them draws at once (#1052).
 #[derive(Default)]
 pub(crate) struct Wallpaper {
     slot: Option<(Key, State)>,
+    spare: Vec<(Key, Arc<RenderImage>)>,
     /// Cancels the load of the slot's key. `release` sets it and takes a new
     /// one, so a replaced or removed wallpaper's load stops at its next check
     /// and its result is never applied.
@@ -505,19 +525,39 @@ impl Wallpaper {
         cx: &mut Context<T>,
         slot_of: impl Fn(&mut T) -> &mut Wallpaper + 'static,
     ) -> Option<Div> {
+        self.element_keeping(wanted, Vec::new, layers, translucent, window, cx, slot_of)
+    }
+
+    /// `element` that keeps the pictures `configured` names when the one on
+    /// show changes; the others are released.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn element_keeping<T: 'static>(
+        &mut self,
+        wanted: Option<&WallpaperRequest>,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
+        layers: Layers,
+        translucent: bool,
+        window: &mut Window,
+        cx: &mut Context<T>,
+        slot_of: impl Fn(&mut T) -> &mut Wallpaper + 'static,
+    ) -> Option<Div> {
         let Some(wanted) = wanted else {
-            self.release(window);
+            if self.release() {
+                self.retain(configured, window);
+            }
             return None;
         };
-        let key = Key {
-            path: PathBuf::from(&wanted.path),
-            blur: wanted.blur,
-            brightness: wanted.brightness,
-            saturation: wanted.saturation,
-        };
+        let key = Key::of(wanted);
         let held = self.slot.as_ref().is_some_and(|(held, _)| *held == key);
         if !held {
-            self.release(window);
+            self.release();
+            self.retain(configured, window);
+            if let Some(at) = self.spare.iter().position(|(spare, _)| *spare == key) {
+                let (_, image) = self.spare.swap_remove(at);
+                self.slot = Some((key.clone(), State::Ready(image)));
+            }
+        }
+        if !held && self.slot.is_none() {
             self.slot = Some((key.clone(), State::Loading));
             let loading = key.clone();
             let cancel = self.cancel.clone();
@@ -595,17 +635,40 @@ impl Wallpaper {
         }
     }
 
-    fn release(&mut self, window: &mut Window) {
+    /// Takes the picture on show off: a loaded one goes to `spare`, a load is
+    /// cancelled. Whether there was one.
+    fn release(&mut self) -> bool {
         // Called on every frame a pane has no wallpaper: only a slot has a
         // load to cancel.
-        let Some((_, state)) = self.slot.take() else {
-            return;
+        let Some((key, state)) = self.slot.take() else {
+            return false;
         };
         self.cancel.cancel();
         self.cancel = CancelFlag::default();
         if let State::Ready(image) = state {
+            self.spare.push((key, image));
+        }
+        true
+    }
+
+    /// Releases the spare pictures that `configured` no longer names.
+    fn retain(&mut self, configured: impl FnOnce() -> Vec<WallpaperRequest>, window: &mut Window) {
+        if self.spare.is_empty() {
+            return;
+        }
+        for image in self.take_unconfigured(&configured()) {
             let _ = window.drop_image(image);
         }
+    }
+
+    /// Takes out the spare pictures that `configured` does not name.
+    fn take_unconfigured(&mut self, configured: &[WallpaperRequest]) -> Vec<Arc<RenderImage>> {
+        let keys: Vec<Key> = configured.iter().map(Key::of).collect();
+        let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut self.spare)
+            .into_iter()
+            .partition(|(key, _)| keys.contains(key));
+        self.spare = keep;
+        drop.into_iter().map(|(_, image)| image).collect()
     }
 }
 
