@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn an_unset_opacity_is_the_default_of_the_theme_on_show() {
         // Light shows the picture whole, dark under half the color.
-        for (dark, want) in [(false, 0.), (true, 0.5)] {
+        for (dark, want) in [(false, 0.7), (true, 0.5)] {
             let base = theme(dark);
             let plain = standard(Some("/std.png"), None);
             assert_eq!(resolve(None, &plain, base).background.color.a, want);
@@ -1008,7 +1008,7 @@ mod tests {
             (request.brightness, request.saturation)
         };
         // Unset: the default of the theme on show.
-        for (dark, brightness, saturation) in [(true, -40, 80), (false, 65, 130)] {
+        for (dark, brightness, saturation) in [(true, -40, 80), (false, 40, 110)] {
             let base = theme(dark);
             let plain = standard(Some("/pic.png"), None);
             assert_eq!(

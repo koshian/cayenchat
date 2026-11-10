@@ -993,17 +993,17 @@ pub const MAX_WALLPAPER_BRIGHTNESS: i8 = 100;
 /// The range of a wallpaper's saturation in percent: 0 is gray, 100 leaves
 /// the picture.
 pub const MAX_WALLPAPER_SATURATION: u8 = 200;
-/// Unset saturation: 80 in the dark theme and 130 in the light one (a feel,
+/// Unset saturation: 80 in the dark theme and 110 in the light one (a feel,
 /// not a computed value; D092).
 pub fn default_wallpaper_saturation(dark: bool) -> u8 {
-    if dark { 80 } else { 130 }
+    if dark { 80 } else { 110 }
 }
 
 /// Unset brightness: toward black in the dark theme and toward white in the
 /// light one, the side away from the text color, so the text stays readable
 /// over the worst pixel at the default opacity.
 pub fn default_wallpaper_brightness(dark: bool) -> i8 {
-    if dark { -40 } else { 65 }
+    if dark { -40 } else { 40 }
 }
 
 /// A brightness read from a file, capped to the range.
@@ -1011,10 +1011,10 @@ pub fn clamp_wallpaper_brightness(brightness: i8) -> i8 {
     brightness.clamp(-MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_BRIGHTNESS)
 }
 /// The share of the background color over a wallpaper unless set: 50 % in the
-/// dark theme and 0 in the light one, where the wallpaper shows whole. The UI
-/// shows `100 - value` ("strength"), so 100 % in the light theme.
+/// dark theme and 70 in the light one. The UI
+/// shows `100 - value` ("strength"), so 30 % in the light theme.
 pub fn default_background_opacity(dark: bool) -> u8 {
-    if dark { 50 } else { 0 }
+    if dark { 50 } else { 70 }
 }
 
 impl ChannelLook {

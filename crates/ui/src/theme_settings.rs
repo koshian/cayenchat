@@ -1809,7 +1809,7 @@ mod tests {
             })
         };
         // The picture's strength is the rest of the background's opacity.
-        assert_eq!(100 - strength(&form, cx), 100);
+        assert_eq!(100 - strength(&form, cx), 30);
         // One percent at a time, and the blur in tenths up to its limit.
         form.update(cx, |form, cx| {
             form.wallpaper_set_strength(false, WallpaperRegion::MemberList, 21, cx);
