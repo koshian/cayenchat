@@ -3960,7 +3960,7 @@ the start of the session.
   that neither the saved nor the new settings use (only names of that form).
   A wallpaper the user picks or drops (#989) is copied, after
   `media::wallpaper::validate`, to `wallpapers/wallpaper-<hash>.<ext>` (named
-  by content, never pruned by theme applying, whose names are 32 hex digits),
+  by content, never pruned by theme applying, whose names are 64 hex digits, the SHA-256 of the content),
   so the original or a Photos file promise may vanish.
 - **Editing the standard wallpapers (#989).** The Appearance tab shows a
   miniature of the chat window (channel log over combined log on the left,

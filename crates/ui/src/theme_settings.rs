@@ -8,7 +8,6 @@
 //! current light or dark appearance can be exported.
 
 use std::{
-    hash::{Hash, Hasher},
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
@@ -96,9 +95,10 @@ const FIT_CHOICES: [(WallpaperFit, &str); 4] = [
 /// it, and equal images share one file.
 fn keep_image(directory: &Path, bytes: &[u8], extension: &str) -> Result<String, String> {
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    let path = directory.join(format!("wallpaper-{:016x}.{extension}", hasher.finish()));
+    let path = directory.join(format!(
+        "wallpaper-{}.{extension}",
+        crate::wallpaper_crop::content_hex(bytes)
+    ));
     if !path.is_file() {
         std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
     }
@@ -544,14 +544,13 @@ impl SettingsWindow {
             &self.i18n,
             |this, path, _| {
                 let (dark, region) = this.themes.wallpaper.crop_target;
-                if path.len() <= cayenchat_storage::MAX_WALLPAPER_PATH_BYTES {
-                    this.settings
-                        .values
-                        .appearance
-                        .wallpapers_mut(dark)
-                        .get_mut(region)
-                        .path = Some(path);
-                }
+                // `use_range` has refused a path over the limit already.
+                this.settings
+                    .values
+                    .appearance
+                    .wallpapers_mut(dark)
+                    .get_mut(region)
+                    .path = Some(path);
             },
             cx,
         );
@@ -1662,6 +1661,40 @@ mod tests {
             assert!(kept.starts_with(root.path().join("wallpapers")) && kept.is_file());
             assert!(wallpapers.member_list.path.is_none());
             assert!(!form.themes.wallpaper.crop.is_open());
+        });
+    }
+
+    // macOS and Windows refuse to create a path this long (PATH_MAX, MAX_PATH),
+    // so the save fails before the length check there.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_cut_whose_path_is_too_long_says_so_and_sets_nothing(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        crate::settings_file::use_theme_root(root.path());
+        let (form, cx) = open(&settings, cx);
+        let source = root.path().join("original.png");
+        std::fs::write(&source, png()).unwrap();
+        let mut deep = root.path().join("wallpapers");
+        while deep.as_os_str().len() <= cayenchat_storage::MAX_WALLPAPER_PATH_BYTES {
+            deep.push("d".repeat(200));
+        }
+        form.update(cx, |form, cx| {
+            form.themes.wallpaper.crop.directory = Some(deep);
+            form.wallpaper_offer_range(true, WallpaperRegion::ChannelTree, vec![source], cx)
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, cx| form.wallpaper_use_range(cx));
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            let wallpapers = &form.settings.values.appearance.dark.wallpapers;
+            assert!(wallpapers.channel_tree.path.is_none());
+            let crop = &form.themes.wallpaper.crop;
+            // The editor stays open and the reason is shown as a failure.
+            assert!(crop.is_open());
+            let (text, failed) = crop.status.clone().unwrap();
+            assert!(failed && text.contains("wallpaper-"), "{text}");
         });
     }
 
