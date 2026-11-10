@@ -1546,3 +1546,17 @@ the drawing of a pane with a wallpaper whose tone is unchanged was not timed.
 The code that draws it is unchanged by this change: the tone is applied to
 the held pixels at load, and a draw only reads the same image. No macOS or
 Windows run; no GUI frame-rate measurement.
+
+### Positive brightness keeps the colors (2026-11-10, #1050, D092)
+
+Same container and test as above (`apply_timing`, 640 × 640, median of 9,
+release). The positive side now lifts the luma and rescales the channel
+differences (one division per pixel), so it costs more than the negative side:
+
+| `apply` | Median |
+| --- | --- |
+| Tone only (−40, 80) | 4.5 ms |
+| Tone only (+65, 130) | 6.7 ms |
+| Strongest blur and tone (−40, 80) | 19.0 ms |
+
+Still once per load on the background thread, never per frame.

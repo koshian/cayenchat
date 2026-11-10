@@ -4225,8 +4225,19 @@ background blur (#1018): none changes another's value or drawing.
   and the blur (`apply`), on the sRGB values as they are (0 to 1, no
   linearisation). Saturation `s` (0 to 200 %):
   `gray = 0.299 R + 0.587 G + 0.114 B`, `c' = clamp(gray + (c − gray) · s/100)`.
-  Then brightness `b` (−100 to +100): `b < 0` → `c'' = c' · (1 + b/100)`;
-  `b > 0` → `c'' = c' + (1 − c') · b/100`. It is a compression toward one end,
+  Then brightness `b` (−100 to +100): `b < 0` → `c'' = c' · (1 + b/100)`.
+  `b > 0` (changed by #1050; first `c' + (1 − c') · b/100` per channel, which
+  pulled the channels together by `1 − b` and washed the colors out):
+  with `g = 0.299 R + 0.587 G + 0.114 B` of `c'`, `g' = g + (1 − g) · b/100`,
+  `m = max(R, G, B)`, `t = m > g ? min(1, (1 − g')/(m − g)) : 1`,
+  `c'' = g' + (c' − g) · t`. Only the luma is lifted; the differences of the
+  channels from it stay, shrunk by `t` only as far as the brightest channel
+  needs to stay within 1 (clamping per channel would lower the luma and turn
+  the hue). The result's luma is exactly `g'`, so the readability floor is
+  that of the old formula; gray pixels give the old result; `b = +100` is
+  white. The sign of `b` decides the formula, not the theme. About 6.7 ms for
+  a 640 × 640 picture at (+65, 130) (`spec/performance.md`).
+  It is a compression toward one end,
   not an offset: the order of the tones is kept and only the side that meets
   the text color is lost. `s = 100` and `b = 0` skip the pass, so the pixels
   are those of before. −100 is black, +100 white, `s = 0` gray. The channels
