@@ -1461,13 +1461,15 @@ fn redacted_wire_line(message: &IrcMessage, full_tags: bool) -> String {
         IrcCommand::JOIN(channel, Some(_), _) => format!("JOIN {channel} [redacted]"),
         IrcCommand::NICKSERV(_) => "NICKSERV [redacted]".into(),
         IrcCommand::CHANSERV(_) => "CHANSERV [redacted]".into(),
-        IrcCommand::PRIVMSG(target, body) | IrcCommand::NOTICE(target, body)
-            if is_service_secret(target, body) =>
+        IrcCommand::PRIVMSG(target, _)
+        | IrcCommand::NOTICE(target, _)
+        | IrcCommand::SQUERY(target, _)
+            if is_credential_target(target) =>
         {
-            let verb = if matches!(message.command, IrcCommand::PRIVMSG(_, _)) {
-                "PRIVMSG"
-            } else {
-                "NOTICE"
+            let verb = match message.command {
+                IrcCommand::PRIVMSG(..) => "PRIVMSG",
+                IrcCommand::NOTICE(..) => "NOTICE",
+                _ => "SQUERY",
             };
             format!("{verb} {target} :[redacted]")
         }
@@ -1490,39 +1492,25 @@ fn redacted_wire_line(message: &IrcMessage, full_tags: bool) -> String {
         }
         // `/quote AUTH user password` on networks with a server-side AUTH.
         IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("AUTH") => "AUTH [redacted]".into(),
-        IrcCommand::Raw(verb, args)
+        // Service aliases and server-side aliases for service logins: every
+        // argument is hidden, whatever the service command is.
+        IrcCommand::Raw(verb, _)
             if matches!(
                 verb.to_ascii_uppercase().as_str(),
-                "NS" | "NICKSERV" | "CS" | "CHANSERV" | "AUTHSERV"
-            ) && args
-                .first()
-                .and_then(|arg| arg.split_whitespace().next())
-                .is_some_and(is_secret_service_command) =>
+                "NS" | "NICKSERV"
+                    | "CS"
+                    | "CHANSERV"
+                    | "AUTHSERV"
+                    | "IDENTIFY"
+                    | "ID"
+                    | "LOGIN"
+                    | "REGAIN"
+            ) =>
         {
             format!("{verb} [redacted]")
         }
         _ => tags::transcript_line(message, full_tags),
     }
-}
-
-/// Service commands that carry a password: NickServ/ChanServ (Atheme,
-/// Anope), QuakeNet's Q (`AUTH`, `NEWPASS`), Undernet's X (`LOGIN`,
-/// `NEWPASS`) and GameSurge's AuthServ (`AUTH`, `PASS`).
-fn is_secret_service_command(command: &str) -> bool {
-    matches!(
-        command.to_ascii_uppercase().as_str(),
-        "IDENTIFY"
-            | "ID"
-            | "LOGIN"
-            | "AUTH"
-            | "REGISTER"
-            | "GHOST"
-            | "RECOVER"
-            | "RELEASE"
-            | "SET"
-            | "NEWPASS"
-            | "PASS"
-    )
 }
 
 /// Whether `target` is a service that takes passwords, by nickname, also as
@@ -1535,20 +1523,17 @@ pub fn is_credential_service(target: &str) -> bool {
     )
 }
 
-/// Whether `body` sent to `target` gives a service a password.
-fn is_service_secret(target: &str, body: &str) -> bool {
-    is_credential_service(target)
-        && body
-            .split_whitespace()
-            .next()
-            .is_some_and(is_secret_service_command)
+/// Whether anything sent to `targets` (a `,` separated list of recipients)
+/// is hidden: it is when any recipient is a credential service, whatever
+/// the text says.
+pub fn is_credential_target(targets: &str) -> bool {
+    targets.split(',').any(is_credential_service)
 }
 
-/// What our own message shows in its conversation: credentials sent to
-/// services (`IDENTIFY`, `REGISTER`, ...) are not shown, as in the
-/// transcript.
+/// What our own message shows in its conversation: everything sent to
+/// credential services is not shown, as in the transcript.
 fn echo_text(target: &str, text: String) -> String {
-    if is_service_secret(target, &text) {
+    if is_credential_target(target) {
         "[redacted]".into()
     } else {
         text
@@ -2307,7 +2292,7 @@ impl Connection {
             // Credentials for services stay as typed and go through the
             // strict encoding check, so a password is never altered.
             // The target may list several recipients, one of them a service.
-            if wanted && !target.split(',').any(|one| is_service_secret(one, text)) {
+            if wanted && !is_credential_target(target) {
                 charsets::apply_char_refs(text, display_text);
             }
         }

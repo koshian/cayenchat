@@ -31,7 +31,7 @@ struct Browsing {
 /// the core hides from the transcript, but wider: any message to those
 /// services counts.
 pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
-    use cayenchat_irc_core::is_credential_service;
+    use cayenchat_irc_core::is_credential_target as is_credential_service;
     let Some(command) = text.strip_prefix('/') else {
         return private_peer.is_some_and(is_credential_service);
     };
@@ -61,7 +61,17 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
         _ if private_peer.is_some_and(is_credential_service) => true,
         "RAW" | "QUOTE" => command
             .split_once(char::is_whitespace)
-            .is_some_and(|(_, raw)| is_sensitive(&format!("/{}", raw.trim_start()), None)),
+            .is_some_and(|(_, raw)| {
+                let raw = raw.trim_start();
+                // Server-side aliases for service logins.
+                let alias = raw
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_uppercase();
+                matches!(alias.as_str(), "IDENTIFY" | "ID" | "LOGIN" | "REGAIN")
+                    || is_sensitive(&format!("/{raw}"), None)
+            }),
         _ => false,
     }
 }
@@ -228,6 +238,10 @@ mod tests {
             "/join #secret hunter2",
             "/ JOIN #a,#b k1,k2",
             "/raw JOIN #secret hunter2",
+            "/msg NickServ,bob regain me pw",
+            "/squery NickServ identify pw",
+            "/quote IDENTIFY pw",
+            "/raw regain me pw",
         ];
         let mut history = InputHistory::default();
         for line in secret {
