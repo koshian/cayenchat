@@ -8222,18 +8222,33 @@ impl ChatWindow {
         let border = theme.border;
         let look = self.channel_log_look(theme);
         let standard = self.appearance.wallpapers(theme.dark).clone();
+        // Every picture the settings may show in any area: the channels' and
+        // the standard in the log, and the standard of the others. Switching
+        // between channels does not load again, and one area letting go of a
+        // shared picture does not release what another still names.
+        let appearance = &self.appearance;
+        let configured = || {
+            let standard = &appearance.wallpapers(theme.dark);
+            let looks = std::iter::once(None)
+                .chain(appearance.channel_looks.iter().map(Some))
+                .filter_map(|look| {
+                    channel_look::resolve(look, &standard.channel_log, theme).wallpaper
+                });
+            let others = [
+                (&standard.combined_log, theme.panes.combined_log),
+                (&standard.member_list, theme.panes.member_list),
+                (&standard.channel_tree, theme.panes.channel_tree),
+            ]
+            .into_iter()
+            .filter_map(|(region, pane)| {
+                channel_look::region_wallpaper(region, pane, theme.dark).0
+            });
+            looks.chain(others).collect::<Vec<_>>()
+        };
         let wallpaper = self.wallpapers.element(
             WallpaperRegion::ChannelLog,
             look.wallpaper.as_ref(),
-            || {
-                // Every picture a channel, or the standard, may show in the
-                // log, so switching between channels does not load again.
-                let standard = &self.appearance.wallpapers(theme.dark).channel_log;
-                std::iter::once(None)
-                    .chain(self.appearance.channel_looks.iter().map(Some))
-                    .filter_map(|look| channel_look::resolve(look, standard, theme).wallpaper)
-                    .collect()
-            },
+            configured,
             look.background,
             look.theme.panes.channel_log.a < 1.,
             window,
@@ -8248,7 +8263,7 @@ impl ChatWindow {
         let combined_wallpaper = self.wallpapers.element(
             WallpaperRegion::CombinedLog,
             request.as_ref(),
-            Vec::new,
+            configured,
             background,
             theme.panes.combined_log.a < 1.,
             window,
@@ -8263,7 +8278,7 @@ impl ChatWindow {
         let members_wallpaper = self.wallpapers.element(
             WallpaperRegion::MemberList,
             request.as_ref(),
-            Vec::new,
+            configured,
             background,
             false,
             window,
@@ -8277,7 +8292,7 @@ impl ChatWindow {
         let tree_wallpaper = self.wallpapers.element(
             WallpaperRegion::ChannelTree,
             request.as_ref(),
-            Vec::new,
+            configured,
             background,
             false,
             window,

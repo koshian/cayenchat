@@ -4296,10 +4296,11 @@ loaded the next one, so the pane was without a wallpaper for a frame or more
   A failure is removed when no area shows it, so it is tried again.
 - **What stays.** A loaded picture no area shows stays while a setting names
   it; when the picture on show of an area changes (or is removed), the ones
-  that no area shows and no area's settings name are released
-  (`window.drop_image`). For the channel log the settings are the standard
-  wallpaper and every channel look resolved for the theme on show
-  (`channel_look::resolve`); the other areas name nothing. A version left by a
+  that no area shows and the settings do not name are released
+  (`window.drop_image`). The settings are asked in one place for all areas
+  together, each time a release is decided (never kept per area): every
+  channel look and the standard resolved for the theme on show
+  (`channel_look::resolve`), and the standard of the other three areas. A version left by a
   slider, a changed file or a cleared wallpaper therefore goes at the next
   change, and the pool is bounded by the number of configured pictures. The
   settings window and the channel settings window's miniatures have a pool of

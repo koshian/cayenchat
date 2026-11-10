@@ -438,8 +438,10 @@ struct Entry {
 #[derive(Default)]
 struct Pool {
     entries: Vec<Entry>,
-    /// The keys the settings name, per owner (area) of the pool.
-    named: Vec<Vec<Key>>,
+    /// The keys the settings name, for every area at once: it is taken from
+    /// the window's settings whenever a release is decided, never kept per
+    /// area, so one area cannot make it stale for the others.
+    named: Vec<Key>,
 }
 
 impl Pool {
@@ -486,14 +488,25 @@ impl Pool {
         self.entries.iter().any(|entry| entry.users == 0)
     }
 
+    /// Takes out the pictures no area shows and `configured` does not name.
+    /// `configured` is not asked while every picture is shown.
+    fn settle(
+        &mut self,
+        configured: impl FnOnce() -> Vec<WallpaperRequest>,
+    ) -> Vec<Arc<RenderImage>> {
+        if !self.has_unused() {
+            return Vec::new();
+        }
+        self.named = configured().iter().map(Key::of).collect();
+        self.take_unused()
+    }
+
     /// Takes out the pictures no area shows and no setting names.
     fn take_unused(&mut self) -> Vec<Arc<RenderImage>> {
         let named = &self.named;
         let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
             .into_iter()
-            .partition(|entry| {
-                entry.users > 0 || named.iter().flatten().any(|key| *key == entry.key)
-            });
+            .partition(|entry| entry.users > 0 || named.contains(&entry.key));
         self.entries = keep;
         drop.into_iter()
             .filter_map(|entry| match entry.state {
@@ -552,9 +565,9 @@ impl Wallpapers {
     /// The picture for `wanted` in `region` with `background` over it, as
     /// the first child of its pane.
     ///
-    /// `configured` lists every picture the settings still use for the area.
-    /// It runs only when the picture on show changes, and pictures outside it
-    /// are released then.
+    /// `configured` lists every picture the settings still use, for all
+    /// areas, and is the same for every call. It runs only when a picture
+    /// is unused, and pictures outside it are released then.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn element(
         &mut self,
@@ -586,8 +599,6 @@ impl Wallpapers {
 pub(crate) struct Wallpaper {
     slot: Option<Key>,
     pool: Rc<RefCell<Pool>>,
-    /// Where this area's named keys are in `Pool::named`.
-    owner: usize,
     placed: Rc<Cell<Bounds<Pixels>>>,
 }
 
@@ -600,15 +611,9 @@ impl Default for Wallpaper {
 
 impl Wallpaper {
     fn in_pool(pool: Rc<RefCell<Pool>>) -> Self {
-        let owner = {
-            let mut pool = pool.borrow_mut();
-            pool.named.push(Vec::new());
-            pool.named.len() - 1
-        };
         Self {
             slot: None,
             pool,
-            owner,
             placed: Rc::default(),
         }
     }
@@ -766,18 +771,10 @@ impl Wallpaper {
         true
     }
 
-    /// Records the pictures `configured` names for this area, and releases
-    /// the ones no area shows and no area's settings name.
+    /// Releases the pictures no area shows and `configured` (every picture
+    /// the settings name, for all areas) does not name.
     fn retain(&mut self, configured: impl FnOnce() -> Vec<WallpaperRequest>, window: &mut Window) {
-        if !self.pool.borrow().has_unused() {
-            return;
-        }
-        let keys = configured().iter().map(Key::of).collect();
-        let unused = {
-            let mut pool = self.pool.borrow_mut();
-            pool.named[self.owner] = keys;
-            pool.take_unused()
-        };
+        let unused = self.pool.borrow_mut().settle(configured);
         for image in unused {
             let _ = window.drop_image(image);
         }
@@ -1314,7 +1311,7 @@ mod tests {
     }
 
     fn named(pool: &mut super::Pool, keys: &[super::Key]) {
-        pool.named = vec![keys.to_vec()];
+        pool.named = keys.to_vec();
     }
 
     #[test]
@@ -1379,6 +1376,35 @@ mod tests {
         assert_eq!(pool.entries.len(), 1);
         assert!(matches!(pool.state(&shared), Some(super::State::Ready(_))));
         assert!(pool.state(&a).is_none() && pool.state(&old).is_none());
+    }
+
+    #[test]
+    fn a_shared_picture_survives_another_area_dropping_it_while_the_channel_is_away() {
+        let mut pool = super::Pool::default();
+        let (a, b) = (key("a.png", 0), key("b.png", 0));
+        let request = |k: &super::Key| super::WallpaperRequest {
+            path: k.path.to_string_lossy().into(),
+            blur: k.blur,
+            brightness: k.brightness,
+            saturation: k.saturation,
+            fit: super::WallpaperFit::default(),
+        };
+        // The settings name A (channel A and the member list) and B.
+        let configured = || vec![request(&a), request(&b)];
+        // Channel log and member list both show A.
+        pool.acquire(&a);
+        pool.acquire(&a);
+        ready(&mut pool, &a);
+        // Channel log moves to B: A is still shown, nothing is settled.
+        pool.release(&a);
+        pool.acquire(&b);
+        assert!(pool.settle(configured).is_empty());
+        // The member list drops its wallpaper: the settings still name A
+        // for the channel, so it stays and coming back needs no load.
+        pool.release(&a);
+        assert!(pool.settle(configured).is_empty());
+        assert!(pool.acquire(&a).is_none());
+        assert!(matches!(pool.state(&a), Some(super::State::Ready(_))));
     }
 
     #[test]
