@@ -515,6 +515,27 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Opens the range editor on the image the area already has (the details
+    /// open with it); an area with no image has nothing to edit yet.
+    fn wallpaper_open_range(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .settings
+            .values
+            .appearance
+            .wallpapers(dark)
+            .get(region)
+            .path
+            .clone();
+        if let Some(path) = current {
+            self.wallpaper_offer_range(dark, region, vec![PathBuf::from(path)], cx);
+        }
+    }
+
     /// Opens the range editor on the image named by `paths` for `region`.
     fn wallpaper_offer_range(
         &mut self,
@@ -981,17 +1002,24 @@ impl SettingsWindow {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 let dark = this.themes.wallpaper.dark;
                                                 this.themes.wallpaper.select(dark, region);
+                                                cx.stop_propagation();
                                                 this.wallpaper_choose(dark, region, false, cx)
                                             })),
                                     )
                                     .child(
                                         settings_theme::button(("wallpaper-detail", id), false, cx)
+                                            .debug_selector(|| format!("wallpaper-detail-{id}"))
                                             .text_size(px(11.))
                                             .child(self.i18n.text("wallpaper_detail"))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 let dark = this.themes.wallpaper.dark;
                                                 this.themes.wallpaper.select(dark, region);
                                                 this.themes.wallpaper.detail = true;
+                                                // Keep the area card's own click from
+                                                // running `select`, which would close
+                                                // the editor just opened.
+                                                cx.stop_propagation();
+                                                this.wallpaper_open_range(dark, region, cx);
                                                 cx.notify();
                                             })),
                                     ),
@@ -1182,14 +1210,6 @@ impl SettingsWindow {
                         .items_center()
                         .gap_2()
                         .child(format!("{}{}", self.i18n.text(area_name), side_suffix))
-                        .child(
-                            settings_theme::button("wallpaper-range", false, cx)
-                                .child(self.i18n.text("wallpaper_range"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                                    this.wallpaper_choose(dark, region, true, cx)
-                                })),
-                        )
                         .child(
                             settings_theme::button("wallpaper-detail-close", false, cx)
                                 .child(self.i18n.text("wallpaper_detail_close"))
@@ -1744,6 +1764,37 @@ mod tests {
             assert!(kept.starts_with(root.path().join("wallpapers")) && kept.is_file());
             assert!(wallpapers.member_list.path.is_none());
             assert!(!form.themes.wallpaper.crop.is_open());
+        });
+    }
+
+    #[gpui::test]
+    fn clicking_the_details_button_opens_the_range_editor_on_the_areas_image(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("original.png");
+        std::fs::write(&source, png()).unwrap();
+        let mut settings = settings_with_channels("#a");
+        settings.appearance.shared_wallpapers.channel_tree.path =
+            Some(source.to_string_lossy().into_owned());
+        let _file = TestFile::with(&settings);
+        crate::settings_file::use_theme_root(root.path());
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.tab = crate::settings_window::SettingsTab::Appearance;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(4000.)));
+        cx.run_until_parked();
+        // The channel tree is the fourth area; the click also reaches the
+        // area's own card, which must not close the editor again.
+        let center = cx.debug_bounds("wallpaper-detail-3").unwrap().center();
+        cx.simulate_click(center, gpui::Modifiers::default());
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| {
+            assert!(form.themes.wallpaper.detail);
+            assert!(form.themes.wallpaper.crop.is_open());
         });
     }
 

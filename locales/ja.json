@@ -132,7 +132,6 @@
   "wallpaper_blur": "ぼかし: {value}",
   "wallpaper_detail": "詳細設定…",
   "wallpaper_detail_close": "閉じる",
-  "wallpaper_range": "範囲を選んで設定…",
   "wallpaper_failed": "壁紙を設定できませんでした（以前の壁紙はそのままです）: {error}",
   "channel_look_wallpaper_choice": "壁紙の使い方",
   "channel_look_wallpaper_inherit": "標準を継承",
