@@ -4164,3 +4164,13 @@ the issue rules out. The maintainer chose the switch (issue comments).
   nothing was blurred (maintainer report on 27.2). The gpui patch uses
   `UnderWindowBackground` with the behind-window blending mode, as upstream
   Zed does (`vendor/gpui/PATCHES.md`).
+- **macOS trial (strength).** The `UnderWindowBackground` blur was too strong
+  on 27.2 (maintainer report). Step 1 is a trial build: on every macOS the
+  gpui patch calls the private `CGSSetWindowBackgroundBlurRadius` with a fixed
+  radius of 20 and no `BlurredView`; off passes 0. Whether it works on current
+  macOS, survives repeated on/off (a radius of 0 is reported to disable the
+  blur for good) and keeps the shadow and tint is unverified. A strength
+  slider (window-wide, macOS only) follows only if the trial holds. The API
+  is private and may break in a future macOS; the way back is
+  `CGS_BLUR_ON_ALL_MACOS = false`, which restores `BlurredView`
+  (`vendor/gpui/PATCHES.md`).

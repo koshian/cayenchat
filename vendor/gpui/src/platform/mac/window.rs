@@ -91,6 +91,11 @@ pub enum UserTabbingPreference {
     InFullScreen,
 }
 
+/// CayenChat #1018 trial: blur with `CGSSetWindowBackgroundBlurRadius` on every
+/// macOS instead of `BlurredView`. Set to `false` to return to `BlurredView`.
+const CGS_BLUR_ON_ALL_MACOS: bool = true;
+const CGS_TRIAL_BLUR_RADIUS: i64 = 20;
+
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     // Widely used private APIs; Apple uses them for their Terminal.app.
@@ -1292,16 +1297,26 @@ impl PlatformWindow for MacWindow {
             };
             this.native_window.setBackgroundColor_(background_color);
 
-            if NSAppKitVersionNumber < NSAppKitVersionNumber12_0 {
+            if CGS_BLUR_ON_ALL_MACOS || NSAppKitVersionNumber < NSAppKitVersionNumber12_0 {
                 // Whether `-[NSVisualEffectView respondsToSelector:@selector(_updateProxyLayer)]`.
                 // On macOS Catalina/Big Sur `NSVisualEffectView` doesn’t own concrete sublayers
                 // but uses a `CAProxyLayer`. Use the legacy WindowServer API.
+                //
+                // CayenChat #1018 (trial): the same API is used on every macOS with a
+                // fixed radius, to see whether a weak blur works on current macOS.
                 let blur_radius = if background_appearance == WindowBackgroundAppearance::Blurred {
-                    80
+                    if CGS_BLUR_ON_ALL_MACOS {
+                        CGS_TRIAL_BLUR_RADIUS
+                    } else {
+                        80
+                    }
                 } else {
                     0
                 };
 
+                if let Some(blur_view) = this.blurred_view.take() {
+                    NSView::removeFromSuperview(blur_view);
+                }
                 let window_number = this.native_window.windowNumber();
                 CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number, blur_radius);
             } else {

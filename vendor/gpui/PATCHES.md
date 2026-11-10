@@ -323,3 +323,13 @@ material has no `CABackdropLayer`, so `remove_layer_background` stripping its
 tint left a transparent window with no blur. `remove_layer_background` stays.
 To re-apply: swap the material and add the `setBlendingMode_` call (import
 `NSVisualEffectBlendingMode`). Not buildable on Linux; check on macOS.
+
+In `src/platform/mac/window.rs`, `set_background_appearance` blurs with the
+private `CGSSetWindowBackgroundBlurRadius` at a fixed radius of 20 on every
+macOS and removes any `BlurredView` (CayenChat #1018, trial step 1: the
+`NSVisualEffectView` blur was too strong). Off passes radius 0. The constants
+`CGS_BLUR_ON_ALL_MACOS` (set `false` to return to `BlurredView`) and
+`CGS_TRIAL_BLUR_RADIUS` control it. To re-apply: add the two constants and the
+`CGS_BLUR_ON_ALL_MACOS ||` condition, the radius choice and the
+`blurred_view.take()` removal in the first branch. Not buildable on Linux;
+check on macOS.
