@@ -55,11 +55,16 @@ pub(crate) struct WallpaperUi {
     /// (`channel_look::Wallpaper`: size limit, decode gate, released when an
     /// area has none).
     preview: channel_look::Wallpapers,
-    /// The sliders of the selected area's strength and blur.
+    /// The sliders of the selected area's strength, blur, brightness and
+    /// saturation.
     strength_track: crate::slider::TrackBounds,
     strength_focus: FocusHandle,
     blur_track: crate::slider::TrackBounds,
     blur_focus: FocusHandle,
+    brightness_track: crate::slider::TrackBounds,
+    brightness_focus: FocusHandle,
+    saturation_track: crate::slider::TrackBounds,
+    saturation_focus: FocusHandle,
     /// Whether the details (range editor, fit) of the selected area are open.
     detail: bool,
     /// The image whose range is being chosen, and the side and area it was
@@ -136,6 +141,10 @@ impl ThemeUi {
                 strength_focus: cx.focus_handle().tab_stop(true),
                 blur_track: Default::default(),
                 blur_focus: cx.focus_handle().tab_stop(true),
+                brightness_track: Default::default(),
+                brightness_focus: cx.focus_handle().tab_stop(true),
+                saturation_track: Default::default(),
+                saturation_focus: cx.focus_handle().tab_stop(true),
                 detail: false,
                 crop: CropState::new(),
                 crop_target: (dark, WallpaperRegion::ChannelLog),
@@ -652,6 +661,8 @@ impl SettingsWindow {
         wallpaper.path = None;
         wallpaper.opacity = None;
         wallpaper.blur = None;
+        wallpaper.brightness = None;
+        wallpaper.saturation = None;
         wallpaper.fit = None;
         cx.notify();
     }
@@ -688,6 +699,41 @@ impl SettingsWindow {
             .wallpapers_mut(dark)
             .get_mut(region)
             .blur = Some(tenths.min(cayenchat_storage::MAX_WALLPAPER_BLUR));
+        cx.notify();
+    }
+
+    /// Sets the brightness of the picture, -100 to 100.
+    pub(crate) fn wallpaper_set_brightness(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        brightness: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let max = i32::from(cayenchat_storage::MAX_WALLPAPER_BRIGHTNESS);
+        self.settings
+            .values
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(region)
+            .brightness = Some(brightness.clamp(-max, max) as i8);
+        cx.notify();
+    }
+
+    /// Sets the saturation of the picture, in percent.
+    pub(crate) fn wallpaper_set_saturation(
+        &mut self,
+        dark: bool,
+        region: WallpaperRegion,
+        saturation: u8,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings
+            .values
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(region)
+            .saturation = Some(saturation.min(cayenchat_storage::MAX_WALLPAPER_SATURATION));
         cx.notify();
     }
 
@@ -883,7 +929,7 @@ impl SettingsWindow {
         // The pictures: the chat window's loading and its layers over them.
         let layers = AREAS.map(|(region, _)| {
             let wallpaper = appearance.wallpapers(dark).get(region);
-            let (request, over) = channel_look::region_wallpaper(wallpaper, pane_of(region));
+            let (request, over) = channel_look::region_wallpaper(wallpaper, pane_of(region), dark);
             self.themes.wallpaper.preview.get_mut(region).element(
                 request.as_ref(),
                 over,
@@ -1073,6 +1119,9 @@ impl SettingsWindow {
         };
         let strength = 100 - wallpaper.opacity_percent();
         let blur = wallpaper.blur_tenths();
+        let max_brightness = i32::from(cayenchat_storage::MAX_WALLPAPER_BRIGHTNESS);
+        let brightness = i32::from(wallpaper.brightness_value(self.themes.wallpaper.dark));
+        let saturation = wallpaper.saturation_percent();
         let sliders = wallpaper.path.is_some().then(|| {
             let row = |label: String, slider: Stateful<Div>| {
                 div()
@@ -1121,6 +1170,45 @@ impl SettingsWindow {
                         move |this, value, _, cx| {
                             let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
                             this.wallpaper_set_blur(dark, region, value as u8, cx)
+                        },
+                    ),
+                ))
+                .child(row(
+                    self.i18n.format(
+                        "wallpaper_brightness",
+                        &[("value", &format!("{brightness:+}"))],
+                    ),
+                    crate::slider::slider(
+                        "wallpaper-brightness",
+                        (brightness + max_brightness) as u32,
+                        (2 * max_brightness) as u32,
+                        &ui.brightness_track,
+                        &ui.brightness_focus,
+                        colors,
+                        cx,
+                        move |this, value, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            let brightness = value as i32 - max_brightness;
+                            this.wallpaper_set_brightness(dark, region, brightness, cx)
+                        },
+                    ),
+                ))
+                .child(row(
+                    self.i18n.format(
+                        "wallpaper_saturation",
+                        &[("value", &saturation.to_string())],
+                    ),
+                    crate::slider::slider(
+                        "wallpaper-saturation",
+                        u32::from(saturation),
+                        u32::from(cayenchat_storage::MAX_WALLPAPER_SATURATION),
+                        &ui.saturation_track,
+                        &ui.saturation_focus,
+                        colors,
+                        cx,
+                        move |this, value, _, cx| {
+                            let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                            this.wallpaper_set_saturation(dark, region, value as u8, cx)
                         },
                     ),
                 ))
@@ -1416,7 +1504,7 @@ mod tests {
                         );
                         let standard = chat.appearance.wallpapers(dark);
                         let path = |wallpaper, pane| {
-                            channel_look::region_wallpaper(wallpaper, pane)
+                            channel_look::region_wallpaper(wallpaper, pane, dark)
                                 .0
                                 .map(|request| request.path)
                         };

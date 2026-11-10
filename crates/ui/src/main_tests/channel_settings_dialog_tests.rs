@@ -471,9 +471,9 @@ fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
     let (_app, view, _file, cx) = open_window_for_b(cx);
     // Auto-join, decode, encode, four character references, the four log
     // look fields, the wallpaper's three choices, the miniature's choose
-    // button, the two sliders, four fit buttons and reset: twenty-two stops.
-    // Twenty-two Tabs make a full circle.
-    for _ in 0..22 {
+    // button, the four sliders, four fit buttons and reset: twenty-four stops.
+    // Twenty-four Tabs make a full circle.
+    for _ in 0..24 {
         tab(cx);
     }
     press(cx, "space");
@@ -758,6 +758,66 @@ fn an_inherited_blur_shows_the_standard_value_and_zero_can_be_chosen(cx: &mut Te
         view.save_now(window, cx);
         assert_eq!(view.look(cx).unwrap().wallpaper_blur, Some(0));
         assert_eq!(view.shown_strengths(cx).0, 0);
+    });
+    drop(file);
+}
+
+#[gpui::test]
+fn an_inherited_tone_shows_the_standard_value_until_the_channel_moves_it(cx: &mut TestAppContext) {
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    let dark = chat.update(cx, |chat, cx| {
+        let dark = crate::theme::current(cx).dark;
+        let standard = chat
+            .appearance
+            .wallpapers_mut(dark)
+            .get_mut(WallpaperRegion::ChannelLog);
+        standard.path = Some("standard.png".into());
+        standard.brightness = Some(-10);
+        standard.saturation = Some(150);
+        dark
+    });
+    let (view, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    view.read_with(wcx, |view, cx| {
+        assert_eq!(view.shown_tone(cx), (-10, 150));
+        let look = view.look(cx).unwrap();
+        assert_eq!(
+            (look.wallpaper_brightness, look.wallpaper_saturation),
+            (None, None)
+        );
+    });
+    view.update_in(wcx, |view, window, cx| {
+        view.set_brightness(0, cx);
+        // Only the moved one becomes the channel's own.
+        assert_eq!(view.shown_tone(cx).0, 0);
+        let look = view.look(cx).unwrap();
+        assert_eq!(
+            (look.wallpaper_brightness, look.wallpaper_saturation),
+            (Some(0), None)
+        );
+        view.save_now(window, cx);
+    });
+    // Resolved for drawing, the channel log gets the same values.
+    chat.update(cx, |chat, _| {
+        let look = chat.appearance.channel_looks.first().unwrap().clone();
+        let standard = cayenchat_storage::RegionWallpaper {
+            brightness: Some(-10),
+            saturation: Some(150),
+            path: Some("standard.png".into()),
+            ..cayenchat_storage::RegionWallpaper::default()
+        };
+        let theme = crate::theme::Theme::new(
+            if dark {
+                cayenchat_storage::ThemeMode::Dark
+            } else {
+                cayenchat_storage::ThemeMode::Light
+            },
+            gpui::WindowAppearance::Light,
+            &chat.appearance,
+        );
+        let request = crate::channel_look::resolve(Some(&look), &standard, theme)
+            .wallpaper
+            .unwrap();
+        assert_eq!((request.brightness, request.saturation), (0, 150));
     });
     drop(file);
 }

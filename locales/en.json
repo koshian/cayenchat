@@ -129,6 +129,8 @@
   "wallpaper_loading": "Opening the image…",
   "wallpaper_strength": "Strength: {value}%",
   "wallpaper_blur": "Blur: {value}",
+  "wallpaper_brightness": "Brightness: {value}",
+  "wallpaper_saturation": "Saturation: {value}%",
   "wallpaper_detail": "Details…",
   "wallpaper_detail_close": "Close",
   "wallpaper_range": "Choose a range…",

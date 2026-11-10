@@ -19,14 +19,16 @@ use crate::wallpaper_crop::CropState;
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
     AutoJoinEntry, ChannelLook, CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR,
-    MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_PATH_BYTES, MIN_FONT_SIZE, ServerProfile,
-    Settings, TextEncoding, WallpaperFit, color_value, format_auto_join,
+    DEFAULT_WALLPAPER_SATURATION, MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS,
+    MAX_WALLPAPER_PATH_BYTES, MAX_WALLPAPER_SATURATION, MIN_FONT_SIZE, ServerProfile, Settings,
+    TextEncoding, WallpaperFit, clamp_wallpaper_brightness, color_value,
+    default_wallpaper_brightness, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, FocusNextField, FocusPreviousField,
-    channel_look::{background_opacity_of, blur_of},
+    channel_look::{background_opacity_of, blur_of, brightness_of, saturation_of},
     decorations,
     input::TextInput,
     localization::Localizer,
@@ -223,6 +225,8 @@ pub(crate) fn merge_look(
         text,
         wallpaper,
         wallpaper_blur,
+        wallpaper_brightness,
+        wallpaper_saturation,
         background_opacity,
         wallpaper_fit,
         no_wallpaper
@@ -244,6 +248,12 @@ struct LookFields {
     /// Whether the blur is the channel's own, also at the default value or 0:
     /// an inherited one follows the standard wallpaper's.
     blur_own: bool,
+    /// Brightness, -100 to 100, and whether it is the channel's own (#1047).
+    brightness: i8,
+    brightness_own: bool,
+    /// Saturation in percent, 0 to 200, and whether it is the channel's own.
+    saturation: u8,
+    saturation_own: bool,
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
     /// Whether the opacity is the channel's own, also at the default value:
@@ -253,6 +263,8 @@ struct LookFields {
     /// standard wallpaper's.
     fit: Option<WallpaperFit>,
     blur_track: TrackBounds,
+    brightness_track: TrackBounds,
+    saturation_track: TrackBounds,
     opacity_track: TrackBounds,
     wallpaper_choice: WallpaperChoice,
 }
@@ -310,6 +322,10 @@ impl LookFields {
             ),
             blur: blur_of(&look),
             blur_own: look.wallpaper_blur.is_some(),
+            brightness: brightness_of(&look, crate::theme::current(cx).dark),
+            brightness_own: look.wallpaper_brightness.is_some(),
+            saturation: saturation_of(&look),
+            saturation_own: look.wallpaper_saturation.is_some(),
             opacity: background_opacity_of(&look),
             opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit,
@@ -318,6 +334,8 @@ impl LookFields {
             text: field(color(look.text), cx),
             wallpaper: field(look.wallpaper.unwrap_or_default(), cx),
             blur_track: TrackBounds::default(),
+            brightness_track: TrackBounds::default(),
+            saturation_track: TrackBounds::default(),
             opacity_track: TrackBounds::default(),
         }
     }
@@ -341,6 +359,10 @@ impl LookFields {
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
         self.blur_own = false;
+        self.brightness = default_wallpaper_brightness(crate::theme::current(cx).dark);
+        self.brightness_own = false;
+        self.saturation = DEFAULT_WALLPAPER_SATURATION;
+        self.saturation_own = false;
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
         self.opacity_own = false;
         self.fit = None;
@@ -409,6 +431,8 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_blur: self.blur_own.then_some(self.blur),
+            wallpaper_brightness: self.brightness_own.then_some(self.brightness),
+            wallpaper_saturation: self.saturation_own.then_some(self.saturation),
             background_opacity: self.opacity_own.then_some(self.opacity),
             wallpaper_fit: self.fit,
             no_wallpaper: choice == WallpaperChoice::Off,
@@ -436,6 +460,8 @@ struct Controls {
     /// The miniature's "choose an image" button.
     pub(super) choose: FocusHandle,
     blur: FocusHandle,
+    brightness: FocusHandle,
+    saturation: FocusHandle,
     opacity: FocusHandle,
     fit: [FocusHandle; FIT_COUNT],
     reset: FocusHandle,
@@ -455,6 +481,8 @@ impl Controls {
             crop_cancel: handle(),
             choose: handle(),
             blur: handle(),
+            brightness: handle(),
+            saturation: handle(),
             opacity: handle(),
             fit: std::array::from_fn(|_| handle()),
             reset: handle(),
@@ -497,6 +525,8 @@ impl Controls {
         order.extend([
             (self.choose.clone(), Some(5)),
             (self.blur.clone(), Some(5)),
+            (self.brightness.clone(), Some(5)),
+            (self.saturation.clone(), Some(5)),
             (self.opacity.clone(), Some(5)),
         ]);
         order.extend(self.fit.iter().map(|handle| (handle.clone(), Some(5))));
@@ -856,6 +886,27 @@ impl ChannelSettingsView {
         )
     }
 
+    /// The brightness and saturation the sliders show, like
+    /// [`Self::shown_strengths`]: an inherited value is the standard
+    /// wallpaper's, in the theme on show.
+    pub(crate) fn shown_tone(&self, cx: &App) -> (i8, u8) {
+        let dark = crate::theme::current(cx).dark;
+        // Without a standard picture to follow, the unset values are the defaults.
+        let standard = self.inherited_standard(cx).unwrap_or_default();
+        (
+            if self.look.brightness_own {
+                self.look.brightness
+            } else {
+                standard.brightness_value(dark)
+            },
+            if self.look.saturation_own {
+                self.look.saturation
+            } else {
+                standard.saturation_percent()
+            },
+        )
+    }
+
     /// The channel log's standard wallpaper while the channel follows it:
     /// inheriting, with a picture set there.
     fn inherited_standard(&self, cx: &App) -> Option<cayenchat_storage::RegionWallpaper> {
@@ -889,6 +940,18 @@ impl ChannelSettingsView {
     pub(crate) fn set_blur_value(&mut self, blur: u32, cx: &mut Context<Self>) {
         self.look.blur = blur.min(u32::from(MAX_WALLPAPER_BLUR)) as u8;
         self.look.blur_own = true;
+        self.edited(cx);
+    }
+
+    pub(crate) fn set_brightness(&mut self, brightness: i8, cx: &mut Context<Self>) {
+        self.look.brightness = clamp_wallpaper_brightness(brightness);
+        self.look.brightness_own = true;
+        self.edited(cx);
+    }
+
+    pub(crate) fn set_saturation(&mut self, saturation: u32, cx: &mut Context<Self>) {
+        self.look.saturation = saturation.min(u32::from(MAX_WALLPAPER_SATURATION)) as u8;
+        self.look.saturation_own = true;
         self.edited(cx);
     }
 
@@ -1153,6 +1216,8 @@ impl Render for ChannelSettingsView {
             ring,
         };
         let (shown_blur, shown_opacity) = self.shown_strengths(cx);
+        let (shown_brightness, shown_saturation) = self.shown_tone(cx);
+        let max_brightness = i32::from(MAX_WALLPAPER_BRIGHTNESS);
         let blur = Self::field(
             self.i18n.format(
                 "wallpaper_blur",
@@ -1169,6 +1234,42 @@ impl Render for ChannelSettingsView {
             colors,
             cx,
             |this, value, _, cx| this.set_blur_value(value, cx),
+        ));
+        let brightness = Self::field(
+            self.i18n.format(
+                "wallpaper_brightness",
+                &[("value", &format!("{shown_brightness:+}"))],
+            ),
+            &palette,
+        )
+        .child(slider::slider(
+            "channel-look-brightness",
+            (i32::from(shown_brightness) + max_brightness) as u32,
+            (2 * max_brightness) as u32,
+            &self.look.brightness_track,
+            &self.controls.brightness,
+            colors,
+            cx,
+            move |this, value, _, cx| {
+                this.set_brightness((value as i32 - max_brightness) as i8, cx)
+            },
+        ));
+        let saturation = Self::field(
+            self.i18n.format(
+                "wallpaper_saturation",
+                &[("value", &shown_saturation.to_string())],
+            ),
+            &palette,
+        )
+        .child(slider::slider(
+            "channel-look-saturation",
+            u32::from(shown_saturation),
+            u32::from(MAX_WALLPAPER_SATURATION),
+            &self.look.saturation_track,
+            &self.controls.saturation,
+            colors,
+            cx,
+            |this, value, _, cx| this.set_saturation(value, cx),
         ));
         // The same "strength" as the Appearance tab: the share of the picture,
         // the rest of the background color's opacity.
@@ -1219,6 +1320,8 @@ impl Render for ChannelSettingsView {
             .child(preview)
             .children(self.render_crop(&palette, ring, cx))
             .child(blur)
+            .child(brightness)
+            .child(saturation)
             .child(opacity)
             .child(fit);
 

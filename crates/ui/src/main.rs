@@ -8086,6 +8086,7 @@ impl ChatWindow {
                 let layers = channel_look::region_wallpaper(
                     &self.appearance.wallpapers(theme.dark).combined_log,
                     theme.panes.combined_log,
+                    theme.dark,
                 )
                 .1;
                 let filler = Self::log_tail_filler(
@@ -8211,8 +8212,11 @@ impl ChatWindow {
             cx,
         );
         let frame_slice = self.wallpapers.channel_log.slice(look.background);
-        let (request, background) =
-            channel_look::region_wallpaper(&standard.combined_log, theme.panes.combined_log);
+        let (request, background) = channel_look::region_wallpaper(
+            &standard.combined_log,
+            theme.panes.combined_log,
+            theme.dark,
+        );
         let combined_wallpaper = self.wallpapers.element(
             WallpaperRegion::CombinedLog,
             request.as_ref(),
@@ -8222,8 +8226,11 @@ impl ChatWindow {
             cx,
         );
         let combined_slice = self.wallpapers.combined_log.slice(background);
-        let (request, background) =
-            channel_look::region_wallpaper(&standard.member_list, theme.panes.member_list);
+        let (request, background) = channel_look::region_wallpaper(
+            &standard.member_list,
+            theme.panes.member_list,
+            theme.dark,
+        );
         let members_wallpaper = self.wallpapers.element(
             WallpaperRegion::MemberList,
             request.as_ref(),
@@ -8232,8 +8239,11 @@ impl ChatWindow {
             window,
             cx,
         );
-        let (request, background) =
-            channel_look::region_wallpaper(&standard.channel_tree, theme.panes.channel_tree);
+        let (request, background) = channel_look::region_wallpaper(
+            &standard.channel_tree,
+            theme.panes.channel_tree,
+            theme.dark,
+        );
         let tree_wallpaper = self.wallpapers.element(
             WallpaperRegion::ChannelTree,
             request.as_ref(),
@@ -10416,6 +10426,7 @@ impl ChatWindow {
         let layers = channel_look::region_wallpaper(
             &self.appearance.wallpapers(theme.dark).combined_log,
             theme.panes.combined_log,
+            theme.dark,
         )
         .1;
         style.slice = self.wallpapers.combined_log.slice(layers);
