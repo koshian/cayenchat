@@ -5,8 +5,7 @@ use super::ChatWindow;
 use crate::channel_settings_dialog::ChannelSettingsView;
 use cayenchat_model::names::CaseMapping;
 use cayenchat_storage::{
-    CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, TextEncoding, WallpaperFit,
-    WallpaperRegion,
+    CharRefMode, DEFAULT_WALLPAPER_BLUR, TextEncoding, WallpaperFit, WallpaperRegion,
 };
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
@@ -245,7 +244,7 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
     // removes the look.
     view.update_in(wcx, |view, window, cx| {
         view.set_blur(DEFAULT_WALLPAPER_BLUR, cx);
-        view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx);
+        view.set_opacity(50, cx);
         view.set_fit(WallpaperFit::default(), cx);
         view.save_now(window, cx);
         let look = view.look(cx).unwrap();
@@ -260,7 +259,7 @@ fn the_window_saves_the_log_look_and_rejects_a_bad_one(cx: &mut TestAppContext) 
             // standard wallpaper's.
             (
                 Some(DEFAULT_WALLPAPER_BLUR),
-                Some(DEFAULT_BACKGROUND_OPACITY),
+                Some(50),
                 Some(WallpaperFit::default())
             )
         );
@@ -562,11 +561,9 @@ fn an_edit_taken_back_before_the_save_restores_the_chat_window(cx: &mut TestAppC
     };
     view.update(wcx, |view, cx| view.set_opacity(60, cx));
     assert_eq!(shown(&chat, cx), Some(60));
-    view.update(wcx, |view, cx| {
-        view.set_opacity(DEFAULT_BACKGROUND_OPACITY.into(), cx)
-    });
+    view.update(wcx, |view, cx| view.set_opacity(50, cx));
     // Moved by hand to the default value: it is the channel's own now.
-    assert_eq!(shown(&chat, cx), Some(DEFAULT_BACKGROUND_OPACITY));
+    assert_eq!(shown(&chat, cx), Some(50));
     drop(file);
 }
 

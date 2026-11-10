@@ -4246,7 +4246,7 @@ background blur (#1018): none changes another's value or drawing.
   blur; measured as in `spec/performance.md`, "Wallpaper brightness and saturation".
 - **Range and defaults.** Brightness −100 to 100 (`i8`), saturation 0 to 200
   (`u8`, percent). Unset: brightness −40 in the dark theme and +40 in the
-  light one, saturation 80 in both. A value outside the range is capped when a
+  light one (changed in #1050, below), saturation 80 in both. A value outside the range is capped when a
   settings file is read (`clean`, as the blur is) and when it is used, and
   when a theme file (`.cayentheme`) is imported (the blur and opacity of a
   theme file are still refused when out of range).
@@ -4257,8 +4257,39 @@ background blur (#1018): none changes another's value or drawing.
   6.2, 7.2, 8.3. ±40 puts both above 4.5. Links and
   NOTICE stay below 4.5 at ±40 in that worst case (dark link 2.9, light 4.0);
   that is not a reason to default stronger. The saturation 80 is a feel, not a
-  computation, to be changed after trying it on real pictures. The opacity
-  default (50 %) is unchanged.
+  computation, to be changed after trying it on real pictures. (Dark: opacity
+  50 %, unchanged. The light defaults changed in #1050, below.)
+- **Light defaults (#1050).** The light theme showed the wallpaper as through
+  a white fog: with a white background, "toward white" and "the white
+  background laid over it" are the same computation, so brightness +40 and a
+  50 % overlay both pushed every channel to 70 % or more, and the old
+  per-channel formula pulled the channels together by `1 − b`. With the formula
+  above (luma lifted, differences kept) the light defaults are brightness
+  **+65**, saturation **130 %** and strength **100 %** (stored
+  `background_opacity` 0); dark stays −40, 80 %, strength 50 %. The saturation
+  and opacity defaults are now per theme (`default_wallpaper_saturation(dark)`,
+  `default_background_opacity(dark)`, as `default_wallpaper_brightness(dark)`
+  is). Terms: the screen's "strength" (濃さ) is the share the picture shows;
+  `background_opacity` is the opposite, the share of the background color laid
+  over it (the screen shows `100 − value`), so strength 100 % is
+  `background_opacity` 0. A channel's opacity is one value for both themes
+  (not a pair like the tone); unset it follows the standard wallpaper's when
+  that has a picture, else the default of the theme on show.
+  Contrast of the body text (#20262D) over the worst pixel under the light
+  defaults, which has luma exactly `g' = 0.65` (black): gray 6.3, and 5.9 as a
+  lower bound over any color of that luma (the lowest linear luminance
+  `0.2126 R + 0.7152 G + 0.0722 B` among colors with the same sRGB luma). By
+  brightness at strength 100 %, gray / bound: +40 2.7 / 2.5, +50 3.8 / 3.6,
+  **+65 6.3 / 5.9**, +70 7.2 / 6.8, +80 9.5 / 8.9. Above 4.5 at +65; colored
+  text (green events, blue links, NOTICE) over a colored picture can be lower
+  and is to be judged on a real device, where lowering the strength to 80–90 %
+  is the remedy. If the formula turns out wrong on real pictures, the formula
+  commit is reverted and the light defaults become strength 70 %, brightness
+  +50, saturation 130 % (the best the old formula can keep).
+- **Existing users (#1050).** Light-theme users with a wallpaper see it change
+  again after the update (fields absent read as the new defaults; accepted by
+  the maintainer, 2026-11-10), and anyone with brightness above 0 sees the new
+  formula whatever their values.
 - **Where it is stored.** The standard wallpapers (D089) hold `brightness` and
   `saturation` per area and per theme (`RegionWallpaper`), also in the
   `.cayentheme` wallpaper entries. A channel's look (`ChannelLook`) holds

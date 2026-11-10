@@ -7,9 +7,9 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 
 use cayenchat_media::{CancelFlag, wallpaper, wallpaper::Tone};
 use cayenchat_storage::{
-    ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR,
-    MAX_WALLPAPER_SATURATION, RegionWallpaper, WallpaperFit, WallpaperRegion,
-    clamp_wallpaper_brightness, color_value,
+    ChannelLook, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION,
+    RegionWallpaper, WallpaperFit, WallpaperRegion, clamp_wallpaper_brightness, color_value,
+    default_background_opacity,
 };
 use gpui::{prelude::*, *};
 
@@ -113,9 +113,9 @@ pub(crate) fn blur_of(look: &ChannelLook) -> u8 {
 }
 
 /// The percent of the log background's opacity a look holds, capped.
-pub(crate) fn background_opacity_of(look: &ChannelLook) -> u8 {
+pub(crate) fn background_opacity_of(look: &ChannelLook, dark: bool) -> u8 {
     look.background_opacity
-        .unwrap_or(DEFAULT_BACKGROUND_OPACITY)
+        .unwrap_or_else(|| default_background_opacity(dark))
         .min(100)
 }
 
@@ -135,12 +135,12 @@ pub(crate) fn region_wallpaper(
         path: path.clone(),
         blur: standard.blur_tenths(),
         brightness: standard.brightness_value(dark),
-        saturation: standard.saturation_percent(),
+        saturation: standard.saturation_percent(dark),
         fit: standard.fit.unwrap_or_default(),
     };
     (
         Some(request),
-        Layers::mixed(background, standard.opacity_percent()),
+        Layers::mixed(background, standard.opacity_percent(dark)),
     )
 }
 
@@ -186,10 +186,13 @@ pub(crate) fn resolve(
                 brightness: own_brightness(look, theme.dark)
                     .unwrap_or_else(|| base.brightness_value(theme.dark)),
                 saturation: own_saturation(look, theme.dark)
-                    .unwrap_or_else(|| base.saturation_percent()),
+                    .unwrap_or_else(|| base.saturation_percent(theme.dark)),
                 fit: look.wallpaper_fit.unwrap_or_default(),
             });
-            let background = Layers::mixed(theme.panes.channel_log, background_opacity_of(look));
+            let background = Layers::mixed(
+                theme.panes.channel_log,
+                background_opacity_of(look, theme.dark),
+            );
             (request, background)
         }
         _ => {
@@ -619,8 +622,8 @@ impl Drop for Wallpaper {
 mod tests {
     // Not `super::*`: GPUI's glob would shadow `#[test]`.
     use super::{
-        ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, Layers, RegionWallpaper,
-        Theme, WallpaperFit, region_wallpaper, resolve,
+        ChannelLook, DEFAULT_WALLPAPER_BLUR, Layers, RegionWallpaper, Theme, WallpaperFit,
+        default_background_opacity, region_wallpaper, resolve,
     };
     use cayenchat_storage::{Appearance, ThemeMode};
     use gpui::{Rgba, WindowAppearance, rgb};
@@ -707,17 +710,32 @@ mod tests {
     }
 
     #[test]
+    fn an_unset_opacity_is_the_default_of_the_theme_on_show() {
+        // Light shows the picture whole, dark under half the color.
+        for (dark, want) in [(false, 0.), (true, 0.5)] {
+            let base = theme(dark);
+            let plain = standard(Some("/std.png"), None);
+            assert_eq!(resolve(None, &plain, base).background.color.a, want);
+            let own = ChannelLook {
+                wallpaper: Some("/own.png".into()),
+                ..ChannelLook::default()
+            };
+            assert_eq!(resolve(Some(&own), &none(), base).background.color.a, want);
+        }
+    }
+
+    #[test]
     fn an_own_default_opacity_beats_a_weaker_standard_one() {
         let base = theme(false);
         let standard = standard(Some("/std.png"), Some(30));
         let inherited = resolve(None, &standard, base);
         assert!((inherited.background.color.a - 0.3).abs() < 1e-6);
         let own = ChannelLook {
-            background_opacity: Some(DEFAULT_BACKGROUND_OPACITY),
+            background_opacity: Some(default_background_opacity(true)),
             ..ChannelLook::default()
         };
         let resolved = resolve(Some(&own), &standard, base);
-        let want = f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.;
+        let want = f32::from(default_background_opacity(true)) / 100.;
         assert!((resolved.background.color.a - want).abs() < 1e-6);
     }
 
@@ -782,7 +800,7 @@ mod tests {
             );
             assert_eq!(
                 resolved.background.color.a,
-                f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
+                f32::from(default_background_opacity(dark)) / 100.
             );
             assert_eq!(wallpaper.blur, DEFAULT_WALLPAPER_BLUR);
             assert_eq!(wallpaper.fit, WallpaperFit::default());
@@ -828,7 +846,7 @@ mod tests {
             shown(Some(&own)),
             (
                 Some("/own.png".to_owned()),
-                f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
+                f32::from(default_background_opacity(false)) / 100.
             )
         );
         // No wallpaper beats the standard one, and the background is opaque.
@@ -853,7 +871,7 @@ mod tests {
         assert_eq!(request.unwrap().path, "/members.png");
         assert_eq!(
             background.color.a,
-            f32::from(DEFAULT_BACKGROUND_OPACITY) / 100.
+            f32::from(default_background_opacity(true)) / 100.
         );
     }
 
@@ -990,12 +1008,12 @@ mod tests {
             (request.brightness, request.saturation)
         };
         // Unset: the default of the theme on show.
-        for (dark, brightness) in [(true, -40), (false, 40)] {
+        for (dark, brightness, saturation) in [(true, -40, 80), (false, 65, 130)] {
             let base = theme(dark);
             let plain = standard(Some("/pic.png"), None);
             assert_eq!(
                 tone(resolve(None, &plain, base).wallpaper),
-                (brightness, 80)
+                (brightness, saturation)
             );
             // A channel's own picture over no standard one: the same.
             let own = ChannelLook {
@@ -1004,7 +1022,7 @@ mod tests {
             };
             assert_eq!(
                 tone(resolve(Some(&own), &none(), base).wallpaper),
-                (brightness, 80)
+                (brightness, saturation)
             );
         }
         // The standard's values are inherited, and the channel's win.
