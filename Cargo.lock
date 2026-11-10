@@ -982,6 +982,7 @@ dependencies = [
  "objc2-service-management",
  "raw-window-handle",
  "serde_json",
+ "sha2 0.10.9",
  "signal-hook",
  "sys-locale",
  "tempfile",

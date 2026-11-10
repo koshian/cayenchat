@@ -15,7 +15,6 @@
 //! slots' do.
 
 use std::{
-    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -280,9 +279,15 @@ impl CropState {
 /// The file name for the kept image: its content decides, so a different
 /// cut gets a different path and the wallpaper is loaded again.
 fn file_name(png: &[u8]) -> String {
-    let mut hasher = std::hash::DefaultHasher::new();
-    png.hash(&mut hasher);
-    format!("{FILE_PREFIX}{:016x}.png", hasher.finish())
+    format!("{FILE_PREFIX}{}.png", content_hex(png))
+}
+
+/// The SHA-256 of `bytes` in lower-case hex. Unlike `DefaultHasher` it is the
+/// same in every process, so the same content keeps the same file name after
+/// a restart, and a collision is not a practical concern.
+pub(crate) fn content_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Writes `png` into `directory` and returns its path.
@@ -297,7 +302,21 @@ pub(crate) fn keep(directory: &Path, png: &[u8]) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::keep;
+    use super::{content_hex, file_name, keep};
+
+    #[test]
+    fn names_follow_a_fixed_sha256_of_the_content() {
+        // SHA-256 test vectors: the name must not depend on the process.
+        assert_eq!(
+            content_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            file_name(b"abc"),
+            "wallpaper-ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad.png"
+        );
+        assert_ne!(file_name(b"abc"), file_name(b"abd"));
+    }
 
     #[test]
     fn kept_files_are_named_by_content_and_never_deleted() {
@@ -307,6 +326,7 @@ mod tests {
         let second = keep(&dir, b"two").unwrap();
         assert_ne!(first, second);
         assert_eq!(keep(&dir, b"one").unwrap(), first, "same cut, same file");
+        assert_eq!(first, dir.join(file_name(b"one")));
         // Choosing another range leaves the earlier file: another channel
         // (or the saved settings) may still use it.
         assert!(first.is_file() && second.is_file());

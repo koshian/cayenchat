@@ -43,6 +43,7 @@ cayenchat-upload.workspace = true
 cayenchat-media.workspace = true
 cayenchat-model.workspace = true
 cayenchat-storage = { path = "../storage" }
+sha2 = "0.10"
 gpui.workspace = true
 # Pixel buffers for GPUI's `RenderImage`; the same crate GPUI decodes with.
 image = { version = "0.25", default-features = false }
