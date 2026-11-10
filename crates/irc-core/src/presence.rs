@@ -46,7 +46,7 @@ pub(crate) struct PresenceIndex {
     by_nick: HashMap<String, UserId>,
     users: HashMap<UserId, Presence>,
     channels: HashMap<String, Members>,
-    /// How the server compares channel names; nicknames always use RFC 1459.
+    /// How the server compares names (`CASEMAPPING`), nicknames included.
     casemapping: CaseMapping,
 }
 
@@ -75,6 +75,18 @@ impl PresenceIndex {
             merged.users.extend(members.users);
         }
         self.channels = channels;
+        // Nicknames are keyed the same way. Two users the new mapping folds
+        // alike keep one entry (the lowest id); the server announces its
+        // mapping before anyone is seen, so this is empty in practice.
+        self.by_nick.clear();
+        let mut ids: Vec<UserId> = self.users.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            if let Some(presence) = self.users.get_mut(&id) {
+                presence.key = nickname_key(casemapping, &presence.nick);
+                self.by_nick.entry(presence.key.clone()).or_insert(id);
+            }
+        }
         for presence in self.users.values_mut() {
             let mut kept: Vec<Arc<str>> = Vec::new();
             for old in &presence.channels {
@@ -89,7 +101,9 @@ impl PresenceIndex {
     }
 
     pub(crate) fn user(&self, nickname: &str) -> Option<UserId> {
-        self.by_nick.get(&nickname_key(nickname)).copied()
+        self.by_nick
+            .get(&nickname_key(self.casemapping, nickname))
+            .copied()
     }
 
     /// Whether `nickname` is in `channel`.
@@ -199,7 +213,7 @@ impl PresenceIndex {
             if nickname.is_empty() {
                 continue;
             }
-            let key = nickname_key(nickname);
+            let key = nickname_key(self.casemapping, nickname);
             let id = match self.by_nick.get(&key) {
                 Some(id) => {
                     if let Some(presence) = self.users.get_mut(id)
@@ -258,10 +272,10 @@ impl PresenceIndex {
 
     /// `old` is now called `new`; the presence is the same.
     pub(crate) fn rename(&mut self, old: &str, new: &str) {
-        let Some(id) = self.by_nick.remove(&nickname_key(old)) else {
+        let Some(id) = self.by_nick.remove(&nickname_key(self.casemapping, old)) else {
             return;
         };
-        let key = nickname_key(new);
+        let key = nickname_key(self.casemapping, new);
         // A stale holder of the new name (it quit unseen) is another presence.
         // A case-only change maps to the same key and keeps this presence.
         if let Some(stale) = self.by_nick.remove(&key)
@@ -295,7 +309,9 @@ impl PresenceIndex {
 
     fn forget(&mut self, id: UserId) {
         if let Some(presence) = self.users.remove(&id) {
-            self.by_nick.remove(&presence.key);
+            if self.by_nick.get(&presence.key) == Some(&id) {
+                self.by_nick.remove(&presence.key);
+            }
             for channel in presence.channels {
                 if let Some(members) = self.channels.get_mut(&*channel) {
                     members.users.remove(&id);
@@ -390,6 +406,30 @@ mod tests {
         assert_eq!(index.channels_of("bob").len(), 1);
         assert!(!index.shares("bob", Some("#ROOM")));
         assert!(index.consistent());
+    }
+
+    #[test]
+    fn nicknames_follow_the_casemapping() {
+        let mut index = PresenceIndex::default();
+        index.replace_channel("#a", &names(&["me[m]", "bob"]));
+        // RFC 1459 until announced: the brace spelling is the same user.
+        let bracket = index.user("me[m]");
+        assert!(bracket.is_some());
+        assert_eq!(index.user("ME{M}"), bracket);
+        // Re-keyed under ASCII: only the spelling (and case) it has.
+        index.set_casemapping(CaseMapping::Ascii);
+        assert_eq!(index.user("ME[M]"), bracket);
+        assert!(index.user("me{m}").is_none());
+        index.quit("me[m]");
+        assert!(index.user("me[m]").is_none());
+        assert!(index.user("bob").is_some());
+        assert!(index.consistent());
+        // A fresh index under ASCII keeps them apart from the start.
+        let mut ascii = PresenceIndex::default();
+        ascii.set_casemapping(CaseMapping::Ascii);
+        ascii.replace_channel("#a", &names(&["me[m]", "me{m}"]));
+        assert_ne!(ascii.user("me[m]"), ascii.user("me{m}"));
+        assert!(ascii.consistent());
     }
 
     #[test]

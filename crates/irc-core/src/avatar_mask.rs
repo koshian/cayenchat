@@ -233,7 +233,7 @@ mod tests {
             "the nick counts"
         );
         assert_ne!(mask("bob", "carol", "a.example.org"), plain);
-        // RFC 1459 case mapping of the nickname.
+        // The network's case mapping of the nickname.
         assert_eq!(mask("a[b", "u", "h"), mask("A{B", "u", "h"));
         // Under ASCII, `[` and `{` are different letters.
         let ascii = |nick| AvatarMask::new(CaseMapping::Ascii, nick, "u", "h");

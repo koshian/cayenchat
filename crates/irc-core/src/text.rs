@@ -3,7 +3,7 @@
 
 use cayenchat_model::{
     display::{each_plain_char, is_formatting_code},
-    names,
+    names::CaseMapping,
 };
 use std::ops::Range;
 
@@ -42,12 +42,12 @@ pub fn action_text(text: &str) -> Option<&str> {
 /// Neighbouring nickname characters (letters, digits and `-_[]\`^{}|`) make
 /// it part of another word, so `bob` does not match `bobby`, while `@bob` and
 /// `bob:` match.
-pub fn mention_ranges(text: &str, nickname: &str) -> Vec<Range<usize>> {
+pub fn mention_ranges(mapping: CaseMapping, text: &str, nickname: &str) -> Vec<Range<usize>> {
     if nickname.is_empty() {
         return Vec::new();
     }
-    let lower = names::fold(text);
-    let nickname = names::fold(nickname);
+    let lower = mapping.fold(text);
+    let nickname = mapping.fold(nickname);
     lower
         .match_indices(&nickname)
         .map(|(start, found)| start..start + found.len())
@@ -59,19 +59,19 @@ pub fn mention_ranges(text: &str, nickname: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// Nickname equality under RFC 1459 case mapping ([`names::same`]).
-pub fn same_nickname(left: &str, right: &str) -> bool {
-    names::same(left, right)
+/// Nickname equality under the network's case mapping.
+pub fn same_nickname(mapping: CaseMapping, left: &str, right: &str) -> bool {
+    mapping.same(left, right)
 }
 
 fn is_nick_char(ch: char) -> bool {
     ch.is_alphanumeric() || "-_[]\\`^{}|".contains(ch)
 }
 
-/// A nickname folded for comparison (RFC 1459 case mapping), usable as a
-/// map key.
-pub fn nickname_key(nickname: &str) -> String {
-    names::fold(nickname)
+/// A nickname folded for comparison under the network's case mapping,
+/// usable as a map key.
+pub fn nickname_key(mapping: CaseMapping, nickname: &str) -> String {
+    mapping.fold(nickname)
 }
 
 #[cfg(test)]
@@ -80,7 +80,8 @@ mod tests {
 
     #[test]
     fn nickname_mentions_need_word_boundaries() {
-        let mentions = |text, nickname| !mention_ranges(text, nickname).is_empty();
+        let mentions =
+            |text, nickname| !mention_ranges(CaseMapping::Rfc1459, text, nickname).is_empty();
         assert!(mentions("bob: hi", "Bob"));
         assert!(mentions("hi, @bob!", "bob"));
         assert!(mentions("おはよう bob さん", "bob"));
@@ -88,8 +89,11 @@ mod tests {
         assert!(!mentions("bobby: hi", "bob"));
         assert!(!mentions("bob_: hi", "bob"));
         assert!(!mentions("anything", ""));
-        assert!(same_nickname("Nick[a]", "nick{A}"));
-        assert_eq!(mention_ranges("Bob, bobby and @bob", "bob"), [0..3, 16..19]);
+        assert!(same_nickname(CaseMapping::Rfc1459, "Nick[a]", "nick{A}"));
+        assert_eq!(
+            mention_ranges(CaseMapping::Rfc1459, "Bob, bobby and @bob", "bob"),
+            [0..3, 16..19]
+        );
     }
 
     #[test]
@@ -108,7 +112,9 @@ mod tests {
         // A colored nickname is a mention, and the range covers it in the
         // original text.
         let text = "\u{3}04,01bob\u{3}: héllo \u{2}bob\u{2}";
-        let ranges = plain_ranges(text, |plain| mention_ranges(plain, "bob"));
+        let ranges = plain_ranges(text, |plain| {
+            mention_ranges(CaseMapping::Rfc1459, plain, "bob")
+        });
         assert_eq!(ranges, [6..9, 20..23]);
         assert!(ranges.iter().all(|range| &text[range.clone()] == "bob"));
         // Empty ranges are dropped; a multibyte character maps whole.
