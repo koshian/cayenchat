@@ -1531,6 +1531,10 @@ impl PlatformWindow for X11Window {
         super::client::compositor_selection_owned(&self.0.xcb, root)
     }
 
+    fn supports_background_blur(&self) -> bool {
+        false
+    }
+
     fn window_decorations(&self) -> crate::Decorations {
         let state = self.0.state.borrow();
 

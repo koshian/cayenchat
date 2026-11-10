@@ -956,6 +956,10 @@ impl PlatformWindow for WaylandWindow {
         state.app_id = Some(app_id.to_owned());
     }
 
+    fn supports_background_blur(&self) -> bool {
+        self.borrow().globals.blur_manager.is_some()
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut state = self.borrow_mut();
         state.background_appearance = background_appearance;

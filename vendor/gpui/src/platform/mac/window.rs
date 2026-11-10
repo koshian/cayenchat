@@ -13,8 +13,8 @@ use cocoa::{
     appkit::{
         NSAppKitVersionNumber, NSAppKitVersionNumber12_0, NSApplication, NSBackingStoreBuffered,
         NSColor, NSEvent, NSEventModifierFlags, NSFilenamesPboardType, NSPasteboard, NSScreen,
-        NSView, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectMaterial,
-        NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowButton,
+        NSView, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowButton,
         NSWindowCollectionBehavior, NSWindowOcclusionState, NSWindowOrderingMode,
         NSWindowStyleMask, NSWindowTitleVisibility,
     },
@@ -90,6 +90,11 @@ pub enum UserTabbingPreference {
     Always,
     InFullScreen,
 }
+
+/// CayenChat #1018 trial: blur with `CGSSetWindowBackgroundBlurRadius` on every
+/// macOS instead of `BlurredView`. Set to `false` to return to `BlurredView`.
+const CGS_BLUR_ON_ALL_MACOS: bool = true;
+const CGS_TRIAL_BLUR_RADIUS: i64 = 20;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -391,6 +396,10 @@ struct MacWindowState {
     native_window: id,
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
+    /// CayenChat #1018: whether the window is `Blurred` now, and the CGS
+    /// radius used then.
+    background_blurred: bool,
+    blur_radius: i64,
     display_link: Option<DisplayLink>,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -710,6 +719,8 @@ impl MacWindow {
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
+                background_blurred: false,
+                blur_radius: CGS_TRIAL_BLUR_RADIUS,
                 display_link: None,
                 renderer: renderer::new_renderer(
                     renderer_context,
@@ -1276,6 +1287,28 @@ impl PlatformWindow for MacWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
+    fn supports_background_blur_radius(&self) -> bool {
+        CGS_BLUR_ON_ALL_MACOS
+    }
+
+    fn set_background_blur_radius(&self, radius: u32) {
+        if !CGS_BLUR_ON_ALL_MACOS {
+            return;
+        }
+        let mut this = self.0.as_ref().lock();
+        this.blur_radius = i64::from(radius);
+        if this.background_blurred {
+            unsafe {
+                let window_number = this.native_window.windowNumber();
+                CGSSetWindowBackgroundBlurRadius(
+                    CGSMainConnectionID(),
+                    window_number,
+                    this.blur_radius,
+                );
+            }
+        }
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
 
@@ -1292,16 +1325,28 @@ impl PlatformWindow for MacWindow {
             };
             this.native_window.setBackgroundColor_(background_color);
 
-            if NSAppKitVersionNumber < NSAppKitVersionNumber12_0 {
+            if CGS_BLUR_ON_ALL_MACOS || NSAppKitVersionNumber < NSAppKitVersionNumber12_0 {
                 // Whether `-[NSVisualEffectView respondsToSelector:@selector(_updateProxyLayer)]`.
                 // On macOS Catalina/Big Sur `NSVisualEffectView` doesn’t own concrete sublayers
                 // but uses a `CAProxyLayer`. Use the legacy WindowServer API.
-                let blur_radius = if background_appearance == WindowBackgroundAppearance::Blurred {
-                    80
+                //
+                // CayenChat #1018 (trial): the same API is used on every macOS with a
+                // fixed radius, to see whether a weak blur works on current macOS.
+                this.background_blurred =
+                    background_appearance == WindowBackgroundAppearance::Blurred;
+                let blur_radius = if this.background_blurred {
+                    if CGS_BLUR_ON_ALL_MACOS {
+                        this.blur_radius
+                    } else {
+                        80
+                    }
                 } else {
                     0
                 };
 
+                if let Some(blur_view) = this.blurred_view.take() {
+                    NSView::removeFromSuperview(blur_view);
+                }
                 let window_number = this.native_window.windowNumber();
                 CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number, blur_radius);
             } else {
@@ -2712,8 +2757,11 @@ extern "C" fn blurred_view_init_with_frame(this: &Object, _: Sel, frame: NSRect)
     unsafe {
         let view = msg_send![super(this, class!(NSVisualEffectView)), initWithFrame: frame];
         // Use a colorless semantic material. The default value `AppearanceBased`, though not
-        // manually set, is deprecated.
-        NSVisualEffectView::setMaterial_(view, NSVisualEffectMaterial::Selection);
+        // manually set, is deprecated. `Selection` has no `CABackdropLayer` on macOS 27, so
+        // stripping its tint (see `remove_layer_background`) leaves no blur at all;
+        // `UnderWindowBackground` keeps the backdrop layer. Blend behind the window explicitly.
+        NSVisualEffectView::setMaterial_(view, NSVisualEffectMaterial::UnderWindowBackground);
+        NSVisualEffectView::setBlendingMode_(view, NSVisualEffectBlendingMode::BehindWindow);
         NSVisualEffectView::setState_(view, NSVisualEffectState::Active);
         view
     }

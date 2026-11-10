@@ -305,3 +305,43 @@ mere window manager, so it is not used.) Without a compositor the X server
 composes a window's see-through pixels over black. CayenChat uses it to keep the
 window opaque in that case. To re-apply: add the trait method, the `Window`
 wrapper and the X11 override.
+
+In `src/platform.rs`, `src/window.rs`, `src/platform/linux/x11/window.rs` and
+`src/platform/linux/wayland/window.rs`, `Window::supports_background_blur`
+tells whether `WindowBackgroundAppearance::Blurred` blurs what lies behind the
+window (CayenChat #1018). The new `PlatformWindow::supports_background_blur`
+defaults to `true` (macOS, Windows); X11 answers `false`; Wayland answers
+whether the KDE blur manager global was bound. CayenChat uses it to disable
+its background blur switch. To re-apply: add the trait method, the `Window`
+wrapper and the two Linux overrides.
+
+In `src/platform/mac/window.rs`, `blurred_view_init_with_frame` uses
+`NSVisualEffectMaterial::UnderWindowBackground` with
+`NSVisualEffectBlendingMode::BehindWindow` instead of `Selection` (CayenChat
+#1018; upstream Zed commit `90d8514`, PR 65361). On macOS 27 the `Selection`
+material has no `CABackdropLayer`, so `remove_layer_background` stripping its
+tint left a transparent window with no blur. `remove_layer_background` stays.
+To re-apply: swap the material and add the `setBlendingMode_` call (import
+`NSVisualEffectBlendingMode`). Not buildable on Linux; check on macOS.
+
+In `src/platform/mac/window.rs`, `set_background_appearance` blurs with the
+private `CGSSetWindowBackgroundBlurRadius` at a fixed radius of 20 on every
+macOS and removes any `BlurredView` (CayenChat #1018, trial step 1: the
+`NSVisualEffectView` blur was too strong). Off passes radius 0. The constants
+`CGS_BLUR_ON_ALL_MACOS` (set `false` to return to `BlurredView`) and
+`CGS_TRIAL_BLUR_RADIUS` control it. To re-apply: add the two constants and the
+`CGS_BLUR_ON_ALL_MACOS ||` condition, the radius choice and the
+`blurred_view.take()` removal in the first branch. Not buildable on Linux;
+check on macOS.
+
+In `src/platform.rs`, `src/window.rs` and `src/platform/mac/window.rs`,
+`Window::supports_background_blur_radius` and
+`Window::set_background_blur_radius(u32)` choose the strength of the
+`Blurred` background (CayenChat #1018, step 2). The `PlatformWindow` defaults
+are `false` and a no-op; macOS answers `CGS_BLUR_ON_ALL_MACOS`, keeps the
+radius in `blur_radius` (with `background_blurred`) and re-applies it with
+`CGSSetWindowBackgroundBlurRadius` at once while blurred;
+`set_background_appearance` uses that radius instead of the fixed
+`CGS_TRIAL_BLUR_RADIUS`, which is now only the initial value. To re-apply: add
+the two trait methods, the two `Window` wrappers, the two state fields and the
+macOS overrides. Not buildable on Linux; check on macOS.

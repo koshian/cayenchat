@@ -1800,6 +1800,24 @@ impl Window {
         self.platform_window.is_compositing()
     }
 
+    /// Returns whether `WindowBackgroundAppearance::Blurred` blurs what lies
+    /// behind the window on this platform (CayenChat #1018).
+    pub fn supports_background_blur(&self) -> bool {
+        self.platform_window.supports_background_blur()
+    }
+
+    /// Returns whether the blur strength can be set with
+    /// [`Self::set_background_blur_radius`] (CayenChat #1018).
+    pub fn supports_background_blur_radius(&self) -> bool {
+        self.platform_window.supports_background_blur_radius()
+    }
+
+    /// Sets the radius of the `Blurred` background (CayenChat #1018); a
+    /// no-op where [`Self::supports_background_blur_radius`] is false.
+    pub fn set_background_blur_radius(&self, radius: u32) {
+        self.platform_window.set_background_blur_radius(radius);
+    }
+
     /// Returns which window controls are currently visible (Wayland)
     pub fn window_controls(&self) -> WindowControls {
         self.platform_window.window_controls()

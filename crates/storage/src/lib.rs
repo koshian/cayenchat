@@ -736,6 +736,16 @@ pub struct Appearance {
     pub channel_tree_opacity: u8,
     pub channel_log_opacity: u8,
     pub combined_log_opacity: u8,
+    /// Blur what the desktop shows through the see-through panes (#1018).
+    /// The platform blurs the whole window with a strength of its own, so
+    /// this is one switch, not one per pane; it takes effect only while a
+    /// pane is below 100 % and the platform can blur. Off by default and for
+    /// files without it. Added after version 15 without a version change.
+    pub background_blur: bool,
+    /// Strength of that blur as a blur radius (`MIN_BACKGROUND_BLUR_RADIUS`
+    /// to `MAX_BACKGROUND_BLUR_RADIUS`), used only where the platform lets
+    /// the app choose it (macOS). Kept while the blur is off.
+    pub background_blur_radius: u8,
     pub alternate_rows: bool,
     /// Inline thumbnails of direct image links in the channel log
     /// (version 14). Off by default, also for settings saved before it existed.
@@ -842,6 +852,12 @@ pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
 /// Least opacity of a pane background, in percent; below it the text would
 /// be hard to read.
 pub const MIN_PANE_OPACITY: u8 = 10;
+
+/// Range and default of the background blur radius (#1018). A radius of 20
+/// was still too strong on macOS 27.2, so the default is lower.
+pub const MIN_BACKGROUND_BLUR_RADIUS: u8 = 1;
+pub const MAX_BACKGROUND_BLUR_RADIUS: u8 = 80;
+pub const DEFAULT_BACKGROUND_BLUR_RADIUS: u8 = 6;
 
 /// Range of a pane font size in px. 0 means "standard size" and is kept as
 /// is; any other value is clamped into the range on load and on use.
@@ -1075,6 +1091,8 @@ impl Default for Appearance {
             channel_tree_opacity: 100,
             channel_log_opacity: 100,
             combined_log_opacity: 100,
+            background_blur: false,
+            background_blur_radius: DEFAULT_BACKGROUND_BLUR_RADIUS,
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
@@ -1298,6 +1316,13 @@ impl Appearance {
         if !(MIN_URL_TOOLTIP_OPACITY..=100).contains(&self.url_tooltip_opacity) {
             return Err(format!(
                 "URL tooltip opacity must be {MIN_URL_TOOLTIP_OPACITY} to 100."
+            ));
+        }
+        if !(MIN_BACKGROUND_BLUR_RADIUS..=MAX_BACKGROUND_BLUR_RADIUS)
+            .contains(&self.background_blur_radius)
+        {
+            return Err(format!(
+                "Background blur radius must be {MIN_BACKGROUND_BLUR_RADIUS} to {MAX_BACKGROUND_BLUR_RADIUS}."
             ));
         }
         for (label, percent) in [
@@ -4165,6 +4190,33 @@ mod tests {
         let mut settings = load_from(&path).unwrap().unwrap();
         assert!(!settings.appearance.compact_urls);
         settings.appearance.compact_urls = true;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn background_blur_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.background_blur);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        assert!(
+            old["appearance"]
+                .as_object_mut()
+                .unwrap()
+                .remove("background_blur")
+                .is_some()
+        );
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.background_blur);
+        assert_eq!(
+            settings.appearance.background_blur_radius,
+            DEFAULT_BACKGROUND_BLUR_RADIUS
+        );
+        settings.appearance.background_blur = true;
+        settings.appearance.background_blur_radius = 33;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }

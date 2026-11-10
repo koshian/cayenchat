@@ -4157,3 +4157,57 @@ otherwise be sent the old host's passwords.
 - **Accepted limitation.** If some of the entries were deleted before another
   one failed, the notes are not changed; the entries that are gone are
   reported missing at the next connection, as after any outside change.
+
+## D091 — Background blur is one window-wide switch (#1018)
+
+The issue asked for a blur strength slider per pane. GPUI cannot do that: its
+only background blur is `WindowBackgroundAppearance::Blurred`, a window-wide
+on/off with a strength the OS fixes (macOS `NSVisualEffectView`, Windows
+acrylic, Wayland through the KDE blur protocol; X11 has none). A per-pane or
+variable blur would need a desktop capture or a CPU blur on every frame, which
+the issue rules out. The maintainer chose the switch (issue comments).
+
+- **Setting.** `Appearance::background_blur`, default off, one value for both
+  themes, in the Appearance tab under the opacity sliders. Files without it
+  read as off.
+- **When it acts.** `ChatWindow::render` asks for `Blurred` instead of
+  `Transparent` when a pane is below 100 % (a pane with a wallpaper counts, as
+  the opacity covers the composed wallpaper and color), the window composites,
+  the switch is on and `Window::supports_background_blur` is true. Otherwise
+  the appearance is `Transparent` or `Opaque` as before; no blur adds nothing
+  to the frame.
+- **Scope.** The blur covers the whole window: the gaps between panes and any
+  see-through part outside the panes blur too. Text, icons and controls are
+  not blurred. The wallpaper image itself is not blurred (that is #950).
+- **Unsupported platforms.** `supports_background_blur` (gpui patch) is
+  false on X11 and on Wayland without the KDE blur manager. The switch is then
+  disabled with the reason; the stored value is kept.
+- **Not verifiable under Xvfb.** The effect on macOS and Windows depends on
+  the OS and needs a person with that machine.
+- **macOS 27.** The bundled GPUI's `BlurredView` used the `Selection`
+  material, which has no backdrop layer on macOS 27; with its tint stripped
+  nothing was blurred (maintainer report on 27.2). The gpui patch uses
+  `UnderWindowBackground` with the behind-window blending mode, as upstream
+  Zed does (`vendor/gpui/PATCHES.md`).
+- **macOS trial (strength).** The `UnderWindowBackground` blur was too strong
+  on 27.2 (maintainer report). Step 1 is a trial build: on every macOS the
+  gpui patch calls the private `CGSSetWindowBackgroundBlurRadius` with a fixed
+  radius of 20 and no `BlurredView`; off passes 0. Whether it works on current
+  macOS, survives repeated on/off (a radius of 0 is reported to disable the
+  blur for good) and keeps the shadow and tint is unverified. A strength
+  slider (window-wide, macOS only) follows only if the trial holds. The API
+  is private and may break in a future macOS; the way back is
+  `CGS_BLUR_ON_ALL_MACOS = false`, which restores `BlurredView`
+  (`vendor/gpui/PATCHES.md`).
+- **macOS strength slider.** The trial held on 27.2 (switching on and off,
+  wallpaper and shadow were fine) but a radius of 20 was still too strong, so
+  the strength is now set by `Appearance::background_blur_radius` (1–80,
+  default 6, kept while the blur is off, files without it read as 6). The
+  Appearance tab shows a "blur strength" slider with the radius beside the
+  switch only where `Window::supports_background_blur_radius` is true (macOS,
+  gpui patch). On Windows and KDE Wayland the OS fixes the strength, so no
+  slider is shown and the hint says so. `ChatWindow::render` gives the radius
+  to the window with `Window::set_background_blur_radius` when it changes,
+  before the appearance, and the macOS window re-applies it at once while
+  blurred. The slider is window-wide, not per pane, and independent of the
+  panes' opacity, the wallpaper share and the wallpaper blur (#950).
