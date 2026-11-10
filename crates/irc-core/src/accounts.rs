@@ -107,7 +107,7 @@ impl Accounts {
     /// keys already kept were made with the old one, so what depends on them
     /// is dropped; the server announces its mapping before channels are
     /// joined, so this is empty in practice.
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+    pub(crate) fn rekey(&mut self, casemapping: CaseMapping) {
         if self.casemapping != casemapping {
             self.casemapping = casemapping;
             self.users.clear();

@@ -3609,9 +3609,13 @@ impl Worker {
                 )))
                 .await;
         }
-        let handled = self
-            .ctcp
-            .request(nick, tag, args, tokio::time::Instant::now());
+        let handled = self.ctcp.request(
+            self.casemapping,
+            nick,
+            tag,
+            args,
+            tokio::time::Instant::now(),
+        );
         self.send_commands(handled.send).await?;
         self.emit_all(handled.events).await
     }
@@ -3785,7 +3789,7 @@ impl Worker {
     ) -> Flow {
         let queued = if self.registered && self.history_enabled {
             self.history
-                .enqueue_older(&channel, request, &reference, limit)
+                .enqueue_older(self.casemapping, &channel, request, &reference, limit)
         } else {
             Err(history::Finished::failed_older(channel, request))
         };
@@ -4028,17 +4032,11 @@ impl Worker {
             && announced != self.casemapping
         {
             self.casemapping = announced;
-            self.charsets.set_casemapping(announced);
-            self.metadata.set_casemapping(announced);
-            self.roster.presence.set_casemapping(announced);
-            self.history.set_casemapping(announced);
-            self.accounts.set_casemapping(announced);
-            self.ctcp.set_casemapping(announced);
-            if let Some(peers) = self.peers.as_mut() {
-                peers.set_casemapping(announced);
-            }
-            self.channel_modes.set_casemapping(announced);
-            self.regain.set_casemapping(announced);
+            self.charsets.rekey(announced);
+            self.roster.presence.rekey(announced);
+            self.accounts.rekey(announced);
+            self.channel_modes.rekey(announced);
+            self.regain.rekey(announced);
             self.emit(Event::CaseMapping(announced)).await?;
         }
         ControlFlow::Continue(history_started)
@@ -4098,7 +4096,7 @@ impl Worker {
         // already joined get their history too.
         if history_started && self.registered {
             for channel in self.client.list_channels().unwrap_or_default() {
-                if let Some(note) = self.history.enqueue(&channel) {
+                if let Some(note) = self.history.enqueue(self.casemapping, &channel) {
                     self.note(note).await;
                 }
             }
@@ -4113,7 +4111,10 @@ impl Worker {
         // them is live traffic.
         if self.history_enabled {
             let server_time = self.negotiation.enabled(cap::SERVER_TIME);
-            match self.history.observe_with(message, server_time) {
+            match self
+                .history
+                .observe_with(message, self.casemapping, server_time)
+            {
                 history::Observed::Unrelated => {}
                 history::Observed::Consumed => return ControlFlow::Continue(true),
                 history::Observed::Message(streamed) => {
@@ -4183,6 +4184,7 @@ impl Worker {
         if self.metadata_enabled {
             let handled = self.metadata.observe(
                 message,
+                self.casemapping,
                 tokio::time::Instant::now(),
                 &self.current_nick,
                 |channel| is_joined(&self.client, self.casemapping, channel),
@@ -4201,8 +4203,12 @@ impl Worker {
         // a history batch.
         if !self.replay.in_history_batch(message)
             && let Some(peers) = self.peers.as_mut()
-            && let Some(event) =
-                peers.remembered_who(message, &self.current_nick, &self.roster.presence)
+            && let Some(event) = peers.remembered_who(
+                message,
+                self.casemapping,
+                &self.current_nick,
+                &self.roster.presence,
+            )
         {
             self.emit(event).await?;
         }
@@ -4211,6 +4217,7 @@ impl Worker {
         if let Some(peers) = self.peers.as_mut()
             && let Some(handled) = peers.observe(
                 message,
+                self.casemapping,
                 &self.current_nick,
                 &self.roster.presence,
                 replayed,
@@ -4228,6 +4235,7 @@ impl Worker {
         // readable server line, answered when asked.
         if let Some(handled) = self.ctcp.observe(
             message,
+            self.casemapping,
             &self.current_nick,
             replayed,
             tokio::time::Instant::now(),
@@ -4253,10 +4261,14 @@ impl Worker {
             .peers
             .as_mut()
             .map(|peers| {
-                let mut events =
-                    peers.lifecycle(&message, &self.roster.presence, &self.current_nick);
+                let mut events = peers.lifecycle(
+                    &message,
+                    self.casemapping,
+                    &self.roster.presence,
+                    &self.current_nick,
+                );
                 if !replayed {
-                    events.extend(peers.joined(&message, &self.current_nick));
+                    events.extend(peers.joined(&message, self.casemapping, &self.current_nick));
                 }
                 events
             })
@@ -4282,7 +4294,7 @@ impl Worker {
                 _ => None,
             };
             if let Some(channel) = left {
-                self.metadata.forget_channel(channel);
+                self.metadata.forget_channel(self.casemapping, channel);
             }
             let handled = self.metadata.lifecycle(
                 &message,
@@ -4363,6 +4375,7 @@ impl Worker {
                         Some(peers) => (
                             speaker_identity.as_ref().and_then(|(user, host)| {
                                 peers.remembered(
+                                    self.casemapping,
                                     sender,
                                     user,
                                     host,
@@ -4563,12 +4576,12 @@ impl Worker {
         if self.history_enabled && self.is_own_source(message) {
             match &message.command {
                 IrcCommand::JOIN(channel, _, _) => {
-                    if let Some(note) = self.history.enqueue(channel) {
+                    if let Some(note) = self.history.enqueue(self.casemapping, channel) {
                         self.note(note).await;
                     }
                 }
                 IrcCommand::PART(channel, _) => {
-                    for finished in self.history.forget(channel) {
+                    for finished in self.history.forget(self.casemapping, channel) {
                         self.finish_history(finished).await?;
                     }
                 }
@@ -4578,7 +4591,7 @@ impl Worker {
         if let IrcCommand::KICK(channel, nickname, _) = &message.command
             && self.is_own_nick(nickname)
         {
-            for finished in self.history.forget(channel) {
+            for finished in self.history.forget(self.casemapping, channel) {
                 self.finish_history(finished).await?;
             }
         }

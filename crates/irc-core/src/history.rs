@@ -297,8 +297,6 @@ pub(crate) struct HistoryRequests {
     abandoned: VecDeque<String>,
     /// A late reply being swallowed, and its nested batches.
     discarding: Vec<String>,
-    /// How the server compares channel names.
-    casemapping: CaseMapping,
     /// The connection's encoding when it is not UTF-8: a server that folds
     /// the bytes of a name in that encoding returns a target that the
     /// decoded name only matches through the same bytes.
@@ -306,11 +304,6 @@ pub(crate) struct HistoryRequests {
 }
 
 impl HistoryRequests {
-    /// Compares the channels of requests with `casemapping` from now on.
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
-    }
-
     /// Reads the connection's encoding (a WHATWG label); UTF-8 and unknown
     /// labels need no wire-side comparison.
     pub(crate) fn with_wire_encoding(mut self, label: &str) -> Self {
@@ -328,7 +321,7 @@ impl HistoryRequests {
     /// byte and decoded again, which gives the same text for the same
     /// bytes. Only for names that are not ASCII, where the plain
     /// comparison cannot apply.
-    fn same_on_wire(&self, channel: &str, target: &str) -> bool {
+    fn same_on_wire(&self, mapping: CaseMapping, channel: &str, target: &str) -> bool {
         let Some(encoding) = self.wire else {
             return false;
         };
@@ -341,23 +334,21 @@ impl HistoryRequests {
         }
         // Letters only, or the connection's mapping with `[]\~` too: the
         // server's own folding is not known for bytes of the encoding.
-        [CaseMapping::Ascii, self.casemapping]
-            .into_iter()
-            .any(|mapping| {
-                let folded: Vec<u8> = bytes
-                    .iter()
-                    .map(|&byte| match byte {
-                        0x00..=0x7f => mapping.fold_char(char::from(byte)) as u8,
-                        _ => byte,
-                    })
-                    .collect();
-                encoding.decode_without_bom_handling(&folded).0 == target
-            })
+        [CaseMapping::Ascii, mapping].into_iter().any(|mapping| {
+            let folded: Vec<u8> = bytes
+                .iter()
+                .map(|&byte| match byte {
+                    0x00..=0x7f => mapping.fold_char(char::from(byte)) as u8,
+                    _ => byte,
+                })
+                .collect();
+            encoding.decode_without_bom_handling(&folded).0 == target
+        })
     }
 
     /// Whether `target` of a reply's `BATCH` line names `channel`.
-    fn names(&self, channel: &str, target: &str) -> bool {
-        self.casemapping.same(channel, target) || self.same_on_wire(channel, target)
+    fn names(&self, mapping: CaseMapping, channel: &str, target: &str) -> bool {
+        mapping.same(channel, target) || self.same_on_wire(mapping, channel, target)
     }
 
     /// Requests for a connection that resumes `resume` (at most
@@ -433,8 +424,7 @@ impl HistoryRequests {
     /// the server accepts one of its reference types; otherwise, and on
     /// later joins, for the latest lines. Returns a note when the queue is
     /// full.
-    pub(crate) fn enqueue(&mut self, channel: &str) -> Option<String> {
-        let mapping = self.casemapping;
+    pub(crate) fn enqueue(&mut self, mapping: CaseMapping, channel: &str) -> Option<String> {
         let latest = |name: &str, page: &Page| {
             matches!(page, Page::Latest | Page::Resume) && mapping.same(name, channel)
         };
@@ -547,6 +537,7 @@ impl HistoryRequests {
     /// be queued ends at once.
     pub(crate) fn enqueue_older(
         &mut self,
+        mapping: CaseMapping,
         channel: &str,
         request: u64,
         reference: &MessageReference,
@@ -559,7 +550,6 @@ impl HistoryRequests {
                 "Older history for {channel} was not requested: the server accepts no reference this client has."
             )));
         };
-        let mapping = self.casemapping;
         let older = |name: &str, page: &Page| {
             matches!(page, Page::Before { .. }) && mapping.same(name, channel)
         };
@@ -592,9 +582,8 @@ impl HistoryRequests {
 
     /// Drops queued requests for a channel we left. Older-page requests
     /// among them end as failures.
-    pub(crate) fn forget(&mut self, channel: &str) -> Vec<Finished> {
+    pub(crate) fn forget(&mut self, mapping: CaseMapping, channel: &str) -> Vec<Finished> {
         let mut ended = Vec::new();
-        let mapping = self.casemapping;
         self.queue.retain(|queued| {
             if !mapping.same(&queued.channel, channel) {
                 return true;
@@ -722,7 +711,6 @@ impl HistoryRequests {
         *self = Self {
             server_limit: self.server_limit,
             reference_types: self.reference_types,
-            casemapping: self.casemapping,
             wire: self.wire,
             resume: std::mem::take(&mut self.resume),
             ..Self::default()
@@ -733,13 +721,18 @@ impl HistoryRequests {
     /// `observe_with` for a connection that negotiated `server-time`.
     #[cfg(test)]
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
-        self.observe_with(message, true)
+        self.observe_with(message, CaseMapping::default(), true)
     }
 
     /// `server_time` is whether `server-time` is enabled on this
     /// connection: only then is a reply line's `time` tag trusted, as for
     /// live lines.
-    pub(crate) fn observe_with(&mut self, message: &IrcMessage, server_time: bool) -> Observed {
+    pub(crate) fn observe_with(
+        &mut self,
+        message: &IrcMessage,
+        mapping: CaseMapping,
+        server_time: bool,
+    ) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
         // Past the nesting limit the reply's deeper batches are not tracked:
         // swallow every line (BATCH open and close included) that hangs off
@@ -765,6 +758,7 @@ impl HistoryRequests {
         }
         if let IrcCommand::BATCH(reference, kind, params) = &message.command {
             return self.observe_batch(
+                mapping,
                 reference,
                 kind.as_ref().map(|k| k.to_str()),
                 params,
@@ -777,7 +771,6 @@ impl HistoryRequests {
         {
             return Observed::Consumed;
         }
-        let mapping = self.casemapping;
         let Some(outstanding) = self.outstanding.as_mut() else {
             return Observed::Unrelated;
         };
@@ -826,6 +819,7 @@ impl HistoryRequests {
 
     fn observe_batch(
         &mut self,
+        mapping: CaseMapping,
         reference: &str,
         kind: Option<&str>,
         params: &Option<Vec<String>>,
@@ -860,7 +854,7 @@ impl HistoryRequests {
                 // joined channel; the caller sends them one at a time.
                 let peers = Self::direct_targets(&outstanding.targets);
                 for peer in &peers {
-                    if let Some(full) = self.enqueue(peer) {
+                    if let Some(full) = self.enqueue(mapping, peer) {
                         note = Some(full);
                         break;
                     }
@@ -933,7 +927,7 @@ impl HistoryRequests {
         if self
             .outstanding
             .as_ref()
-            .is_some_and(|o| o.reference.is_none() && self.names(&o.channel, target))
+            .is_some_and(|o| o.reference.is_none() && self.names(mapping, &o.channel, target))
         {
             let outstanding = self.outstanding.as_mut().expect("outstanding request");
             outstanding.reference = Some(reference.to_owned());
@@ -943,7 +937,7 @@ impl HistoryRequests {
         if let Some(index) = self
             .abandoned
             .iter()
-            .position(|channel| self.names(channel, target))
+            .position(|channel| self.names(mapping, channel, target))
         {
             self.abandoned.remove(index);
             self.discarding.push(reference.to_owned());
@@ -1095,9 +1089,8 @@ mod tests {
     fn channels_are_deduplicated_under_the_servers_case_mapping() {
         let queued = |mapping| {
             let mut requests = HistoryRequests::default();
-            requests.set_casemapping(mapping);
-            requests.enqueue("#foo[1]");
-            requests.enqueue("#FOO{1}");
+            requests.enqueue(mapping, "#foo[1]");
+            requests.enqueue(mapping, "#FOO{1}");
             requests.queue.len()
         };
         assert_eq!(queued(CaseMapping::Rfc1459), 1);
@@ -1130,13 +1123,16 @@ mod tests {
         let now = Instant::now();
         assert!(requests.next_deadline().is_none(), "idle: no timer");
         for channel in ["#a", "#b", "#A"] {
-            assert!(requests.enqueue(channel).is_none());
+            assert!(requests.enqueue(CaseMapping::default(), channel).is_none());
         }
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY LATEST #a * 30")
         );
-        assert!(requests.enqueue("#a").is_none(), "being answered");
+        assert!(
+            requests.enqueue(CaseMapping::default(), "#a").is_none(),
+            "being answered"
+        );
         assert!(sent(&mut requests, now).is_none(), "one at a time");
         assert_eq!(requests.next_deadline(), Some(now + RESPONSE_TIMEOUT));
         let finished = feed(
@@ -1185,7 +1181,7 @@ mod tests {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
         for channel in ["#empty", "#fail", "#old"] {
-            requests.enqueue(channel);
+            requests.enqueue(CaseMapping::default(), channel);
         }
         sent(&mut requests, now);
         let observed = feed(
@@ -1218,7 +1214,7 @@ mod tests {
             matches!(&observed[0], Observed::Finished(Finished { channel, note: Some(_), .. }) if channel == "#old")
         );
         // Other failures are not ours.
-        requests.enqueue("#x");
+        requests.enqueue(CaseMapping::default(), "#x");
         sent(&mut requests, now);
         assert_eq!(
             feed(&mut requests, &[":srv FAIL METADATA KEY_INVALID x :bad"])[0],
@@ -1230,7 +1226,7 @@ mod tests {
     fn live_lines_playback_and_other_batches_are_not_consumed() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         let observed = feed(
             &mut requests,
@@ -1279,7 +1275,7 @@ mod tests {
     fn nested_batches_and_non_message_lines_stay_inside_the_reply() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         let observed = feed(
             &mut requests,
@@ -1317,7 +1313,7 @@ mod tests {
     fn over_nested_history_reply_stays_out_of_the_live_path() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         assert_eq!(
             requests.observe(&parse(":srv BATCH +r chathistory #a")),
@@ -1370,8 +1366,8 @@ mod tests {
     /// Starts a reply for `#a` (with `#b` queued behind it) and nests batches
     /// until the tracking bound is exceeded; returns the innermost reference.
     fn overflowing_reply(requests: &mut HistoryRequests, now: Instant) -> String {
-        requests.enqueue("#a");
-        requests.enqueue("#b");
+        requests.enqueue(CaseMapping::default(), "#a");
+        requests.enqueue(CaseMapping::default(), "#b");
         sent(requests, now);
         assert_eq!(
             requests.observe(&parse(":srv BATCH +r chathistory #a")),
@@ -1437,8 +1433,8 @@ mod tests {
         for depth in [MAX_NESTED, MAX_NESTED + 1] {
             let mut requests = HistoryRequests::default();
             let now = Instant::now();
-            requests.enqueue("#a");
-            requests.enqueue("#b");
+            requests.enqueue(CaseMapping::default(), "#a");
+            requests.enqueue(CaseMapping::default(), "#b");
             sent(&mut requests, now);
 
             assert_eq!(
@@ -1488,7 +1484,7 @@ mod tests {
     fn replies_are_bounded_and_unended_batches_keep_the_lines_shown() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         requests.observe(&parse(":srv BATCH +r chathistory #a"));
         let mut shown = 0;
@@ -1510,7 +1506,7 @@ mod tests {
 
         // A reply that never ends has shown its lines already; the timeout
         // ends the request as a failure with a note, once.
-        requests.enqueue("#b");
+        requests.enqueue(CaseMapping::default(), "#b");
         sent(&mut requests, now);
         requests.observe(&parse(":srv BATCH +s chathistory #b"));
         assert!(matches!(
@@ -1537,8 +1533,8 @@ mod tests {
     fn late_replies_to_abandoned_requests_are_swallowed() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#slow");
-        requests.enqueue("#next");
+        requests.enqueue(CaseMapping::default(), "#slow");
+        requests.enqueue(CaseMapping::default(), "#next");
         sent(&mut requests, now);
         assert!(requests.tick(now + RESPONSE_TIMEOUT).is_some());
         sent(&mut requests, now + RESPONSE_TIMEOUT);
@@ -1562,7 +1558,7 @@ mod tests {
     fn the_rest_of_a_started_reply_is_swallowed_after_the_timeout() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#slow");
+        requests.enqueue(CaseMapping::default(), "#slow");
         sent(&mut requests, now);
         let before = feed(
             &mut requests,
@@ -1591,8 +1587,8 @@ mod tests {
     fn reset_drops_the_queue_and_reports_the_outstanding_request() {
         let mut requests = HistoryRequests::default();
         requests.isupport(&parse(":srv 005 me CHATHISTORY=10 :are supported"));
-        requests.enqueue("#a");
-        requests.enqueue("#b");
+        requests.enqueue(CaseMapping::default(), "#a");
+        requests.enqueue(CaseMapping::default(), "#b");
         sent(&mut requests, Instant::now());
         let ended = requests.reset();
         assert_eq!(ended.len(), 1);
@@ -1605,8 +1601,8 @@ mod tests {
             requests.observe(&parse(":srv BATCH +r chathistory #a")),
             Observed::Unrelated
         );
-        requests.enqueue("#c");
-        requests.forget("#C");
+        requests.enqueue(CaseMapping::default(), "#c");
+        requests.forget(CaseMapping::default(), "#C");
         assert!(requests.next_request(Instant::now()).is_none());
     }
 
@@ -1614,9 +1610,17 @@ mod tests {
     fn the_queue_is_bounded() {
         let mut requests = HistoryRequests::default();
         for index in 0..MAX_QUEUED {
-            assert!(requests.enqueue(&format!("#c{index}")).is_none());
+            assert!(
+                requests
+                    .enqueue(CaseMapping::default(), &format!("#c{index}"))
+                    .is_none()
+            );
         }
-        assert!(requests.enqueue("#overflow").is_some());
+        assert!(
+            requests
+                .enqueue(CaseMapping::default(), "#overflow")
+                .is_some()
+        );
         assert_eq!(requests.queue.len(), MAX_QUEUED);
     }
 
@@ -1642,7 +1646,9 @@ mod tests {
         ));
         let now = Instant::now();
         let both = reference(Some("m1"), Some(1_790_550_000));
-        requests.enqueue_older("#a", 7, &both, 100).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 7, &both, 100)
+            .unwrap();
         // msgid is exact, so it is preferred whatever the server's order.
         assert_eq!(
             sent(&mut requests, now).as_deref(),
@@ -1653,7 +1659,9 @@ mod tests {
         requests.observe(&parse(":srv BATCH -r"));
 
         requests.isupport(&parse(":srv 005 me CHATHISTORY=0 :are supported"));
-        requests.enqueue_older("#a", 8, &both, 500).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 8, &both, 500)
+            .unwrap();
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY BEFORE #a msgid=m1 50"),
@@ -1662,7 +1670,9 @@ mod tests {
         requests.observe(&parse(":srv BATCH +s chathistory #a"));
         requests.observe(&parse(":srv BATCH -s"));
 
-        requests.enqueue_older("#a", 9, &both, 3).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 9, &both, 3)
+            .unwrap();
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY BEFORE #a msgid=m1 3"),
@@ -1680,7 +1690,13 @@ mod tests {
         };
         // No msgid (legacy encodings do not ask for message-tags).
         requests
-            .enqueue_older("#a", 1, &reference(None, Some(1_790_550_000)), 50)
+            .enqueue_older(
+                CaseMapping::default(),
+                "#a",
+                1,
+                &reference(None, Some(1_790_550_000)),
+                50,
+            )
             .unwrap();
         assert_eq!(
             sent(&mut requests, now).as_deref(),
@@ -1689,20 +1705,38 @@ mod tests {
         answer(&mut requests, "a");
         // An identifier unusable on the wire is not sent.
         requests
-            .enqueue_older("#a", 2, &reference(Some("bad id"), Some(1_790_550_000)), 50)
+            .enqueue_older(
+                CaseMapping::default(),
+                "#a",
+                2,
+                &reference(Some("bad id"), Some(1_790_550_000)),
+                50,
+            )
             .unwrap();
         assert!(sent(&mut requests, now).unwrap().contains("timestamp="));
         answer(&mut requests, "b");
         // A server accepting only timestamps.
         requests.isupport(&parse(":srv 005 me MSGREFTYPES=timestamp :are supported"));
         requests
-            .enqueue_older("#a", 3, &reference(Some("m1"), Some(1_790_550_000)), 50)
+            .enqueue_older(
+                CaseMapping::default(),
+                "#a",
+                3,
+                &reference(Some("m1"), Some(1_790_550_000)),
+                50,
+            )
             .unwrap();
         assert!(sent(&mut requests, now).unwrap().contains("timestamp="));
         answer(&mut requests, "c");
         // A message with only a msgid cannot be referred to there.
         let refused = requests
-            .enqueue_older("#a", 4, &reference(Some("m1"), None), 50)
+            .enqueue_older(
+                CaseMapping::default(),
+                "#a",
+                4,
+                &reference(Some("m1"), None),
+                50,
+            )
             .unwrap_err();
         assert_eq!(refused.page, Page::Before { request: 4 });
         assert_eq!(refused.older_status(), OlderHistoryStatus::Failed);
@@ -1710,13 +1744,25 @@ mod tests {
         requests.isupport(&parse(":srv 005 me MSGREFTYPES=future :are supported"));
         assert!(
             requests
-                .enqueue_older("#a", 5, &reference(Some("m1"), Some(1)), 50)
+                .enqueue_older(
+                    CaseMapping::default(),
+                    "#a",
+                    5,
+                    &reference(Some("m1"), Some(1)),
+                    50
+                )
                 .is_err()
         );
         // Removing the token restores both.
         requests.isupport(&parse(":srv 005 me -MSGREFTYPES :are supported"));
         requests
-            .enqueue_older("#a", 6, &reference(Some("m1"), None), 50)
+            .enqueue_older(
+                CaseMapping::default(),
+                "#a",
+                6,
+                &reference(Some("m1"), None),
+                50,
+            )
             .unwrap();
         assert!(sent(&mut requests, now).unwrap().contains("msgid=m1"));
     }
@@ -1725,11 +1771,15 @@ mod tests {
     fn older_pages_jump_the_join_queue_once_per_channel() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("#a");
-        requests.enqueue("#b");
+        requests.enqueue(CaseMapping::default(), "#a");
+        requests.enqueue(CaseMapping::default(), "#b");
         let anchor = reference(Some("m1"), None);
-        requests.enqueue_older("#c", 1, &anchor, 50).unwrap();
-        let again = requests.enqueue_older("#C", 2, &anchor, 50).unwrap_err();
+        requests
+            .enqueue_older(CaseMapping::default(), "#c", 1, &anchor, 50)
+            .unwrap();
+        let again = requests
+            .enqueue_older(CaseMapping::default(), "#C", 2, &anchor, 50)
+            .unwrap_err();
         assert_eq!(again.page, Page::Before { request: 2 });
         assert!(
             sent(&mut requests, now)
@@ -1738,8 +1788,12 @@ mod tests {
         );
         // Still one per channel while it is being answered, while a LATEST
         // for the same channel may queue beside it.
-        assert!(requests.enqueue_older("#c", 3, &anchor, 50).is_err());
-        assert!(requests.enqueue("#c").is_none());
+        assert!(
+            requests
+                .enqueue_older(CaseMapping::default(), "#c", 3, &anchor, 50)
+                .is_err()
+        );
+        assert!(requests.enqueue(CaseMapping::default(), "#c").is_none());
         assert_eq!(requests.queue.len(), 3);
         assert!(sent(&mut requests, now).is_none(), "one at a time");
     }
@@ -1750,7 +1804,9 @@ mod tests {
         let now = Instant::now();
         let anchor = reference(Some("m9"), None);
 
-        requests.enqueue_older("#a", 1, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 1, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let observed = feed(
             &mut requests,
@@ -1766,7 +1822,9 @@ mod tests {
         assert_eq!(page.older_status(), OlderHistoryStatus::More);
         assert_eq!(page.lines, 2);
 
-        requests.enqueue_older("#a", 2, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 2, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let observed = feed(
             &mut requests,
@@ -1780,7 +1838,9 @@ mod tests {
         assert_eq!(page.older_status(), OlderHistoryStatus::Beginning);
         assert_eq!(page.lines, 1);
 
-        requests.enqueue_older("#a", 3, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 3, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let observed = feed(
             &mut requests,
@@ -1789,7 +1849,9 @@ mod tests {
         let page = finished(observed.into_iter().last().unwrap());
         assert_eq!(page.older_status(), OlderHistoryStatus::Beginning, "empty");
 
-        requests.enqueue_older("#a", 4, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 4, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let page = finished(requests.observe(&parse(
             ":srv FAIL CHATHISTORY INVALID_MSGREFTYPE BEFORE #a :msgid-based history requests are not supported",
@@ -1797,7 +1859,9 @@ mod tests {
         assert_eq!(page.page, Page::Before { request: 4 });
         assert_eq!(page.older_status(), OlderHistoryStatus::Failed);
 
-        requests.enqueue_older("#a", 5, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 5, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let Some(Observed::Finished(page)) = requests.tick(now + RESPONSE_TIMEOUT) else {
             panic!();
@@ -1811,15 +1875,21 @@ mod tests {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
         let anchor = reference(Some("m1"), None);
-        requests.enqueue_older("#a", 1, &anchor, 50).unwrap();
-        requests.enqueue("#b");
-        requests.enqueue_older("#b", 2, &anchor, 50).unwrap();
-        let ended = requests.forget("#B");
+        requests
+            .enqueue_older(CaseMapping::default(), "#a", 1, &anchor, 50)
+            .unwrap();
+        requests.enqueue(CaseMapping::default(), "#b");
+        requests
+            .enqueue_older(CaseMapping::default(), "#b", 2, &anchor, 50)
+            .unwrap();
+        let ended = requests.forget(CaseMapping::default(), "#B");
         assert_eq!(ended.len(), 1, "the LATEST is dropped silently");
         assert_eq!(ended[0].page, Page::Before { request: 2 });
         assert!(ended[0].failed);
 
-        requests.enqueue_older("#c", 3, &anchor, 50).unwrap();
+        requests
+            .enqueue_older(CaseMapping::default(), "#c", 3, &anchor, 50)
+            .unwrap();
         sent(&mut requests, now);
         let ended = requests.reset();
         let pages: Vec<_> = ended.iter().map(|f| f.page.clone()).collect();
@@ -1847,9 +1917,9 @@ mod tests {
         ]);
         requests.isupport(&parse(":srv 005 me CHATHISTORY=30 :are supported"));
         let now = Instant::now();
-        requests.enqueue("#A");
-        requests.enqueue("#b");
-        requests.enqueue("#c");
+        requests.enqueue(CaseMapping::default(), "#A");
+        requests.enqueue(CaseMapping::default(), "#b");
+        requests.enqueue(CaseMapping::default(), "#c");
         let (channel, page, _) = requests.next_request(now).unwrap();
         assert_eq!((channel.as_str(), &page), ("#A", &Page::Resume));
         requests.observe(&parse(":srv BATCH +r chathistory #a"));
@@ -1870,7 +1940,7 @@ mod tests {
         requests.observe(&parse(":srv BATCH +t chathistory #c"));
         requests.observe(&parse(":srv BATCH -t"));
         // Each reference is used once: joining again asks for the latest.
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY LATEST #a * 30")
@@ -1882,7 +1952,7 @@ mod tests {
         let now = Instant::now();
         let mut requests =
             HistoryRequests::with_resume(vec![resume("#a", Some("m9"), Some(1_790_550_000))]);
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY LATEST #a msgid=m9 50")
@@ -1890,7 +1960,7 @@ mod tests {
 
         let mut requests = HistoryRequests::with_resume(vec![resume("#a", Some("m9"), None)]);
         requests.isupport(&parse(":srv 005 me MSGREFTYPES=timestamp :are supported"));
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         let (_, page, command) = requests.next_request(now).unwrap();
         assert_eq!(page, Page::Latest, "no usable reference: not a resume");
         assert!(
@@ -1906,7 +1976,7 @@ mod tests {
         let full = |end: bool, lines: usize| {
             let mut requests = HistoryRequests::with_resume(vec![resume("#a", Some("m1"), None)]);
             requests.isupport(&parse(":srv 005 me CHATHISTORY=3 :are supported"));
-            requests.enqueue("#a");
+            requests.enqueue(CaseMapping::default(), "#a");
             sent(&mut requests, now);
             let tag = if end { "@draft/chathistory-end " } else { "" };
             requests.observe(&parse(&format!("{tag}:srv BATCH +r chathistory #a")));
@@ -1925,7 +1995,7 @@ mod tests {
         // A plain LATEST is never incomplete: its limit is the point.
         let mut requests = HistoryRequests::default();
         requests.isupport(&parse(":srv 005 me CHATHISTORY=3 :are supported"));
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         requests.observe(&parse(":srv BATCH +r chathistory #a"));
         for index in 0..3 {
@@ -1951,11 +2021,16 @@ mod tests {
     #[test]
     fn observe_drops_the_history_time_without_server_time() {
         let mut requests = HistoryRequests::default();
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, Instant::now());
-        requests.observe_with(&parse(":srv BATCH +r chathistory #a"), false);
+        requests.observe_with(
+            &parse(":srv BATCH +r chathistory #a"),
+            CaseMapping::default(),
+            false,
+        );
         let observed = requests.observe_with(
             &parse("@batch=r;time=2099-01-01T00:00:00.000Z :bob!u@h PRIVMSG #a :hi"),
+            CaseMapping::default(),
             false,
         );
         let Observed::Message(streamed) = observed else {
@@ -2019,7 +2094,7 @@ mod tests {
             resume("#a", Some("m1"), None),
             resume("#b", Some("m2"), None),
         ]);
-        requests.enqueue("#a");
+        requests.enqueue(CaseMapping::default(), "#a");
         sent(&mut requests, now);
         let failed = finished(requests.observe(&parse(
             ":srv FAIL CHATHISTORY INVALID_MSGREFTYPE LATEST #a :msgid-based history requests are not supported",
@@ -2037,7 +2112,7 @@ mod tests {
         assert!(requests.next_request(now).is_none());
         // Losing the capability keeps unused references for a later join.
         requests.reset();
-        requests.enqueue("#b");
+        requests.enqueue(CaseMapping::default(), "#b");
         assert!(sent(&mut requests, now).unwrap().contains("msgid=m2"));
     }
 
@@ -2155,7 +2230,7 @@ mod tests {
     fn direct_message_history_keeps_both_directions_only() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
-        requests.enqueue("bob");
+        requests.enqueue(CaseMapping::default(), "bob");
         assert_eq!(
             sent(&mut requests, now).unwrap(),
             "CHATHISTORY LATEST bob * 50"
@@ -2195,7 +2270,7 @@ mod tests {
         const CHANNEL: &str = "!AB12日本語:*.jp";
         let mut requests = HistoryRequests::default().with_wire_encoding("ISO-2022-JP");
         requests.isupport(&parse(":srv 005 me CHATHISTORY=50 :are supported"));
-        requests.enqueue(CHANNEL);
+        requests.enqueue(CaseMapping::default(), CHANNEL);
         sent(&mut requests, Instant::now());
         let line = folded_batch_line("ISO-2022-JP", CHANNEL);
         assert!(!line.contains("日本語"), "the target is broken: {line}");
@@ -2229,7 +2304,7 @@ mod tests {
             Observed::Unrelated
         );
         // Another channel's folded target is not this request's.
-        requests.enqueue("!AB12日本:*.jp");
+        requests.enqueue(CaseMapping::default(), "!AB12日本:*.jp");
         sent(&mut requests, Instant::now());
         assert_eq!(
             feed(&mut requests, &[line.trim_end()])[0],
@@ -2241,7 +2316,7 @@ mod tests {
     fn plain_comparison_is_unchanged_for_every_encoding() {
         for label in ["UTF-8", "ISO-2022-JP"] {
             let mut requests = HistoryRequests::default().with_wire_encoding(label);
-            requests.enqueue("#Café");
+            requests.enqueue(CaseMapping::default(), "#Café");
             sent(&mut requests, Instant::now());
             let observed = feed(&mut requests, &[":srv BATCH +r1 chathistory #Cafe"]);
             assert_eq!(observed[0], Observed::Unrelated, "{label}");

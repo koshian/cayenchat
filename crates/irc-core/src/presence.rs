@@ -57,7 +57,7 @@ impl PresenceIndex {
 
     /// Compares channel names with `casemapping` from now on, re-keying the
     /// channels held. Channels that fold alike under it become one.
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+    pub(crate) fn rekey(&mut self, casemapping: CaseMapping) {
         if self.casemapping == casemapping {
             return;
         }
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn channels_the_server_keeps_apart_have_their_own_members() {
         let mut index = PresenceIndex::default();
-        index.set_casemapping(CaseMapping::Ascii);
+        index.rekey(CaseMapping::Ascii);
         index.replace_channel("#foo[1]", &names(&["bob"]));
         index.replace_channel("#foo{1}", &names(&["carol"]));
         assert!(index.in_channel("#foo[1]", "bob"));
@@ -375,7 +375,7 @@ mod tests {
 
         // A mapping that folds them together merges what is held.
         index.replace_channel("#foo{1}", &names(&["carol"]));
-        index.set_casemapping(CaseMapping::Rfc1459);
+        index.rekey(CaseMapping::Rfc1459);
         assert!(index.in_channel("#FOO{1}", "bob"));
         assert!(index.in_channel("#foo[1]", "carol"));
         assert!(index.consistent());

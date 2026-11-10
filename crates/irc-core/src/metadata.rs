@@ -188,14 +188,11 @@ pub(crate) struct MetadataState {
     /// Joiners not looked up because the table was full, since it last
     /// emptied; only the first one is reported.
     lookups_skipped: usize,
-    /// How this server compares channel names (`CASEMAPPING`).
-    casemapping: CaseMapping,
 }
 
 impl MetadataState {
     pub(crate) fn new(utf8: bool) -> Self {
         Self {
-            casemapping: CaseMapping::default(),
             utf8,
             subscribed: false,
             known: HashSet::new(),
@@ -206,11 +203,6 @@ impl MetadataState {
             next_lookup: None,
             lookups_skipped: 0,
         }
-    }
-
-    /// The server's channel-name comparison changed (RPL_ISUPPORT).
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
     }
 
     /// What to send once registered with metadata enabled: the subscription
@@ -350,9 +342,9 @@ impl MetadataState {
     }
 
     /// Stops a pending synchronization of a channel we left.
-    pub(crate) fn forget_channel(&mut self, channel: &str) {
+    pub(crate) fn forget_channel(&mut self, mapping: CaseMapping, channel: &str) {
         self.syncs
-            .retain(|sync| !self.casemapping.same(&sync.channel, channel));
+            .retain(|sync| !mapping.same(&sync.channel, channel));
     }
 
     /// Handles a metadata reply or notification. `None` means the message
@@ -360,6 +352,7 @@ impl MetadataState {
     pub(crate) fn observe(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         now: Instant,
         current_nick: &str,
         joined: impl Fn(&str) -> bool,
@@ -439,7 +432,7 @@ impl MetadataState {
                     )),
                     // RPL_METADATASYNCLATER <client> <Target> [<RetryAfter>]
                     774 => {
-                        if let Some(note) = self.defer(args, now, joined) {
+                        if let Some(note) = self.defer(args, mapping, now, joined) {
                             handled.notes.push(note);
                         }
                     }
@@ -764,11 +757,11 @@ impl MetadataState {
     fn defer(
         &mut self,
         args: &[String],
+        mapping: CaseMapping,
         now: Instant,
         joined: impl Fn(&str) -> bool,
     ) -> Option<String> {
         let channel = args.get(1)?;
-        let casemapping = self.casemapping;
         // Only channels we are in: users' own metadata arrives with the
         // channels they share with us.
         if !valid_channel(channel) || !joined(channel) {
@@ -784,7 +777,7 @@ impl MetadataState {
         if let Some(sync) = self
             .syncs
             .iter_mut()
-            .find(|sync| casemapping.same(&sync.channel, channel))
+            .find(|sync| mapping.same(&sync.channel, channel))
         {
             sync.due = sync.due.max(due);
             return None;
@@ -792,7 +785,7 @@ impl MetadataState {
         let attempts = self
             .attempted
             .iter()
-            .filter(|done| casemapping.same(done, channel))
+            .filter(|done| mapping.same(done, channel))
             .count() as u8;
         if attempts >= MAX_SYNC_ATTEMPTS {
             return Some(format!(
@@ -945,13 +938,19 @@ mod tests {
     fn ready(now: Instant) -> MetadataState {
         let mut state = MetadataState::new(true);
         state.start(now);
-        state.observe(&line(":srv 766 me me avatar :not set"), now, "me", joined);
+        state.observe(
+            &line(":srv 766 me me avatar :not set"),
+            CaseMapping::default(),
+            now,
+            "me",
+            joined,
+        );
         state
     }
 
     fn observe(state: &mut MetadataState, text: &str, now: Instant) -> Vec<Event> {
         state
-            .observe(&line(text), now, "me", joined)
+            .observe(&line(text), CaseMapping::default(), now, "me", joined)
             .unwrap()
             .events
     }
@@ -991,8 +990,9 @@ mod tests {
     fn follows_avatar_values_updates_and_removals() {
         let mut state = MetadataState::new(true);
         let now = Instant::now();
-        let observe =
-            |state: &mut MetadataState, text: &str| state.observe(&line(text), now, "me", joined);
+        let observe = |state: &mut MetadataState, text: &str| {
+            state.observe(&line(text), CaseMapping::default(), now, "me", joined)
+        };
         assert_eq!(
             avatars(observe(
                 &mut state,
@@ -1057,17 +1057,19 @@ mod tests {
             ":srv 761 me #chan avatar * :https://example.com/room.png",
             ":srv 761 me me display-name * :Me",
         ] {
-            let handled = state.observe(&line(text), now, "me", joined).unwrap();
+            let handled = state
+                .observe(&line(text), CaseMapping::default(), now, "me", joined)
+                .unwrap();
             assert!(handled.events.is_empty(), "{text}");
         }
         // Unusable values replace the avatar with none.
         let long = format!("https://example.com/{}", "a".repeat(MAX_AVATAR_BYTES));
         for value in [long.as_str(), "https://example.com/a b.png", "\u{1}x"] {
             let valid = ":srv METADATA alice avatar * :https://example.com/a.png";
-            state.observe(&line(valid), now, "me", joined);
+            state.observe(&line(valid), CaseMapping::default(), now, "me", joined);
             let text = format!(":srv METADATA alice avatar * :{value}");
             assert_eq!(
-                avatars(state.observe(&line(&text), now, "me", joined)),
+                avatars(state.observe(&line(&text), CaseMapping::default(), now, "me", joined)),
                 [("alice".into(), None)],
                 "{value}"
             );
@@ -1078,7 +1080,11 @@ mod tests {
             ":a!u@h PRIVMSG #chan :hi",
             "FAIL CHATHISTORY INVALID :no",
         ] {
-            assert!(state.observe(&line(text), now, "me", joined).is_none());
+            assert!(
+                state
+                    .observe(&line(text), CaseMapping::default(), now, "me", joined)
+                    .is_none()
+            );
         }
     }
 
@@ -1137,7 +1143,9 @@ mod tests {
             "FAIL METADATA TOO_MANY_SUBS avatar :Too many subscriptions!",
             "FAIL METADATA KEY_NO_PERMISSION me avatar :denied",
         ] {
-            let handled = state.observe(&line(text), now, "me", joined).unwrap();
+            let handled = state
+                .observe(&line(text), CaseMapping::default(), now, "me", joined)
+                .unwrap();
             assert!(handled.events.is_empty());
             assert_eq!(handled.notes.len(), 1, "{text}");
         }
@@ -1400,7 +1408,9 @@ mod tests {
         let mut state = MetadataState::new(true);
         let start = Instant::now();
         let defer = |state: &mut MetadataState, text: &str, now| {
-            state.observe(&line(text), now, "me", joined).unwrap()
+            state
+                .observe(&line(text), CaseMapping::default(), now, "me", joined)
+                .unwrap()
         };
         defer(&mut state, ":srv 774 me #chan 4", start);
         // Not joined, or not a channel (including Ergo's `*ALL`): ignored.
@@ -1438,7 +1448,7 @@ mod tests {
         assert_eq!(state.syncs.len(), MAX_PENDING_SYNCS);
 
         // Leaving a channel or losing the capability drops its request.
-        state.forget_channel("#BIG1");
+        state.forget_channel(CaseMapping::default(), "#BIG1");
         assert!(state.syncs.iter().all(|sync| sync.channel != "#big1"));
         let sent = state.tick(start + MAX_SYNC_DELAY, |_| false).send;
         assert!(sent.is_empty(), "parted channels are not synchronized");
@@ -1454,7 +1464,9 @@ mod tests {
         let all = |_: &str| true;
         let defer = |state: &mut MetadataState, channel: &str| {
             let text = format!(":srv 774 me {channel} 1");
-            state.observe(&line(&text), start, "me", all).unwrap()
+            state
+                .observe(&line(&text), CaseMapping::default(), start, "me", all)
+                .unwrap()
         };
         // Fill the record with one attempt each from many other channels.
         let cap = MAX_PENDING_SYNCS * usize::from(MAX_SYNC_ATTEMPTS);
@@ -1477,7 +1489,7 @@ mod tests {
         let now = Instant::now();
         for nick in ["me", "bob", "carol", "dave"] {
             let text = format!(":srv METADATA {nick} avatar * :https://example.com/{nick}");
-            state.observe(&line(&text), now, "me", joined);
+            state.observe(&line(&text), CaseMapping::default(), now, "me", joined);
         }
         let rosters = PresenceIndex::from_rosters(&HashMap::from([
             (
@@ -1515,6 +1527,7 @@ mod tests {
         // Renaming onto a name with a stale avatar drops that avatar.
         state.observe(
             &line(":srv METADATA erin avatar * :https://example.com/e"),
+            CaseMapping::default(),
             now,
             "me",
             joined,
@@ -1525,14 +1538,18 @@ mod tests {
         let mut state = MetadataState::new(true);
         for n in 0..MAX_AVATAR_USERS + 10 {
             let text = format!(":srv METADATA u{n} avatar * :https://example.com/{n}");
-            state.observe(&line(&text), now, "me", joined);
+            state.observe(&line(&text), CaseMapping::default(), now, "me", joined);
         }
         assert_eq!(state.known.len(), MAX_AVATAR_USERS);
         let late = format!(":srv METADATA u{MAX_AVATAR_USERS} avatar * :https://example.com/x");
-        assert!(avatars(state.observe(&line(&late), now, "me", joined)).is_empty());
+        assert!(
+            avatars(state.observe(&line(&late), CaseMapping::default(), now, "me", joined))
+                .is_empty()
+        );
         assert_eq!(
             avatars(state.observe(
                 &line(":srv METADATA u0 avatar * :https://e.example/y"),
+                CaseMapping::default(),
                 now,
                 "me",
                 joined
@@ -1569,7 +1586,7 @@ mod tests {
         let mut state = MetadataState::new(true);
         for nick in ["bob", "dave"] {
             let text = format!(":srv METADATA {nick} avatar * :https://example.com/{nick}");
-            state.observe(&line(&text), now, "me", joined);
+            state.observe(&line(&text), CaseMapping::default(), now, "me", joined);
         }
         let rosters = PresenceIndex::from_rosters(&HashMap::from([
             ("#Room".to_owned(), vec!["me".into(), "bob".into()]),

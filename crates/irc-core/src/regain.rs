@@ -198,7 +198,7 @@ impl OpRegain {
             .min();
     }
 
-    pub(crate) fn set_casemapping(&mut self, mapping: CaseMapping) {
+    pub(crate) fn rekey(&mut self, mapping: CaseMapping) {
         let old = std::mem::take(&mut self.channels);
         self.mapping = mapping;
         for (_, channel) in old {

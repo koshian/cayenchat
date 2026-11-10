@@ -131,8 +131,6 @@ pub(crate) struct CtcpReplies {
     pending: VecDeque<Pending>,
     nonce: u64,
     counter: u64,
-    /// How the server compares nicknames; set from ISUPPORT.
-    casemapping: CaseMapping,
     local_time: fn() -> String,
 }
 
@@ -150,18 +148,21 @@ impl CtcpReplies {
                 .build_hasher()
                 .finish(),
             counter: 0,
-            casemapping: CaseMapping::default(),
             local_time,
         }
     }
 
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
-    }
-
     /// Sends our own CTCP request `tag` with `args` to `nick`. `PING` with no
     /// arguments is timed. A refusal is one server line and nothing is sent.
-    pub(crate) fn request(&mut self, nick: &str, tag: &str, args: &str, now: Instant) -> Handled {
+    /// Nicknames are compared under `mapping`.
+    pub(crate) fn request(
+        &mut self,
+        mapping: CaseMapping,
+        nick: &str,
+        tag: &str,
+        args: &str,
+        now: Instant,
+    ) -> Handled {
         let mut handled = Handled::default();
         let tag = tag.to_ascii_uppercase();
         let refuse = |handled: &mut Handled, why: &str| {
@@ -176,7 +177,7 @@ impl CtcpReplies {
             && self
                 .pending
                 .iter()
-                .any(|pending| self.casemapping.same(&pending.nick, nick))
+                .any(|pending| mapping.same(&pending.nick, nick))
         {
             refuse(&mut handled, "still waiting for the previous ping");
             return handled;
@@ -245,11 +246,16 @@ impl CtcpReplies {
     }
 
     /// The round trip line for a reply that answers one of our pings.
-    fn round_trip(&mut self, sender: &str, params: &str, now: Instant) -> Option<String> {
-        let casemapping = self.casemapping;
+    fn round_trip(
+        &mut self,
+        mapping: CaseMapping,
+        sender: &str,
+        params: &str,
+        now: Instant,
+    ) -> Option<String> {
         let index = self.pending.iter().position(|pending| {
             pending.token == params
-                && casemapping.same(&pending.nick, sender)
+                && mapping.same(&pending.nick, sender)
                 // A reply past the deadline is never a measurement, whether
                 // or not the timer has run yet.
                 && now.duration_since(pending.sent) < PING_TIMEOUT
@@ -268,6 +274,7 @@ impl CtcpReplies {
     pub(crate) fn observe(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         current_nick: &str,
         replayed: bool,
         now: Instant,
@@ -287,19 +294,19 @@ impl CtcpReplies {
             Some(Prefix::ServerName(name)) => (name.as_str(), false),
             None => ("server", false),
         };
-        if replayed || (user && self.casemapping.same(sender, current_nick)) {
+        if replayed || (user && mapping.same(sender, current_nick)) {
             return Some(handled);
         }
         // STATUSMSG (`@#chan`) reaches part of a channel; still a channel.
         let to_channel = valid_channel(target.trim_start_matches(['~', '@', '%', '+']));
-        if !to_channel && !self.casemapping.same(target, current_nick) {
+        if !to_channel && !mapping.same(target, current_nick) {
             return Some(handled);
         }
         if !request
             && user
             && !to_channel
             && tag.eq_ignore_ascii_case("PING")
-            && let Some(line) = self.round_trip(sender, params, now)
+            && let Some(line) = self.round_trip(mapping, sender, params, now)
         {
             handled.events.push(Event::CtcpLine(line));
             return Some(handled);
@@ -490,7 +497,13 @@ mod tests {
     }
 
     fn observe(ctcp: &mut CtcpReplies, text: &str, now: Instant) -> Option<Handled> {
-        ctcp.observe(&text.parse().unwrap(), ME, false, now)
+        ctcp.observe(
+            &text.parse().unwrap(),
+            CaseMapping::default(),
+            ME,
+            false,
+            now,
+        )
     }
 
     fn wire(handled: &Handled) -> Vec<String> {
@@ -692,6 +705,7 @@ mod tests {
         let replayed = ctcp
             .observe(
                 &":bob!u@h PRIVMSG alice :\u{1}VERSION\u{1}".parse().unwrap(),
+                CaseMapping::default(),
                 ME,
                 true,
                 now,
@@ -746,15 +760,15 @@ mod tests {
     fn requests_are_sent_and_ping_is_timed() {
         let now = Instant::now();
         let mut ctcp = replies();
-        let handled = ctcp.request("bob", "version", "", now);
+        let handled = ctcp.request(CaseMapping::default(), "bob", "version", "", now);
         assert_eq!(wire(&handled), ["PRIVMSG bob \u{1}VERSION\u{1}"]);
         assert_eq!(lines(&handled), ["CTCP VERSION request sent to bob"]);
-        let handled = ctcp.request("bob", "FOO", "a b", now);
+        let handled = ctcp.request(CaseMapping::default(), "bob", "FOO", "a b", now);
         assert_eq!(wire(&handled), ["PRIVMSG bob :\u{1}FOO a b\u{1}"]);
         assert!(ctcp.pending.is_empty());
 
         let mut ctcp = replies();
-        let handled = ctcp.request("bob", "PING", "", now);
+        let handled = ctcp.request(CaseMapping::default(), "bob", "PING", "", now);
         let token = sent_token(&handled);
         assert!(!token.is_empty() && ctcp.next_deadline() == Some(now + PING_TIMEOUT));
         // Unrelated, wrong-token, other-nick and channel replies are not it.
@@ -792,10 +806,10 @@ mod tests {
     fn pings_are_bounded_expire_and_do_not_pile_up() {
         let now = Instant::now();
         let mut ctcp = replies();
-        let first = ctcp.request("bob", "PING", "", now);
+        let first = ctcp.request(CaseMapping::default(), "bob", "PING", "", now);
         let token = sent_token(&first);
         // One ping per nick at a time.
-        let second = ctcp.request("Bob", "PING", "", now);
+        let second = ctcp.request(CaseMapping::default(), "Bob", "PING", "", now);
         assert!(second.send.is_empty());
         assert!(lines(&second)[0].contains("not sent"));
         // A late reply after the timeout is reported as timed out and the
@@ -819,14 +833,22 @@ mod tests {
         let mut ctcp = replies();
         let mut sent = 0;
         for index in 0..20 {
-            let handled = ctcp.request(&format!("user{index}"), "PING", "", now);
+            let handled = ctcp.request(
+                CaseMapping::default(),
+                &format!("user{index}"),
+                "PING",
+                "",
+                now,
+            );
             sent += handled.send.len();
             assert!(ctcp.pending.len() <= MAX_PENDING);
         }
         assert_eq!(sent, MAX_PER_WINDOW);
         // Room again in the next window.
         assert_eq!(
-            ctcp.request("user30", "PING", "", now + WINDOW).send.len(),
+            ctcp.request(CaseMapping::default(), "user30", "PING", "", now + WINDOW)
+                .send
+                .len(),
             1
         );
     }
@@ -835,7 +857,7 @@ mod tests {
     fn late_reply_is_not_measured_even_before_the_timer_runs() {
         let now = Instant::now();
         let mut ctcp = replies();
-        let token = sent_token(&ctcp.request("bob", "PING", "", now));
+        let token = sent_token(&ctcp.request(CaseMapping::default(), "bob", "PING", "", now));
         let text = reply("bob", "alice", &format!("PING {token}"));
         // Just past the deadline, with no tick first.
         let late = now + PING_TIMEOUT;
@@ -843,7 +865,7 @@ mod tests {
         assert!(!line.contains(" ms"), "{line}");
         // Just inside it is a measurement.
         let mut ctcp = replies();
-        let token = sent_token(&ctcp.request("bob", "PING", "", now));
+        let token = sent_token(&ctcp.request(CaseMapping::default(), "bob", "PING", "", now));
         let text = reply("bob", "alice", &format!("PING {token}"));
         let early = now + PING_TIMEOUT - Duration::from_millis(1);
         let line = &lines(&observe(&mut ctcp, &text, early).unwrap())[0];
@@ -855,16 +877,16 @@ mod tests {
         let now = Instant::now();
         for (mapping, same) in [(CaseMapping::Ascii, false), (CaseMapping::Rfc1459, true)] {
             let mut ctcp = replies();
-            ctcp.set_casemapping(mapping);
-            let handled = ctcp.request("lat[", "PING", "", now);
+            let handled = ctcp.request(mapping, "lat[", "PING", "", now);
             let token = wire(&handled)[0]
                 .trim_start_matches("PRIVMSG lat[ :\u{1}PING ")
                 .trim_end_matches('\u{1}')
                 .to_owned();
-            let again = ctcp.request("lat{", "PING", "", now);
+            let again = ctcp.request(mapping, "lat{", "PING", "", now);
             assert_eq!(again.send.is_empty(), same);
             let text = reply("lat{", "alice", &format!("PING {token}"));
-            let line = &lines(&observe(&mut ctcp, &text, now).unwrap())[0];
+            let message = text.parse().unwrap();
+            let line = &lines(&ctcp.observe(&message, mapping, ME, false, now).unwrap())[0];
             assert_eq!(line.contains(" ms"), same, "{line}");
         }
     }
@@ -874,15 +896,14 @@ mod tests {
         let now = Instant::now();
         for (mapping, own_echo) in [(CaseMapping::Ascii, false), (CaseMapping::Rfc1459, true)] {
             let mut ctcp = replies();
-            ctcp.set_casemapping(mapping);
-            let handled = ctcp.request("lat[", "PING", "", now);
+            let handled = ctcp.request(mapping, "lat[", "PING", "", now);
             let token = wire(&handled)[0]
                 .trim_start_matches("PRIVMSG lat[ :\u{1}PING ")
                 .trim_end_matches('\u{1}')
                 .to_owned();
             // We are `lat{`; the peer `lat[` answers.
             let text = reply("lat[", "lat{", &format!("PING {token}"));
-            let handled = ctcp.observe(&text.parse().unwrap(), "lat{", false, now);
+            let handled = ctcp.observe(&text.parse().unwrap(), mapping, "lat{", false, now);
             let line = &lines(&handled.unwrap());
             assert_eq!(line.is_empty(), own_echo, "{line:?}");
             if !own_echo {

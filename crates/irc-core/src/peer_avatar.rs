@@ -375,8 +375,6 @@ pub(crate) struct PeerAvatars {
     share: Option<String>,
     /// Pictures by user mask, kept across connections (D058).
     cache: PeerAvatarCache,
-    /// The server's CASEMAPPING, for the nickname in a cache key.
-    casemapping: CaseMapping,
     avatars: HashMap<String, Sources>,
     stages: HashMap<String, Stage>,
     queue: VecDeque<Probe>,
@@ -411,7 +409,6 @@ impl PeerAvatars {
             utf8,
             share: share.filter(|url| shareable(url, utf8).is_ok()),
             cache,
-            casemapping: CaseMapping::default(),
             avatars: HashMap::new(),
             stages: HashMap::new(),
             queue: VecDeque::new(),
@@ -423,10 +420,6 @@ impl PeerAvatars {
             askers: HashMap::new(),
             next_notify: None,
         }
-    }
-
-    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
-        self.casemapping = casemapping;
     }
 
     /// Changes the URL answered to queries; `None` stops answering. The
@@ -524,6 +517,7 @@ impl PeerAvatars {
     pub(crate) fn observe(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         current_nick: &str,
         presence: &PresenceIndex,
         replayed: bool,
@@ -584,20 +578,21 @@ impl PeerAvatars {
                 let url = reply_url(params, self.utf8);
                 if let Some((user, host)) = prefix_identity(message) {
                     self.cache.set(
-                        &AvatarMask::new(self.casemapping, sender, &user, &host),
+                        &AvatarMask::new(mapping, sender, &user, &host),
                         url.as_deref(),
                     );
                 }
                 handled.events.extend(self.set_peer(sender, url));
                 Some(handled)
             }
-            _ => self.numeric_reply(message, current_nick, presence, now),
+            _ => self.numeric_reply(message, mapping, current_nick, presence, now),
         }
     }
 
     fn numeric_reply(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         current_nick: &str,
         presence: &PresenceIndex,
         now: Instant,
@@ -632,7 +627,14 @@ impl PeerAvatars {
                     // Only our own lookup can report what it found; another
                     // user's WHO stays a server line, with nothing to attach.
                     let identity = found.map(|_| (args[2].as_str(), args[3].as_str()));
-                    events.extend(self.realname_seen(nick, real, identity, current_nick, presence));
+                    events.extend(self.realname_seen(
+                        mapping,
+                        nick,
+                        real,
+                        identity,
+                        current_nick,
+                        presence,
+                    ));
                 }
                 found.map(|_| Handled {
                     events,
@@ -649,7 +651,7 @@ impl PeerAvatars {
             // user asked for it; it is only read.
             311 if args.len() > 5 => {
                 let real = args.last().map(String::as_str).unwrap_or_default();
-                self.realname_seen(&args[1], real, None, current_nick, presence);
+                self.realname_seen(mapping, &args[1], real, None, current_nick, presence);
                 None
             }
             // ERR_NOSUCHNICK for a lookup or query of ours: they are gone.
@@ -686,6 +688,7 @@ impl PeerAvatars {
     /// reported.
     fn realname_seen(
         &mut self,
+        mapping: CaseMapping,
         nick: &str,
         real: &str,
         identity: Option<(&str, &str)>,
@@ -703,7 +706,7 @@ impl PeerAvatars {
             }
             let (user, host) = identity?;
             self.cache
-                .set(&AvatarMask::new(self.casemapping, nick, user, host), None);
+                .set(&AvatarMask::new(mapping, nick, user, host), None);
             self.set_peer(nick, None);
             return Some(Event::PeerAvatar {
                 nickname: nick.to_owned(),
@@ -737,6 +740,7 @@ impl PeerAvatars {
     pub(crate) fn remembered_who(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         current_nick: &str,
         presence: &PresenceIndex,
     ) -> Option<Event> {
@@ -747,7 +751,14 @@ impl PeerAvatars {
         if args.len() < 8 {
             return None;
         }
-        self.remembered(&args[5], &args[2], &args[3], current_nick, Some(presence))
+        self.remembered(
+            mapping,
+            &args[5],
+            &args[2],
+            &args[3],
+            current_nick,
+            Some(presence),
+        )
     }
 
     /// A user seen with `user`@`host` (a live speaker, or someone who
@@ -756,6 +767,7 @@ impl PeerAvatars {
     /// change (D025). With `presence` they must share a channel with us.
     pub(crate) fn remembered(
         &mut self,
+        mapping: CaseMapping,
         nick: &str,
         user: &str,
         host: &str,
@@ -776,7 +788,7 @@ impl PeerAvatars {
         }
         let url = self
             .cache
-            .get(&AvatarMask::new(self.casemapping, nick, user, host))?;
+            .get(&AvatarMask::new(mapping, nick, user, host))?;
         // A full queue only skips the query; the picture is shown anyway.
         let _ = self.enqueue(ProbeKind::Query, nick, key);
         self.set_peer(nick, Some(url))
@@ -918,6 +930,7 @@ impl PeerAvatars {
     pub(crate) fn lifecycle(
         &mut self,
         message: &IrcMessage,
+        mapping: CaseMapping,
         presence: &PresenceIndex,
         current_nick: &str,
     ) -> Vec<Event> {
@@ -926,7 +939,7 @@ impl PeerAvatars {
         };
         let ours = |nick: &str| same_nickname(nick, current_nick);
         if let IrcCommand::NICK(new) = &message.command {
-            return self.rename(actor, new, prefix_identity(message));
+            return self.rename(mapping, actor, new, prefix_identity(message));
         }
         for nick in presence.departed(message, actor, ours) {
             self.forget(&nick);
@@ -937,12 +950,24 @@ impl PeerAvatars {
     /// Someone who joined (live) and whose mask has a remembered picture
     /// gets it without being asked. The joiner is in the channel by
     /// definition, whatever the membership published so far says.
-    pub(crate) fn joined(&mut self, message: &IrcMessage, current_nick: &str) -> Option<Event> {
+    pub(crate) fn joined(
+        &mut self,
+        message: &IrcMessage,
+        mapping: CaseMapping,
+        current_nick: &str,
+    ) -> Option<Event> {
         let IrcCommand::JOIN(..) = &message.command else {
             return None;
         };
         let (user, host) = prefix_identity(message)?;
-        self.remembered(message.source_nickname()?, &user, &host, current_nick, None)
+        self.remembered(
+            mapping,
+            message.source_nickname()?,
+            &user,
+            &host,
+            current_nick,
+            None,
+        )
     }
 
     /// The user left: what we were asking about them is dropped (answers
@@ -964,7 +989,13 @@ impl PeerAvatars {
 
     /// `identity` is the username and host of the NICK message's prefix; the
     /// picture is remembered for the new name's mask too.
-    fn rename(&mut self, from: &str, to: &str, identity: Option<(String, String)>) -> Vec<Event> {
+    fn rename(
+        &mut self,
+        mapping: CaseMapping,
+        from: &str,
+        to: &str,
+        identity: Option<(String, String)>,
+    ) -> Vec<Event> {
         let (from_key, to_key) = (nickname_key(from), nickname_key(to));
         if from_key == to_key {
             if let Some(sources) = self.avatars.get_mut(&from_key) {
@@ -1011,10 +1042,8 @@ impl PeerAvatars {
             // keeps its last known picture) and to the new mask.
             if let Some(url) = &sources.peer {
                 if let Some((user, host)) = &identity {
-                    self.cache.set(
-                        &AvatarMask::new(self.casemapping, to, user, host),
-                        Some(url),
-                    );
+                    self.cache
+                        .set(&AvatarMask::new(mapping, to, user, host), Some(url));
                 }
                 events.push(Event::PeerAvatar {
                     nickname: to.to_owned(),
@@ -1129,7 +1158,14 @@ mod tests {
     }
 
     fn observe(peers: &mut PeerAvatars, text: &str, now: Instant) -> Option<Handled> {
-        peers.observe(&line(text), ME, &rosters(), false, now)
+        peers.observe(
+            &line(text),
+            CaseMapping::default(),
+            ME,
+            &rosters(),
+            false,
+            now,
+        )
     }
 
     fn wire(commands: &[IrcCommand]) -> Vec<String> {
@@ -1343,7 +1379,9 @@ mod tests {
         let mut peers = PeerAvatars::new(true, None);
         for nick in &members {
             let text = format!(":{nick}!u@h PRIVMSG alice :\u{1}AVATAR\u{1}");
-            peers.observe(&line(&text), ME, &big, false, now).unwrap();
+            peers
+                .observe(&line(&text), CaseMapping::default(), ME, &big, false, now)
+                .unwrap();
         }
         assert_eq!(peers.queue.len(), MAX_QUEUED_PROBES);
         let mut sent = 0;
@@ -1376,7 +1414,15 @@ mod tests {
             let (verb, rest) = wire.split_once(' ').unwrap();
             let (_, text) = rest.split_once(' ').unwrap();
             let message = line(&format!(":{from}!u@h {verb} {to_nick} {text}"));
-            to.observe(&message, to_nick, &rosters, false, now).unwrap()
+            to.observe(
+                &message,
+                CaseMapping::default(),
+                to_nick,
+                &rosters,
+                false,
+                now,
+            )
+            .unwrap()
         };
         // en looked ja up and queries it; ja answers and asks back.
         let query = IrcCommand::PRIVMSG("ja".into(), "\u{1}AVATAR\u{1}".into());
@@ -1578,6 +1624,7 @@ mod tests {
         let replayed = peers
             .observe(
                 &line(":bob!u@h PRIVMSG alice :\u{1}AVATAR\u{1}"),
+                CaseMapping::default(),
                 ME,
                 &rosters(),
                 true,
@@ -1641,6 +1688,7 @@ mod tests {
         let replayed = peers
             .observe(
                 &line(":carol!u@h NOTICE alice :\u{1}AVATAR https://example.com/c.png\u{1}"),
+                CaseMapping::default(),
                 ME,
                 &rosters(),
                 true,
@@ -1784,7 +1832,12 @@ mod tests {
         let mut peers = with_kv_avatar("https://example.com/kv.png");
         // NICK moves it, reported for the new name; the old name keeps its
         // picture in the application and nothing says otherwise.
-        let events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
+        let events = peers.lifecycle(
+            &line(":kv!u@h NICK kv2"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert_eq!(avatars(&events), ["kv2=https://example.com/kv.png"]);
         assert!(peers.avatars.contains_key("kv2") && !peers.avatars.contains_key("kv"));
         let moved = PresenceIndex::from_rosters(&HashMap::from([(
@@ -1793,7 +1846,12 @@ mod tests {
         )]));
         // QUIT ends what we track, silently: the picture stays with the
         // name (D058), and the next holder is looked up afresh.
-        let events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &moved, ME);
+        let events = peers.lifecycle(
+            &line(":kv2!u@h QUIT :bye"),
+            CaseMapping::default(),
+            &moved,
+            ME,
+        );
         assert!(events.is_empty());
         assert!(peers.avatars.is_empty());
         // PART from the last shared channel ends it; from one of two not.
@@ -1803,17 +1861,32 @@ mod tests {
             ":carol!u@h NOTICE #b :\u{1}AVATAR https://example.com/c.png\u{1}",
             Instant::now(),
         );
-        peers.lifecycle(&line(":carol!u@h PART #a"), &rosters, ME);
+        peers.lifecycle(
+            &line(":carol!u@h PART #a"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.avatars.contains_key("carol"));
         let only_b = PresenceIndex::from_rosters(&HashMap::from([(
             "#b".to_owned(),
             vec!["alice".to_owned(), "carol".to_owned()],
         )]));
-        peers.lifecycle(&line(":carol!u@h PART #b"), &only_b, ME);
+        peers.lifecycle(
+            &line(":carol!u@h PART #b"),
+            CaseMapping::default(),
+            &only_b,
+            ME,
+        );
         assert!(!peers.avatars.contains_key("carol"));
         // Our own PART ends everyone we shared only through that channel.
         let mut peers = with_kv_avatar("https://example.com/kv.png");
-        peers.lifecycle(&line(":alice!u@h PART #a"), &rosters, ME);
+        peers.lifecycle(
+            &line(":alice!u@h PART #a"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.avatars.is_empty());
         // Renaming onto a name with a picture replaces it with the mover's.
         let mut peers = with_kv_avatar("https://example.com/kv.png");
@@ -1822,7 +1895,12 @@ mod tests {
             ":bob!u@h NOTICE #a :\u{1}AVATAR https://example.com/bob.png\u{1}",
             Instant::now(),
         );
-        let events = peers.lifecycle(&line(":bob!u@h NICK kv"), &rosters, ME);
+        let events = peers.lifecycle(
+            &line(":bob!u@h NICK kv"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert_eq!(avatars(&events), ["kv=https://example.com/bob.png"]);
         assert_eq!(peers.avatars.len(), 1);
     }
@@ -1843,13 +1921,28 @@ mod tests {
             peers
         };
         let mut peers = known("bob");
-        peers.lifecycle(&line(":bob!u@h PART #room"), &rosters, ME);
+        peers.lifecycle(
+            &line(":bob!u@h PART #room"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.avatars.is_empty());
         let mut peers = known("carol");
-        peers.lifecycle(&line(":alice!u@h PART #OTHER"), &rosters, ME);
+        peers.lifecycle(
+            &line(":alice!u@h PART #OTHER"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.avatars.is_empty());
         let mut peers = known("carol");
-        peers.lifecycle(&line(":carol!u@h PART #room"), &rosters, ME);
+        peers.lifecycle(
+            &line(":carol!u@h PART #room"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(
             peers.avatars.contains_key("carol"),
             "carol still shares #Other"
@@ -1955,7 +2048,12 @@ mod tests {
         // bob changes name before the reply; someone else now holds "bob".
         assert!(
             peers
-                .lifecycle(&line(":bob!u@h NICK bobby"), &rosters, ME)
+                .lifecycle(
+                    &line(":bob!u@h NICK bobby"),
+                    CaseMapping::default(),
+                    &rosters,
+                    ME
+                )
                 .is_empty()
         );
         let reply = ":srv 352 alice #a ~x host srv bob H :0 \u{3}4\u{f}Someone else";
@@ -1964,7 +2062,12 @@ mod tests {
         assert!(peers.queue.is_empty(), "no query from a stale reply");
         // Departures drop queued work.
         peers.speaker("carol", ME, &rosters);
-        peers.lifecycle(&line(":carol!u@h QUIT :bye"), &rosters, ME);
+        peers.lifecycle(
+            &line(":carol!u@h QUIT :bye"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.queue.is_empty());
     }
 
@@ -2005,7 +2108,12 @@ mod tests {
         peers.observe_metadata(&[meta("kv", Some("https://meta.example/kv2"))]);
         // NICK moves both; only the peer picture is reported (metadata
         // reports its own move).
-        let events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
+        let events = peers.lifecycle(
+            &line(":kv!u@h NICK kv2"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert_eq!(avatars(&events), ["kv2=https://peer.example/kv.png"]);
         assert_eq!(
             both(&peers, "kv2"),
@@ -2022,7 +2130,12 @@ mod tests {
         );
         // A departure ends what we track and says nothing: the picture
         // stays with the name in the application.
-        let events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &rosters, ME);
+        let events = peers.lifecycle(
+            &line(":kv2!u@h QUIT :bye"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(events.is_empty());
         assert!(peers.avatars.is_empty());
     }
@@ -2052,7 +2165,7 @@ mod tests {
         ask(&mut peers, "stranger", now);
         observe(&mut peers, ":carol!u@h PRIVMSG #a :\u{1}AVATAR\u{1}", now);
         let replayed = line(":carol!u@h PRIVMSG alice :\u{1}AVATAR\u{1}");
-        peers.observe(&replayed, ME, &rosters(), true, now);
+        peers.observe(&replayed, CaseMapping::default(), ME, &rosters(), true, now);
         // They already have the URL they were answered with.
         assert_eq!(peers.next_deadline(), None);
         assert!(tick(&mut peers, now).is_empty());
@@ -2133,13 +2246,23 @@ mod tests {
             ask(&mut peers, nick, now);
         }
         let all = rosters();
-        peers.lifecycle(&line(":kv!u@h QUIT :bye"), &all, ME);
+        peers.lifecycle(&line(":kv!u@h QUIT :bye"), CaseMapping::default(), &all, ME);
         // bob leaves #a, the only channel they share with us.
-        peers.lifecycle(&line(":bob!u@h PART #a"), &all, ME);
+        peers.lifecycle(&line(":bob!u@h PART #a"), CaseMapping::default(), &all, ME);
         // carol is still in #b after leaving #a.
-        peers.lifecycle(&line(":carol!u@h PART #a"), &all, ME);
+        peers.lifecycle(
+            &line(":carol!u@h PART #a"),
+            CaseMapping::default(),
+            &all,
+            ME,
+        );
         assert_eq!(peers.askers.len(), 1);
-        peers.lifecycle(&line(":carol!u@h NICK carol2"), &all, ME);
+        peers.lifecycle(
+            &line(":carol!u@h NICK carol2"),
+            CaseMapping::default(),
+            &all,
+            ME,
+        );
         let renamed = PresenceIndex::from_rosters(&HashMap::from([(
             "#b".to_owned(),
             vec!["alice".into(), "carol2".into()],
@@ -2181,7 +2304,12 @@ mod tests {
         let now = Instant::now();
         let mut peers = PeerAvatars::new(true, Some(URL.into()));
         ask(&mut peers, "kv", now);
-        peers.lifecycle(&line(":kv!u@h NICK :#a"), &rosters(), ME);
+        peers.lifecycle(
+            &line(":kv!u@h NICK :#a"),
+            CaseMapping::default(),
+            &rosters(),
+            ME,
+        );
         peers.set_share(None);
         let channel = PresenceIndex::from_rosters(&HashMap::from([(
             "#a".to_owned(),
@@ -2206,13 +2334,21 @@ mod tests {
         let mut peers = PeerAvatars::new(true, Some(URL.into()));
         for name in &names {
             let text = format!(":{name}!u@h PRIVMSG alice :\u{1}AVATAR\u{1}");
-            peers.observe(&line(&text), ME, &presence, false, now);
+            peers.observe(
+                &line(&text),
+                CaseMapping::default(),
+                ME,
+                &presence,
+                false,
+                now,
+            );
         }
         assert_eq!(peers.askers.len(), MAX_NOTIFIED_USERS);
         // Invalid nicknames are never kept.
         peers.askers.clear();
         peers.observe(
             &line(":#chan!u@h PRIVMSG alice :\u{1}AVATAR\u{1}"),
+            CaseMapping::default(),
             ME,
             &presence,
             false,
@@ -2271,7 +2407,7 @@ mod tests {
         let mut again = PeerAvatars::with_cache(true, None, cache.clone());
         let now = Instant::now();
         let joined = line(":bob!~bob@host1.example.org JOIN #a");
-        assert!(again.joined(&joined, ME).is_some());
+        assert!(again.joined(&joined, CaseMapping::default(), ME).is_some());
         assert_eq!(
             wire(&again.tick(now, ME, &rosters).send),
             ["PRIVMSG bob \u{1}AVATAR\u{1}"]
@@ -2296,13 +2432,18 @@ mod tests {
         let cache = PeerAvatarCache::default();
         let mut peers = bob_answered(&cache);
         // bob quits; what we track is gone, the mask is remembered.
-        peers.lifecycle(&line(":bob!~bob@host1.example.org QUIT :bye"), &rosters, ME);
+        peers.lifecycle(
+            &line(":bob!~bob@host1.example.org QUIT :bye"),
+            CaseMapping::default(),
+            &rosters,
+            ME,
+        );
         assert!(peers.avatars.is_empty());
         // Back with another host label and a different ident mark: the same
         // mask, so the join brings the picture, and one query (no WHO)
         // makes bob tell us of later changes.
         let joined = line(":Bob!bob@host7.EXAMPLE.org JOIN #a");
-        let event = peers.joined(&joined, ME).unwrap();
+        let event = peers.joined(&joined, CaseMapping::default(), ME).unwrap();
         assert_eq!(avatars(&[event]), [format!("Bob={BOB_PNG}")]);
         assert_eq!(
             peers.speaker("bob", ME, &rosters),
@@ -2315,7 +2456,14 @@ mod tests {
         let speaking = line(":bob!bob@host2.example.org PRIVMSG #a :hi");
         let identity = speaker_identity(&speaking).unwrap();
         let event = again
-            .remembered("bob", &identity.0, &identity.1, ME, Some(&rosters))
+            .remembered(
+                CaseMapping::default(),
+                "bob",
+                &identity.0,
+                &identity.1,
+                ME,
+                Some(&rosters),
+            )
             .unwrap();
         assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
         assert_eq!(again.speaker("bob", ME, &rosters), None);
@@ -2323,7 +2471,14 @@ mod tests {
         // Nothing is repeated for someone already looked at.
         assert!(
             again
-                .remembered("bob", "bob", "x.example.org", ME, Some(&rosters))
+                .remembered(
+                    CaseMapping::default(),
+                    "bob",
+                    "bob",
+                    "x.example.org",
+                    ME,
+                    Some(&rosters)
+                )
                 .is_none()
         );
     }
@@ -2338,20 +2493,37 @@ mod tests {
         let mut again = PeerAvatars::with_cache(true, None, cache.clone());
         let who =
             line(":srv 352 alice #a ~bob host9.example.org srv bob H :0 \u{3}4\u{f}KVIrc user");
-        let event = again.remembered_who(&who, ME, &rosters).unwrap();
+        let event = again
+            .remembered_who(&who, CaseMapping::default(), ME, &rosters)
+            .unwrap();
         assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
         assert!(
             again
-                .observe(&who, ME, &rosters, false, Instant::now())
+                .observe(
+                    &who,
+                    CaseMapping::default(),
+                    ME,
+                    &rosters,
+                    false,
+                    Instant::now()
+                )
                 .is_none()
         );
         assert_eq!(queued(&again), [(ProbeKind::Query, "bob")]);
         // A reply for someone who left is ignored, and so is a mask nobody
         // remembers.
         let gone = line(":srv 352 alice #a ~bob host9.example.org srv ghost H :0 x");
-        assert!(again.remembered_who(&gone, ME, &rosters).is_none());
+        assert!(
+            again
+                .remembered_who(&gone, CaseMapping::default(), ME, &rosters)
+                .is_none()
+        );
         let other = line(":srv 352 alice #a ~bob other.net srv carol H :0 x");
-        assert!(again.remembered_who(&other, ME, &rosters).is_none());
+        assert!(
+            again
+                .remembered_who(&other, CaseMapping::default(), ME, &rosters)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2365,7 +2537,7 @@ mod tests {
         // KVIrc's rule: the nick is part of the key, so bob_ is asked.
         let mut peers = PeerAvatars::with_cache(true, None, cache.clone());
         let join = line(":bob_!~bob@host1.example.org JOIN #a");
-        assert!(peers.joined(&join, ME).is_none());
+        assert!(peers.joined(&join, CaseMapping::default(), ME).is_none());
         peers.speaker("bob_", ME, &rosters);
         assert_eq!(
             wire(&peers.tick(Instant::now(), ME, &rosters).send),
@@ -2378,18 +2550,31 @@ mod tests {
             ":bob!bob@203.0.113.9 JOIN #a",
         ] {
             let mut peers = PeerAvatars::with_cache(true, None, cache.clone());
-            assert!(peers.joined(&line(join), ME).is_none(), "{join}");
+            assert!(
+                peers
+                    .joined(&line(join), CaseMapping::default(), ME)
+                    .is_none(),
+                "{join}"
+            );
         }
         // Ourselves and other commands never match.
         let mut peers = PeerAvatars::with_cache(true, None, cache);
         assert!(
             peers
-                .joined(&line(":alice!~bob@host1.example.org JOIN #a"), ME)
+                .joined(
+                    &line(":alice!~bob@host1.example.org JOIN #a"),
+                    CaseMapping::default(),
+                    ME
+                )
                 .is_none()
         );
         assert!(
             peers
-                .joined(&line(":bob!~bob@host1.example.org PART #a"), ME)
+                .joined(
+                    &line(":bob!~bob@host1.example.org PART #a"),
+                    CaseMapping::default(),
+                    ME
+                )
                 .is_none()
         );
     }
