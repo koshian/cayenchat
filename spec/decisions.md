@@ -2519,7 +2519,7 @@ The maintainer approved this specification on the issue (2026-10-13).
   eight characters of their profile ID (`Libera (9c1d04ab)`; generated IDs
   all start with `custom-`, so the start cannot tell them apart). Channel and nick are
   folded with the server's CASEMAPPING (private conversations use the same
-  RFC 1459 key as the conversation list). The date is the local date of the
+  key as the conversation list). The date is the local date of the
   line's time. Existing files are appended to.
 - **Safe names** (`storage::chatlog::path_component`, the same on every OS):
   `/ \ : * ? " < > |`, controls, `%` and `~` become `%XX` (UTF-8 bytes); a name

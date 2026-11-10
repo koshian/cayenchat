@@ -85,7 +85,7 @@ enum Admission {
 }
 
 impl Budget {
-    fn admit(&mut self, sender: &str, now: Instant) -> Admission {
+    fn admit(&mut self, mapping: CaseMapping, sender: &str, now: Instant) -> Admission {
         let fresh = |sent: &Instant| now.duration_since(*sent) < WINDOW;
         while self.recent.front().is_some_and(|sent| !fresh(sent)) {
             self.recent.pop_front();
@@ -94,7 +94,7 @@ impl Budget {
             times.retain(fresh);
             !times.is_empty()
         });
-        let key = nickname_key(sender);
+        let key = nickname_key(mapping, sender);
         let used = self.per_user.get(&key).map_or(0, VecDeque::len);
         if self.recent.len() >= MAX_PER_WINDOW || used >= MAX_PER_USER {
             if self.reported.is_some_and(|reported| fresh(&reported)) {
@@ -185,7 +185,10 @@ impl CtcpReplies {
             refuse(&mut handled, "too many pings are waiting for a reply");
             return handled;
         }
-        if !matches!(self.sent.admit(nick, now), Admission::Admitted) {
+        if !matches!(
+            self.sent.admit(self.casemapping, nick, now),
+            Admission::Admitted
+        ) {
             refuse(&mut handled, "too many requests; wait a few seconds");
             return handled;
         }
@@ -311,12 +314,13 @@ impl CtcpReplies {
         } else {
             String::new()
         };
+        let casemapping = self.casemapping;
         let budget = if request {
             &mut self.requests
         } else {
             &mut self.replies
         };
-        match budget.admit(sender, now) {
+        match budget.admit(casemapping, sender, now) {
             Admission::Admitted => {}
             Admission::Refused => {
                 handled.events.push(Event::CtcpLine(if request {

@@ -177,8 +177,11 @@ fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut Test
     let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
         chat.read_with(cx, |chat, _| {
             let channel = chat.state.selected_channel().unwrap();
-            chat.member_selection
-                .nicknames(channel.id, &channel.members)
+            chat.member_selection.nicknames(
+                cayenchat_model::names::CaseMapping::Rfc1459,
+                channel.id,
+                &channel.members,
+            )
         })
     };
     let click = |cx: &mut gpui::VisualTestContext, at, modifiers| {
@@ -454,8 +457,11 @@ fn focused_lists_take_the_standard_movement_keys(cx: &mut TestAppContext) {
     let chosen = |cx: &mut gpui::VisualTestContext| {
         chat.read_with(cx, |chat, _| {
             let channel = chat.state.selected_channel().unwrap();
-            chat.member_selection
-                .nicknames(channel.id, &channel.members)
+            chat.member_selection.nicknames(
+                cayenchat_model::names::CaseMapping::Rfc1459,
+                channel.id,
+                &channel.members,
+            )
         })
     };
     // Moving from nothing starts at the first row.
@@ -639,8 +645,11 @@ fn member_keys_scroll_only_when_the_row_leaves_the_view(cx: &mut TestAppContext)
     let chosen = |cx: &mut gpui::VisualTestContext| {
         chat.read_with(cx, |chat, _| {
             let channel = chat.state.selected_channel().unwrap();
-            chat.member_selection
-                .anchor_index(channel.id, &channel.members)
+            chat.member_selection.anchor_index(
+                cayenchat_model::names::CaseMapping::Rfc1459,
+                channel.id,
+                &channel.members,
+            )
         })
     };
 
@@ -742,8 +751,11 @@ fn a_member_who_leaves_stays_unchosen_when_the_nickname_is_taken_again(cx: &mut 
     let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
         chat.read_with(cx, |chat, _| {
             let channel = chat.state.selected_channel().unwrap();
-            chat.member_selection
-                .nicknames(channel.id, &channel.members)
+            chat.member_selection.nicknames(
+                cayenchat_model::names::CaseMapping::Rfc1459,
+                channel.id,
+                &channel.members,
+            )
         })
     };
     let width = f32::from(cx.update(|window, _| window.viewport_size()).width);
@@ -1725,7 +1737,12 @@ fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestA
             Worker::Running,
             cx,
         );
-        let key = |nick: &str| cayenchat_irc_core::text::nickname_key(nick);
+        let key = |nick: &str| {
+            cayenchat_irc_core::text::nickname_key(
+                cayenchat_model::names::CaseMapping::Rfc1459,
+                nick,
+            )
+        };
         let carol = chat.state.private_id(NetworkId(1), &key("carol")).unwrap();
         let bob = chat.state.private_id(NetworkId(1), &key("bob")).unwrap();
         let texts = |id| -> Vec<String> {
@@ -2103,7 +2120,11 @@ fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut Te
             username: Some("u".into()),
             ..WhoisInfo::default()
         };
-        super::complete_whois(&mut info, &tracked);
+        super::complete_whois(
+            cayenchat_model::names::CaseMapping::Rfc1459,
+            &mut info,
+            &tracked,
+        );
         assert_eq!(info.account.as_deref(), Some("bob-acct"));
         assert_eq!(info.realname.as_deref(), Some("Bob Builder"));
         let mut said = WhoisInfo {
@@ -2111,7 +2132,11 @@ fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut Te
             account: Some("server-acct".into()),
             ..WhoisInfo::default()
         };
-        super::complete_whois(&mut said, &tracked);
+        super::complete_whois(
+            cayenchat_model::names::CaseMapping::Rfc1459,
+            &mut said,
+            &tracked,
+        );
         assert_eq!(said.account.as_deref(), Some("server-acct"));
         chat.handle_events(
             NetworkId(1),
@@ -4388,4 +4413,50 @@ fn quit_question_answered_after_a_failed_settings_save_keeps_the_app_open(cx: &m
             .private_messages
     );
     drop(file);
+}
+
+#[gpui::test]
+fn nicknames_are_compared_under_the_networks_casemapping(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::names::CaseMapping;
+
+    crate::support::install_test_globals(cx);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(crate::settings_with_channels("#a"), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::Registered {
+                nickname: "me[m]".into(),
+            }],
+            Worker::Running,
+            cx,
+        );
+        let net = NetworkId(1);
+        // RFC 1459 until the server says otherwise: `me{m}` is us.
+        assert!(chat.is_own_nickname(net, "ME{M}"));
+        assert!(!chat.find_mentions(net, "bob", "hi me{m}").ranges.is_empty());
+        chat.handle_events(
+            net,
+            vec![Event::CaseMapping(CaseMapping::Ascii)],
+            Worker::Running,
+            cx,
+        );
+        // ASCII: `me{m}` is someone else, whose line notifies and whose
+        // avatar key is not ours.
+        assert!(chat.is_own_nickname(net, "ME[M]"));
+        assert!(!chat.is_own_nickname(net, "me{m}"));
+        assert!(chat.find_mentions(net, "bob", "hi me{m}").ranges.is_empty());
+        assert!(
+            !chat
+                .find_mentions(net, "me{m}", "hi me[m]")
+                .ranges
+                .is_empty()
+        );
+        assert_ne!(
+            cayenchat_irc_core::text::nickname_key(chat.state.casemapping(net), "me[m]"),
+            cayenchat_irc_core::text::nickname_key(chat.state.casemapping(net), "me{m}")
+        );
+    });
 }

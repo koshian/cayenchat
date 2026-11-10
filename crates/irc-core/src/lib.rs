@@ -2459,7 +2459,15 @@ impl Connection {
             return Err(format!("Invalid nickname: {bad}"));
         }
         let announced = self.modes_per_line.load(Ordering::Relaxed);
-        let lines = modes::mode_lines(channel, mode, nicknames, modes::effective_limit(announced));
+        let lines = modes::mode_lines(
+            // The connection does not know the mapping: merging the fewest names
+            // only means a duplicate is sent, never that someone else is skipped.
+            CaseMapping::Ascii,
+            channel,
+            mode,
+            nicknames,
+            modes::effective_limit(announced),
+        );
         let outgoing = lines
             .into_iter()
             .map(|args| {
@@ -4601,6 +4609,7 @@ impl Worker {
             None
         } else {
             self.echoes.observe(
+                self.casemapping,
                 message,
                 &self.current_nick,
                 self.negotiation.enabled(cap::LABELED_RESPONSE),
@@ -5035,6 +5044,7 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
 
 /// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
 fn private_message(
+    mapping: CaseMapping,
     message: &IrcMessage,
     current_nick: &str,
     replayed: bool,
@@ -5055,8 +5065,8 @@ fn private_message(
         return None;
     }
     // Our own line to someone else, relayed by a bouncer.
-    if crate::text::same_nickname(sender, current_nick)
-        && !crate::text::same_nickname(target, current_nick)
+    if crate::text::same_nickname(mapping, sender, current_nick)
+        && !crate::text::same_nickname(mapping, target, current_nick)
         && valid_nickname(target)
     {
         return Some(Event::OwnPrivateMessage {
@@ -5069,7 +5079,7 @@ fn private_message(
             replayed,
         });
     }
-    if !crate::text::same_nickname(target, current_nick) {
+    if !crate::text::same_nickname(mapping, target, current_nick) {
         return None;
     }
     Some(Event::PrivateMessage {
@@ -5234,7 +5244,9 @@ fn translate_message(
         _ => {}
     }
     let replayed = replay.replayed(&message);
-    if let Some(private) = private_message(&message, current_nick, replayed, server_time) {
+    if let Some(private) =
+        private_message(casemapping, &message, current_nick, replayed, server_time)
+    {
         return vec![private];
     }
     let mut translated = match &message.command {

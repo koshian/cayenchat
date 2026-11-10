@@ -46,26 +46,36 @@ crates gets the identifier of its new crate.
 
 Small domain types shared by the application, such as networks, conversations, users, messages, IDs, and connection state.
 
-`model::names` is the one definition of "the same nickname or channel".
-Nicknames always use RFC 1459 case mapping (ASCII letters, and `[]\~` as the
-uppercase forms of `{}|^`). Channel names use the network's `CaseMapping`, the
+`model::names::CaseMapping` is the one definition of "the same nickname or
+channel". Nicknames and channel names both use the network's `CaseMapping`, the
 server's `CASEMAPPING` token (`ascii`, `rfc1459-strict`, `rfc1459`; an unknown
-value counts as `ascii`, which merges the fewest names). RFC 1459 applies
+value counts as `ascii`, which merges the fewest names), so on `ascii` the
+nicknames `foo[m]` and `foo{m}` are two people: neither is "us" for the other,
+and they do not share presence, account, metadata, avatar or private
+conversation keys. RFC 1459 applies
 until the server advertises one, and again on each new connection. The worker
 sends `Event::CaseMapping` when it changes; `AppState::set_casemapping` re-keys
 the network's channel index (behind `AppState::channel_id`, a hash lookup
-rather than a scan of every conversation), the metadata state uses the same
-value, and so do the worker's presence index, accounts and history requests
-(channel names only), and WHOIS's joined marks, request keys and window keys
-(the nickname there follows the server too). Rebuilding the index reads only
+rather than a scan of every conversation) and its private conversations (from
+the peer's name), and drops its avatar keys. The worker decides "is this
+nickname ours" in one place (`Worker::is_own_nick`, or the `CaseMapping`
+passed to the free functions that cannot reach it), and the UI asks
+`AppState::casemapping` (`is_own_nickname`, avatar, member-selection and log
+keys). The metadata state uses the same value, and so do the worker's presence
+index (re-keyed, channels and nicknames), accounts, peer avatars and metadata
+(they drop what they keyed, which is empty in practice because the server
+announces the mapping before anyone is seen), history requests (channel names
+only), and WHOIS's joined marks, request keys and window keys. A mapping
+announced late therefore forgets avatars already learned for the network; two
+nicknames the new mapping folds alike keep one presence entry. Rebuilding the index reads only
 names and IDs. Configured channels are added before the server advertises
 anything and are never merged then (only an identical name is the same
 conversation); `set_casemapping` decides which one the index reaches. Channels
 the mapping keeps apart stay separate conversations with their own logs,
 rosters and send target; where names fold alike, the first conversation keeps
 the index entry. The saved tree order and rank are still ASCII-folded (earlier
-behaviour, unchanged). `irc-core`'s `text::same_nickname` and `nickname_key`
-delegate to the nickname form.
+behaviour, unchanged). `irc-core`'s `text::same_nickname`, `nickname_key` and `mention_ranges`
+take the `CaseMapping`.
 
 Keep dependencies minimal.
 
@@ -433,8 +443,7 @@ produces a wire diagnostic), delayed every line and woke 20 times a second while
 idle. QUIT and NICK republish rosters only for channels that contained the user;
 the worker's `PresenceIndex` (`irc-core/src/presence.rs`, #71) answers that, fed
 from the published NAMES snapshots. It indexes users by nickname and channel
-both ways: nicknames under RFC 1459, channels under the network's
-`CaseMapping`. A `UserId` (a `u64` never reused in a
+both ways, both under the network's `CaseMapping`. A `UserId` (a `u64` never reused in a
 connection, never kept across connections) survives re-applied snapshots and NICK
 (the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
 returning nickname is a new presence. Only presence is held: accounts, metadata and

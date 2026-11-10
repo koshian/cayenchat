@@ -360,9 +360,8 @@ fn channels_are_found_under_irc_case_mapping() {
         state
             .conversations()
             .iter()
-            .filter(
-                |c| c.network == NetworkId(1) && cayenchat_model::names::same(&c.name, "#foo[1]")
-            )
+            .filter(|c| c.network == NetworkId(1)
+                && cayenchat_model::names::CaseMapping::Rfc1459.same(&c.name, "#foo[1]"))
             .count(),
         1
     );

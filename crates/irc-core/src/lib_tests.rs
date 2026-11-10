@@ -169,8 +169,15 @@ fn credentials_to_other_networks_services_stay_out_of_the_transcript() {
 
 #[test]
 fn account_tags_ride_along_with_channel_and_private_messages() {
-    let private =
-        |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "me", false, None);
+    let private = |line: &str| {
+        private_message(
+            CaseMapping::Rfc1459,
+            &line.parse::<IrcMessage>().unwrap(),
+            "me",
+            false,
+            None,
+        )
+    };
     let account = |event: Option<Event>| match event {
         Some(Event::PrivateMessage { account, .. }) => account,
         other => panic!("{other:?}"),
@@ -198,8 +205,15 @@ fn account_tags_ride_along_with_channel_and_private_messages() {
 
 #[test]
 fn private_messages_come_only_from_users_to_our_nickname() {
-    let translate =
-        |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
+    let translate = |line: &str| {
+        private_message(
+            CaseMapping::Rfc1459,
+            &line.parse::<IrcMessage>().unwrap(),
+            "Me",
+            false,
+            None,
+        )
+    };
     assert_eq!(
         translate(":alice!u@h PRIVMSG me :hello"),
         Some(Event::PrivateMessage {
@@ -233,10 +247,18 @@ fn private_messages_come_only_from_users_to_our_nickname() {
     assert_eq!(translate(":alice!u@h PRIVMSG other :hello"), None);
     // RFC 1459 case mapping: `[` and `{` are the same letter.
     let message = ":alice!u@h PRIVMSG m{e} :x".parse::<IrcMessage>().unwrap();
-    assert!(private_message(&message, "M[E]", false, None).is_some());
+    assert!(private_message(CaseMapping::Rfc1459, &message, "M[E]", false, None).is_some());
     // Our own line to someone, relayed by a bouncer (another client of
     // ours, or its playback).
-    let own = |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", true, None);
+    let own = |line: &str| {
+        private_message(
+            CaseMapping::Rfc1459,
+            &line.parse::<IrcMessage>().unwrap(),
+            "Me",
+            true,
+            None,
+        )
+    };
     assert_eq!(
         own("@msgid=x1 :me!u@h PRIVMSG bob :sent elsewhere"),
         Some(Event::OwnPrivateMessage {
@@ -8130,4 +8152,25 @@ async fn refused_sends_get_the_same_short_reasons() {
         assert!(!reason.contains("vendored"), "{reason}");
         assert_eq!(stream_error_reason(error), reason);
     }
+}
+
+#[test]
+fn private_messages_tell_nicknames_apart_by_the_connection_casemapping() {
+    let message = |line: &str| line.parse::<IrcMessage>().unwrap();
+    // `me{m}` writes to `me[m]` (us): one person under RFC 1459, two under
+    // ASCII, where it is a message to someone else.
+    let to_us = message(":bob!u@h PRIVMSG me{m} :hi");
+    assert!(matches!(
+        private_message(CaseMapping::Rfc1459, &to_us, "me[m]", false, None),
+        Some(Event::PrivateMessage { .. })
+    ));
+    assert!(private_message(CaseMapping::Ascii, &to_us, "me[m]", false, None).is_none());
+    // A line from `me{m}` to someone else is our own relayed line only when
+    // `me{m}` is us.
+    let from_other = message(":me{m}!u@h PRIVMSG bob :hi");
+    assert!(matches!(
+        private_message(CaseMapping::Rfc1459, &from_other, "me[m]", false, None),
+        Some(Event::OwnPrivateMessage { .. })
+    ));
+    assert!(private_message(CaseMapping::Ascii, &from_other, "me[m]", false, None).is_none());
 }

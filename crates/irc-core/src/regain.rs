@@ -348,7 +348,7 @@ impl OpRegain {
             .collect();
         let own = entries
             .iter()
-            .find(|entry| same_nickname(display(entry), nick));
+            .find(|entry| same_nickname(self.mapping, display(entry), nick));
         channel.op = own.is_some_and(|entry| privileged(entry));
         channel.alone = entries.len() == 1 && own.is_some();
         // Having been operator earns another attempt should we be left
