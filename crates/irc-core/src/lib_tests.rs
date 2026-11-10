@@ -106,7 +106,28 @@ fn service_credentials_are_not_echoed_into_conversations() {
         echo_text("nickserv@services.example", "identify a b".into()),
         "[redacted]"
     );
-    assert_eq!(echo_text("NickServ", "INFO bob".into()), "INFO bob");
+    // Every message to a credential service is hidden, not only known
+    // password commands, and one such recipient among several is enough.
+    for (target, body) in [
+        ("NickServ", "REGAIN nick pw"),
+        ("NickServ", "DROP nick pw"),
+        ("NickServ", "GROUP nick pw"),
+        ("NickServ", "SETPASS acct key pw"),
+        ("NickServ", "LOGOUT nick pw"),
+        ("NickServ", "INFO bob"),
+        ("NickServ,bob", "IDENTIFY pw"),
+        ("bob,nickserv", "IDENTIFY pw"),
+    ] {
+        assert_eq!(echo_text(target, body.into()), "[redacted]", "{target}");
+    }
+    assert_eq!(
+        echo_text("bob", "IDENTIFY hunter2".into()),
+        "IDENTIFY hunter2"
+    );
+    assert_eq!(
+        echo_text("bob,alice", "IDENTIFY hunter2".into()),
+        "IDENTIFY hunter2"
+    );
     assert_eq!(
         echo_text("bob", "IDENTIFY hunter2".into()),
         "IDENTIFY hunter2"
@@ -121,7 +142,7 @@ fn service_credentials_are_not_echoed_into_conversations() {
     ] {
         assert_eq!(echo_text(target, body.into()), "[redacted]", "{target}");
     }
-    assert_eq!(echo_text("Q", "WHOIS #chan".into()), "WHOIS #chan");
+    assert_eq!(echo_text("Q", "WHOIS #chan".into()), "[redacted]");
 }
 
 /// The transcript line of `command`, which masks secrets the same whether
@@ -498,9 +519,16 @@ fn iso2022jp_credentials_for_services_are_never_converted() {
         assert!(connection.send_command(command, None).is_err(), "{command}");
     }
     assert!(queued.try_recv().is_err());
-    // Other text to a service is still converted.
+    // Everything to a service is strict, whatever the command.
+    assert!(
+        connection
+            .send_private_message("NickServ", "HELP 😀", false)
+            .is_err()
+    );
+    assert!(queued.try_recv().is_err());
+    // Other recipients are still converted.
     connection
-        .send_private_message("NickServ", "HELP 😀", false)
+        .send_private_message("bob", "HELP 😀", false)
         .unwrap();
     assert_eq!(
         queued_texts(&mut queued),
@@ -983,6 +1011,48 @@ fn diagnostic_wire_preserves_messages_and_redacts_credentials() {
         line(IrcCommand::CHANSERV("IDENTIFY channel-secret".into())),
         "CHANSERV [redacted]"
     );
+    for (target, body, shown) in [
+        ("NickServ", "REGAIN nick pw", "PRIVMSG NickServ :[redacted]"),
+        ("NickServ", "DROP nick pw", "PRIVMSG NickServ :[redacted]"),
+        ("NickServ", "SETPASS a k pw", "PRIVMSG NickServ :[redacted]"),
+        (
+            "NickServ,bob",
+            "IDENTIFY pw",
+            "PRIVMSG NickServ,bob :[redacted]",
+        ),
+    ] {
+        assert_eq!(line(IrcCommand::PRIVMSG(target.into(), body.into())), shown);
+    }
+    assert_eq!(
+        line(IrcCommand::NOTICE(
+            "X@channels.undernet.org".into(),
+            "pw".into()
+        )),
+        "NOTICE X@channels.undernet.org :[redacted]"
+    );
+    assert_eq!(
+        line(IrcCommand::SQUERY("NickServ".into(), "IDENTIFY pw".into())),
+        "SQUERY NickServ :[redacted]"
+    );
+    assert_eq!(
+        line(IrcCommand::SQUERY("bob".into(), "hello".into())),
+        "SQUERY bob hello"
+    );
+    for (verb, args) in [
+        ("NS", "REGAIN nick pw"),
+        ("CS", "DROP #chan"),
+        ("NICKSERV", "GROUP nick pw"),
+        ("AUTHSERV", "anything pw"),
+        ("IDENTIFY", "pw"),
+        ("ID", "pw"),
+        ("login", "acct pw"),
+        ("REGAIN", "nick pw"),
+    ] {
+        assert_eq!(
+            line(IrcCommand::Raw(verb.into(), vec![args.into()])),
+            format!("{verb} [redacted]")
+        );
+    }
     assert_eq!(
         line(IrcCommand::PRIVMSG(
             "#test".into(),
