@@ -516,22 +516,17 @@ impl ThemeFile {
         for region in WallpaperRegion::ALL {
             let slot = self.wallpapers.slot(region);
             if let Some(wallpaper) = slot {
+                // The tone is capped like a settings file's; the other
+                // strengths refuse the file.
+                wallpaper.brightness = wallpaper.brightness.map(clamp_wallpaper_brightness);
+                wallpaper.saturation = wallpaper
+                    .saturation
+                    .map(|s| s.min(MAX_WALLPAPER_SATURATION));
                 if wallpaper.opacity.is_some_and(|o| o > 100) {
                     return Err("A wallpaper opacity is out of range.".into());
                 }
                 if wallpaper.blur.is_some_and(|b| b > MAX_WALLPAPER_BLUR) {
                     return Err("A wallpaper blur is out of range.".into());
-                }
-                if wallpaper.brightness.is_some_and(|b| {
-                    !(-MAX_WALLPAPER_BRIGHTNESS..=MAX_WALLPAPER_BRIGHTNESS).contains(&b)
-                }) {
-                    return Err("A wallpaper brightness is out of range.".into());
-                }
-                if wallpaper
-                    .saturation
-                    .is_some_and(|s| s > MAX_WALLPAPER_SATURATION)
-                {
-                    return Err("A wallpaper saturation is out of range.".into());
                 }
                 wallpaper_bytes(wallpaper, check_image)?;
             }

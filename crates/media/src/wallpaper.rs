@@ -343,6 +343,40 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Times `apply` on a 640 px square picture (the largest kept):
+    /// `cargo test --release -p cayenchat-media apply_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing, run by hand in a release build"]
+    fn apply_timing() {
+        let mut image = checkerboard(640);
+        image
+            .bgra
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b ^= (i % 251) as u8);
+        let tone = Tone {
+            brightness: -40,
+            saturation: 80,
+        };
+        for (label, blur, tone) in [
+            ("neutral, no blur", 0, Tone::NEUTRAL),
+            ("tone only", 0, tone),
+            ("blur 30 only", 30, Tone::NEUTRAL),
+            ("blur 30 and tone", 30, tone),
+        ] {
+            let mut times = (0..9)
+                .map(|_| {
+                    let mut copy = image.clone();
+                    let start = std::time::Instant::now();
+                    apply(&mut copy, blur, tone);
+                    start.elapsed()
+                })
+                .collect::<Vec<_>>();
+            times.sort();
+            println!("{label}: median {:?}", times[4]);
+        }
+    }
+
     #[test]
     fn a_missing_or_foreign_file_is_refused() {
         let dir = std::env::temp_dir().join(format!("cayenchat-wall-{}", std::process::id()));

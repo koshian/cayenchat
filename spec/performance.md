@@ -1501,3 +1501,48 @@ through the production order (text row, confirmation, placeholder, image).
   stay at 52, ready bytes and queue
   bounds are unchanged.
 - Limits: no Windows/macOS run; the no-op text system.
+
+## Wallpaper brightness and saturation (2026-11-10, #1047, D091)
+
+A short check, not a baseline run, in the Linux cloud container (x86_64,
+shared vCPUs; not comparable with the macOS numbers above). Release builds.
+
+**Load cost.** `media::wallpaper` `apply_timing`, an ignored test, on a
+640 × 640 picture (the largest kept), median of 9 runs, one session:
+
+```sh
+cargo test --release --locked -p cayenchat-media apply_timing -- --ignored --nocapture
+```
+
+| `apply` | Median |
+| --- | --- |
+| Neutral tone, no blur (the pass is skipped) | 0.05 ms |
+| Tone only (−40, 80) | 4.9 ms |
+| Strongest blur only | 14.1 ms |
+| Strongest blur and tone | 18.4 ms |
+
+The tone is applied once per load on the background thread, never per frame;
+a neutral tone (brightness 0, saturation 100) costs nothing extra.
+
+**Typing, switching, scrolling and event batches.** `perf_baseline` (headless
+UI test, 10 channels × 2,000 lines, no wallpaper), three runs each of the
+parent `7cfaedc` and the branch, medians in µs, run alternately in one session:
+
+```sh
+cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline -- --ignored --nocapture --test-threads=1 --exact
+```
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch |
+| --- | --- | --- | --- | --- |
+| Parent, runs 1 / 2 / 3 | 317 / 322 / 329 | 1,859 / 1,902 / 1,854 | 1,454 / 1,460 / 1,460 | 1,888 / 1,888 / 1,926 |
+| Branch, runs 1 / 2 / 3 | 354 / 372 / 323 | 1,884 / 1,891 / 1,908 | 1,501 / 1,451 / 1,472 | 1,899 / 2,046 / 1,883 |
+
+Switching, scrolling and batches match within run-to-run noise (the branch's
+typing medians are up to about 15 % over the parent's in two of three runs;
+the third is level, and typing draws no wallpaper).
+
+Limits: the test has no wallpaper, and the headless platform has no GPU, so
+the drawing of a pane with a wallpaper whose tone is unchanged was not timed.
+The code that draws it is unchanged by this change: the tone is applied to
+the held pixels at load, and a draw only reads the same image. No macOS or
+Windows run; no GUI frame-rate measurement.

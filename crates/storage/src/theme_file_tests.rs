@@ -439,22 +439,30 @@ fn brightness_and_saturation_default_by_theme_and_stay_out_of_the_fingerprint_un
     assert_eq!(wallpaper.brightness_value(false), 40);
     assert_eq!(wallpaper.saturation_percent(), 80);
     // An explicit default is the same appearance as unset.
+    // Separate wallpapers, so each theme has its own set to change.
     let mut appearance = Appearance::default();
+    appearance.set_split_wallpapers(true, true);
     let plain = (appearance.fingerprint(true), appearance.fingerprint(false));
-    appearance.dark.wallpapers.channel_log.brightness = Some(-40);
-    appearance.wallpapers.channel_log.brightness = Some(40);
-    appearance.dark.wallpapers.channel_log.saturation = Some(80);
+    appearance.wallpapers_mut(true).channel_log.brightness = Some(-40);
+    appearance.wallpapers_mut(false).channel_log.brightness = Some(40);
+    appearance.wallpapers_mut(true).channel_log.saturation = Some(80);
     assert_eq!(
         (appearance.fingerprint(true), appearance.fingerprint(false)),
         plain
     );
-    appearance.dark.wallpapers.channel_log.brightness = Some(-41);
+    appearance.wallpapers_mut(true).channel_log.brightness = Some(-41);
     assert_ne!(appearance.fingerprint(true), plain.0);
     assert_eq!(appearance.fingerprint(false), plain.1);
+
+    // Shared wallpapers: the one set counts for both themes.
+    let mut shared = Appearance::default();
+    let plain = shared.fingerprint(true);
+    shared.wallpapers_mut(true).channel_log.saturation = Some(90);
+    assert_ne!(shared.fingerprint(true), plain);
 }
 
 #[test]
-fn a_theme_file_with_a_tone_out_of_range_is_refused() {
+fn a_theme_file_with_a_tone_out_of_range_is_capped() {
     let image = STANDARD.encode(b"IMG-ok");
     let parse = |extra: &str| {
         let json = format!(
@@ -463,9 +471,13 @@ fn a_theme_file_with_a_tone_out_of_range_is_refused() {
         ThemeFile::parse(json.as_bytes(), &check)
     };
     assert!(parse(r#","brightness":-100,"saturation":200"#).is_ok());
-    assert!(parse(r#","brightness":101"#).is_err());
-    assert!(parse(r#","brightness":-128"#).is_err());
-    assert!(parse(r#","saturation":201"#).is_err());
+    let tone = |extra: &str| {
+        let slot = parse(extra).unwrap().wallpapers.member_list.unwrap();
+        (slot.brightness, slot.saturation)
+    };
+    assert_eq!(tone(r#","brightness":101"#), (Some(100), None));
+    assert_eq!(tone(r#","brightness":-128"#), (Some(-100), None));
+    assert_eq!(tone(r#","saturation":201"#), (None, Some(200)));
     // A file without them reads as unset.
     let theme = parse("").unwrap();
     let slot = theme.wallpapers.member_list.unwrap();

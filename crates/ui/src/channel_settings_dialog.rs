@@ -891,8 +891,9 @@ impl ChannelSettingsView {
     /// wallpaper's, in the theme on show.
     pub(crate) fn shown_tone(&self, cx: &App) -> (i8, u8) {
         let dark = crate::theme::current(cx).dark;
-        // Without a standard picture to follow, the unset values are the defaults.
-        let standard = self.inherited_standard(cx).unwrap_or_default();
+        // Unset values follow the standard picture even beside an own one;
+        // without a standard picture they are the defaults.
+        let standard = self.standard_picture(cx).unwrap_or_default();
         (
             if self.look.brightness_own {
                 self.look.brightness
@@ -915,6 +916,11 @@ impl ChannelSettingsView {
         if !inherits {
             return None;
         }
+        self.standard_picture(cx)
+    }
+
+    /// The channel log's standard wallpaper, if it has a picture.
+    fn standard_picture(&self, cx: &App) -> Option<cayenchat_storage::RegionWallpaper> {
         let dark = crate::theme::current(cx).dark;
         self.owner
             .read(cx)

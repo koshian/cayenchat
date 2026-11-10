@@ -4173,14 +4173,15 @@ background blur (#1018): none changes another's value or drawing.
   not an offset: the order of the tones is kept and only the side that meets
   the text color is lost. `s = 100` and `b = 0` skip the pass, so the pixels
   are those of before. −100 is black, +100 white, `s = 0` gray. The channels
-  are BGRA in memory; the weights follow R, G and B. About 4 ms for a
-  640 × 640 picture (release build), against about 13 ms for the strongest blur.
+  are BGRA in memory; the weights follow R, G and B. About 5 ms for a
+  640 × 640 picture (release build), against about 14 ms for the strongest
+  blur; measured as in `spec/performance.md`, "Wallpaper brightness and saturation".
 - **Range and defaults.** Brightness −100 to 100 (`i8`), saturation 0 to 200
   (`u8`, percent). Unset: brightness −40 in the dark theme and +40 in the
   light one, saturation 80 in both. A value outside the range is capped when a
-  settings file is read (`clean`, as the blur is) and when it is used; a theme
-  file (`.cayentheme`) with a value outside the range is refused on import,
-  like an out-of-range blur or opacity.
+  settings file is read (`clean`, as the blur is) and when it is used, and
+  when a theme file (`.cayentheme`) is imported (the blur and opacity of a
+  theme file are still refused when out of range).
 - **Why ±40.** Contrast of the body text over the worst pixel (white in dark,
   black in light) under the default 50 % background: dark (#E3E6EA on #1F2124)
   2.6 at 0, 4.4 at 30, 5.3 at 40, 6.4 at 50; light (#FFFFFF background, the
@@ -4194,9 +4195,10 @@ background blur (#1018): none changes another's value or drawing.
   `saturation` per area and per theme (`RegionWallpaper`), also in the
   `.cayentheme` wallpaper entries. A channel's look (`ChannelLook`) holds
   `wallpaper_brightness` and `wallpaper_saturation`: one pair for both themes.
-  Unset in a channel follows the standard wallpaper when the channel uses it
-  (as the blur does, D089); a channel with its own picture, or a standard
-  without one, uses the defaults of the theme on show. A value set in the
+  Unset in a channel follows the standard wallpaper's value when that has a
+  picture, also when the channel shows its own picture; with no standard
+  picture it is the default of the theme on show. (The blur and opacity of a
+  channel's own picture still use the defaults, as before this change.) A value set in the
   channel is its own also when equal to the default. The theme fingerprint
   lists them only when they differ from the theme's defaults, so an applied
   theme does not turn into "edited". No settings version bump: the fields are

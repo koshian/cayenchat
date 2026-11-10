@@ -176,11 +176,23 @@ pub(crate) fn resolve(
     let (wallpaper, background) = match look {
         Some(look) if look.no_wallpaper => (None, Layers::plain(theme.panes.channel_log)),
         Some(look) if look.wallpaper.is_some() => {
+            // Unset tone follows the standard picture's, if there is one.
+            let none = RegionWallpaper::default();
+            let base = if standard.path.is_some() {
+                standard
+            } else {
+                &none
+            };
             let request = look.wallpaper.as_ref().map(|path| WallpaperRequest {
                 path: path.clone(),
                 blur: blur_of(look),
-                brightness: brightness_of(look, theme.dark),
-                saturation: saturation_of(look),
+                brightness: look.wallpaper_brightness.map_or_else(
+                    || base.brightness_value(theme.dark),
+                    |_| brightness_of(look, theme.dark),
+                ),
+                saturation: look
+                    .wallpaper_saturation
+                    .map_or_else(|| base.saturation_percent(), |_| saturation_of(look)),
                 fit: look.wallpaper_fit.unwrap_or_default(),
             });
             let background = Layers::mixed(theme.panes.channel_log, background_opacity_of(look));
@@ -1019,6 +1031,27 @@ mod tests {
             ..ChannelLook::default()
         };
         assert_eq!(tone(resolve(Some(&own), &toned, base).wallpaper), (-10, 0));
+        // A channel's own picture follows the standard picture's tone when
+        // it has none of its own set, in both themes.
+        for dark in [true, false] {
+            let base = theme(dark);
+            let own = ChannelLook {
+                wallpaper: Some("/own.png".into()),
+                ..ChannelLook::default()
+            };
+            assert_eq!(
+                tone(resolve(Some(&own), &toned, base).wallpaper),
+                (-10, 150)
+            );
+            let own = ChannelLook {
+                wallpaper_brightness: Some(100),
+                ..own
+            };
+            assert_eq!(
+                tone(resolve(Some(&own), &toned, base).wallpaper),
+                (100, 150)
+            );
+        }
         // Out of range values are capped.
         let wild = ChannelLook {
             wallpaper: Some("/own.png".into()),
