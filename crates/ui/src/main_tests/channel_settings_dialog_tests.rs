@@ -762,6 +762,147 @@ fn an_inherited_blur_shows_the_standard_value_and_zero_can_be_chosen(cx: &mut Te
     drop(file);
 }
 
+/// Where the rendered slider `selector` is, asserted to lie inside the
+/// window, as `(left, right, y)` of its pointer-sensitive row. The track
+/// starts `SLIDER_INSET` px inside the element on both sides. The body is
+/// scrolled with the mouse wheel until the slider is in the window.
+fn slider_row(cx: &mut VisualTestContext, selector: &'static str) -> (f32, f32, f32) {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
+    let window = cx.update(|window, _| window.bounds());
+    let window = gpui::Bounds::new(gpui::Point::default(), window.size);
+    let (bounds, body) = (0..100)
+        .find_map(|_| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is not drawn"));
+            let body = cx
+                .debug_bounds("channel-settings-body")
+                .expect("the body is drawn");
+            if bounds.top() >= body.top() && bounds.bottom() <= body.bottom() {
+                return Some((bounds, body));
+            }
+            cx.simulate_event(ScrollWheelEvent {
+                position: body.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+                modifiers: Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            });
+            None
+        })
+        .unwrap_or_else(|| panic!("{selector} cannot be scrolled into the body"));
+    // What can be pressed is the body: it lies in the window, and the slider
+    // in it.
+    assert!(
+        window.contains(&body.origin) && window.contains(&body.bottom_right()),
+        "the body {body:?} is outside the window {window:?}"
+    );
+    let (left, right) = (f32::from(bounds.left()), f32::from(bounds.right()));
+    assert!(
+        left >= f32::from(body.left()) && right <= f32::from(body.right()),
+        "{selector} is outside the body: {bounds:?}"
+    );
+    (left, right, f32::from(bounds.center().y))
+}
+
+/// Border (1) plus padding (`KNOB / 2 + 2`) of a slider element, before its
+/// track starts.
+const SLIDER_INSET: f32 = 10.;
+
+#[gpui::test]
+fn inherited_sliders_show_the_standard_values_and_a_real_drag_makes_them_the_channels_own(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let none = Modifiers::none();
+    let (chat, app, cx, file) = new_chat(cx, "#a");
+    // Standard blur 3.0 (the right end of the blur slider), standard
+    // opacity 80 (a strength of 20 of 100). The saved settings hold it too:
+    // the window's preview rebuilds the chat window's look from them.
+    chat.update(cx, |chat, cx| {
+        let dark = crate::theme::current(cx).dark;
+        for appearance in [&mut chat.appearance, &mut chat.saved.appearance] {
+            let standard = appearance
+                .wallpapers_mut(dark)
+                .get_mut(WallpaperRegion::ChannelLog);
+            standard.path = Some("standard.png".into());
+            standard.blur = Some(30);
+            standard.opacity = Some(80);
+        }
+    });
+    let (view, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    let own = |view: &Entity<ChannelSettingsView>, wcx: &mut VisualTestContext| {
+        view.read_with(wcx, |view, cx| {
+            let look = view.look(cx).unwrap();
+            (look.wallpaper_blur, look.background_opacity)
+        })
+    };
+
+    // The blur slider is drawn at 3.0: pressing on its right end is no
+    // change, so nothing becomes the channel's own. The opacity slider is
+    // drawn at a strength of 20: pressing there is no change either.
+    // The opacity slider is below the blur one: scroll to it first, so both
+    // are in the window.
+    slider_row(wcx, "channel-look-opacity");
+    let (left, right, y) = slider_row(wcx, "channel-look-blur");
+    let at = point(px(right - 1.), px(y));
+    wcx.simulate_mouse_move(at, None, none);
+    wcx.simulate_mouse_down(at, MouseButton::Left, none);
+    wcx.simulate_mouse_up(at, MouseButton::Left, none);
+    let (o_left, o_right, o_y) = slider_row(wcx, "channel-look-opacity");
+    let track = o_right - o_left - 2. * SLIDER_INSET;
+    let at = point(px(o_left + SLIDER_INSET + track * 0.2), px(o_y));
+    wcx.simulate_mouse_move(at, None, none);
+    wcx.simulate_mouse_down(at, MouseButton::Left, none);
+    wcx.simulate_mouse_up(at, MouseButton::Left, none);
+    assert_eq!(own(&view, wcx), (None, None));
+
+    // Dragging the blur knob from 3.0 to the left end saves a blur of 0.
+    let start = point(px(right - 1.), px(y));
+    wcx.simulate_mouse_move(start, None, none);
+    wcx.simulate_mouse_down(start, MouseButton::Left, none);
+    for x in [(left + right) / 2., left + 1.] {
+        wcx.simulate_mouse_move(point(px(x), px(y)), MouseButton::Left, none);
+    }
+    wcx.simulate_mouse_up(point(px(left + 1.), px(y)), MouseButton::Left, none);
+    // A press on the right end of the opacity slider is a strength of 100,
+    // an opacity of 0.
+    let (_, o_right, o_y) = slider_row(wcx, "channel-look-opacity");
+    let at = point(px(o_right - 1.), px(o_y));
+    wcx.simulate_mouse_move(at, None, none);
+    wcx.simulate_mouse_down(at, MouseButton::Left, none);
+    wcx.simulate_mouse_up(at, MouseButton::Left, none);
+    assert_eq!(own(&view, wcx), (Some(0), Some(0)));
+
+    // Saved, and still 0 after reading the file again.
+    wcx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    wcx.run_until_parked();
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    let saved = on_file.appearance.channel_looks[0].clone();
+    assert_eq!(
+        (saved.wallpaper_blur, saved.background_opacity),
+        (Some(0), Some(0))
+    );
+    // The wallpaper request drawn from the saved look, over the standard
+    // wallpaper (the settings file of this test holds none), has no blur.
+    let request = chat.read_with(cx, |_, cx| {
+        let standard = cayenchat_storage::RegionWallpaper {
+            path: Some("standard.png".into()),
+            blur: Some(30),
+            opacity: Some(80),
+            ..Default::default()
+        };
+        crate::channel_look::resolve(Some(&saved), &standard, crate::theme::current(cx)).wallpaper
+    });
+    assert_eq!(request.map(|request| request.blur), Some(0));
+    // A reopened window shows 0 for both, not the standard values.
+    let (reopened, wcx) = open_channel_window(&chat, &app, "#A", cx);
+    reopened.read_with(wcx, |view, cx| assert_eq!(view.shown_strengths(cx), (0, 0)));
+    drop(file);
+}
+
 #[gpui::test]
 fn an_inherited_fit_is_shown_and_an_explicit_cover_overrides_it(cx: &mut TestAppContext) {
     let (chat, app, cx, file) = new_chat(cx, "#a");
