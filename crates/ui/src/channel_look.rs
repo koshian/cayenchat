@@ -7,9 +7,9 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 
 use cayenchat_media::{CancelFlag, wallpaper, wallpaper::Tone};
 use cayenchat_storage::{
-    ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_SATURATION,
-    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION, RegionWallpaper, WallpaperFit, WallpaperRegion,
-    clamp_wallpaper_brightness, color_value, default_wallpaper_brightness,
+    ChannelLook, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR,
+    MAX_WALLPAPER_SATURATION, RegionWallpaper, WallpaperFit, WallpaperRegion,
+    clamp_wallpaper_brightness, color_value,
 };
 use gpui::{prelude::*, *};
 
@@ -93,19 +93,16 @@ pub(crate) struct WallpaperRequest {
     pub(crate) fit: WallpaperFit,
 }
 
-/// The brightness a look holds in the theme `dark`, capped to the range.
-pub(crate) fn brightness_of(look: &ChannelLook, dark: bool) -> i8 {
-    clamp_wallpaper_brightness(
-        look.wallpaper_brightness
-            .unwrap_or_else(|| default_wallpaper_brightness(dark)),
-    )
+/// The brightness a look sets for the theme `dark`, capped to the range.
+pub(crate) fn own_brightness(look: &ChannelLook, dark: bool) -> Option<i8> {
+    look.wallpaper_brightness(dark)
+        .map(clamp_wallpaper_brightness)
 }
 
-/// The saturation a look holds, capped to the range.
-pub(crate) fn saturation_of(look: &ChannelLook) -> u8 {
-    look.wallpaper_saturation
-        .unwrap_or(DEFAULT_WALLPAPER_SATURATION)
-        .min(MAX_WALLPAPER_SATURATION)
+/// The saturation a look sets for the theme `dark`, capped to the range.
+pub(crate) fn own_saturation(look: &ChannelLook, dark: bool) -> Option<u8> {
+    look.wallpaper_saturation(dark)
+        .map(|saturation| saturation.min(MAX_WALLPAPER_SATURATION))
 }
 
 /// The blur a look holds, capped to the range.
@@ -186,13 +183,10 @@ pub(crate) fn resolve(
             let request = look.wallpaper.as_ref().map(|path| WallpaperRequest {
                 path: path.clone(),
                 blur: blur_of(look),
-                brightness: look.wallpaper_brightness.map_or_else(
-                    || base.brightness_value(theme.dark),
-                    |_| brightness_of(look, theme.dark),
-                ),
-                saturation: look
-                    .wallpaper_saturation
-                    .map_or_else(|| base.saturation_percent(), |_| saturation_of(look)),
+                brightness: own_brightness(look, theme.dark)
+                    .unwrap_or_else(|| base.brightness_value(theme.dark)),
+                saturation: own_saturation(look, theme.dark)
+                    .unwrap_or_else(|| base.saturation_percent()),
                 fit: look.wallpaper_fit.unwrap_or_default(),
             });
             let background = Layers::mixed(theme.panes.channel_log, background_opacity_of(look));
@@ -210,11 +204,11 @@ pub(crate) fn resolve(
                 if look.wallpaper_blur.is_some() {
                     request.blur = blur_of(look);
                 }
-                if look.wallpaper_brightness.is_some() {
-                    request.brightness = brightness_of(look, theme.dark);
+                if let Some(brightness) = own_brightness(look, theme.dark) {
+                    request.brightness = brightness;
                 }
-                if look.wallpaper_saturation.is_some() {
-                    request.saturation = saturation_of(look);
+                if let Some(saturation) = own_saturation(look, theme.dark) {
+                    request.saturation = saturation;
                 }
                 request.fit = look.wallpaper_fit.unwrap_or(request.fit);
             }
@@ -1022,12 +1016,12 @@ mod tests {
         let base = theme(false);
         assert_eq!(tone(resolve(None, &toned, base).wallpaper), (-10, 150));
         let own = ChannelLook {
-            wallpaper_brightness: Some(0),
+            wallpaper_brightness_light: Some(0),
             ..ChannelLook::default()
         };
         assert_eq!(tone(resolve(Some(&own), &toned, base).wallpaper), (0, 150));
         let own = ChannelLook {
-            wallpaper_saturation: Some(0),
+            wallpaper_saturation_light: Some(0),
             ..ChannelLook::default()
         };
         assert_eq!(tone(resolve(Some(&own), &toned, base).wallpaper), (-10, 0));
@@ -1044,7 +1038,8 @@ mod tests {
                 (-10, 150)
             );
             let own = ChannelLook {
-                wallpaper_brightness: Some(100),
+                wallpaper_brightness_light: (!dark).then_some(100),
+                wallpaper_brightness_dark: dark.then_some(100),
                 ..own
             };
             assert_eq!(
@@ -1052,11 +1047,27 @@ mod tests {
                 (100, 150)
             );
         }
+        // A value is for its own theme: the other theme keeps the standard's
+        // (the same picture toned differently in light and dark).
+        let own = ChannelLook {
+            wallpaper: Some("/own.png".into()),
+            wallpaper_brightness_dark: Some(-70),
+            wallpaper_saturation_light: Some(10),
+            ..ChannelLook::default()
+        };
+        assert_eq!(
+            tone(resolve(Some(&own), &toned, theme(true)).wallpaper),
+            (-70, 150)
+        );
+        assert_eq!(
+            tone(resolve(Some(&own), &toned, theme(false)).wallpaper),
+            (-10, 10)
+        );
         // Out of range values are capped.
         let wild = ChannelLook {
             wallpaper: Some("/own.png".into()),
-            wallpaper_brightness: Some(i8::MIN),
-            wallpaper_saturation: Some(255),
+            wallpaper_brightness_light: Some(i8::MIN),
+            wallpaper_saturation_light: Some(255),
             ..ChannelLook::default()
         };
         assert_eq!(

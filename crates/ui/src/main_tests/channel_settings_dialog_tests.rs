@@ -781,7 +781,10 @@ fn an_inherited_tone_shows_the_standard_value_until_the_channel_moves_it(cx: &mu
         assert_eq!(view.shown_tone(cx), (-10, 150));
         let look = view.look(cx).unwrap();
         assert_eq!(
-            (look.wallpaper_brightness, look.wallpaper_saturation),
+            (
+                look.wallpaper_brightness(dark),
+                look.wallpaper_saturation(dark)
+            ),
             (None, None)
         );
     });
@@ -791,9 +794,14 @@ fn an_inherited_tone_shows_the_standard_value_until_the_channel_moves_it(cx: &mu
         assert_eq!(view.shown_tone(cx).0, 0);
         let look = view.look(cx).unwrap();
         assert_eq!(
-            (look.wallpaper_brightness, look.wallpaper_saturation),
+            (
+                look.wallpaper_brightness(dark),
+                look.wallpaper_saturation(dark)
+            ),
             (Some(0), None)
         );
+        // Only the theme on show gets it.
+        assert_eq!(look.wallpaper_brightness(!dark), None);
         view.save_now(window, cx);
     });
     // Resolved for drawing, the channel log gets the same values.

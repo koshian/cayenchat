@@ -423,13 +423,17 @@ fn hostile_settings_values_are_cleaned_on_load() {
     assert_eq!(appearance.wallpapers.member_list.saturation, Some(200));
     assert_eq!(appearance.origin, ThemeOrigin::default());
     let mut look = ChannelLook {
-        wallpaper_brightness: Some(-128),
-        wallpaper_saturation: Some(250),
+        wallpaper_brightness_light: Some(-128),
+        wallpaper_brightness_dark: Some(127),
+        wallpaper_saturation_light: Some(250),
+        wallpaper_saturation_dark: Some(201),
         ..ChannelLook::default()
     };
     look.clean();
-    assert_eq!(look.wallpaper_brightness, Some(-100));
-    assert_eq!(look.wallpaper_saturation, Some(200));
+    assert_eq!(look.wallpaper_brightness_light, Some(-100));
+    assert_eq!(look.wallpaper_brightness_dark, Some(100));
+    assert_eq!(look.wallpaper_saturation_light, Some(200));
+    assert_eq!(look.wallpaper_saturation_dark, Some(200));
 }
 
 #[test]

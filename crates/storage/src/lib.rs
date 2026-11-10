@@ -736,6 +736,16 @@ pub struct Appearance {
     pub channel_tree_opacity: u8,
     pub channel_log_opacity: u8,
     pub combined_log_opacity: u8,
+    /// Blur what the desktop shows through the see-through panes (#1018).
+    /// The platform blurs the whole window with a strength of its own, so
+    /// this is one switch, not one per pane; it takes effect only while a
+    /// pane is below 100 % and the platform can blur. Off by default and for
+    /// files without it. Added after version 15 without a version change.
+    pub background_blur: bool,
+    /// Strength of that blur as a blur radius (`MIN_BACKGROUND_BLUR_RADIUS`
+    /// to `MAX_BACKGROUND_BLUR_RADIUS`), used only where the platform lets
+    /// the app choose it (macOS). Kept while the blur is off.
+    pub background_blur_radius: u8,
     pub alternate_rows: bool,
     /// Inline thumbnails of direct image links in the channel log
     /// (version 14). Off by default, also for settings saved before it existed.
@@ -843,6 +853,12 @@ pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
 /// be hard to read.
 pub const MIN_PANE_OPACITY: u8 = 10;
 
+/// Range and default of the background blur radius (#1018). A radius of 20
+/// was still too strong on macOS 27.2, so the default is lower.
+pub const MIN_BACKGROUND_BLUR_RADIUS: u8 = 1;
+pub const MAX_BACKGROUND_BLUR_RADIUS: u8 = 80;
+pub const DEFAULT_BACKGROUND_BLUR_RADIUS: u8 = 6;
+
 /// Range of a pane font size in px. 0 means "standard size" and is kept as
 /// is; any other value is clamped into the range on load and on use.
 pub const MIN_FONT_SIZE: u16 = 8;
@@ -901,16 +917,22 @@ pub struct ChannelLook {
         skip_serializing_if = "Option::is_none"
     )]
     pub wallpaper_blur: Option<u8>,
-    /// Brightness of the wallpaper (-100 to 100); unset follows the standard
-    /// wallpaper, or [`default_wallpaper_brightness`] without one. One value
-    /// for both themes.
+    /// Brightness of the wallpaper (-100 to 100) in the light and in the dark
+    /// theme; unset follows the standard wallpaper, or
+    /// [`default_wallpaper_brightness`] without one. Each theme has its own,
+    /// so one picture can be toned for both (#1047).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallpaper_brightness: Option<i8>,
+    pub wallpaper_brightness_light: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_brightness_dark: Option<i8>,
     /// Saturation of the wallpaper in percent (0 to
-    /// [`MAX_WALLPAPER_SATURATION`]); unset follows the standard wallpaper,
-    /// or [`DEFAULT_WALLPAPER_SATURATION`] without one.
+    /// [`MAX_WALLPAPER_SATURATION`]) in the light and in the dark theme;
+    /// unset follows the standard wallpaper, or
+    /// [`DEFAULT_WALLPAPER_SATURATION`] without one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallpaper_saturation: Option<u8>,
+    pub wallpaper_saturation_light: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_saturation_dark: Option<u8>,
     /// Opacity of the background color laid over the wallpaper, in percent
     /// (0 to 100; 100 hides the picture); unset is
     /// [`DEFAULT_BACKGROUND_OPACITY`]. Only a wallpaper makes it visible.
@@ -990,6 +1012,24 @@ pub fn clamp_wallpaper_brightness(brightness: i8) -> i8 {
 pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
 
 impl ChannelLook {
+    /// The brightness set for the theme `dark`, if any.
+    pub fn wallpaper_brightness(&self, dark: bool) -> Option<i8> {
+        if dark {
+            self.wallpaper_brightness_dark
+        } else {
+            self.wallpaper_brightness_light
+        }
+    }
+
+    /// The saturation set for the theme `dark`, if any.
+    pub fn wallpaper_saturation(&self, dark: bool) -> Option<u8> {
+        if dark {
+            self.wallpaper_saturation_dark
+        } else {
+            self.wallpaper_saturation_light
+        }
+    }
+
     /// Whether any field differs from the global appearance.
     pub fn is_set(&self) -> bool {
         self.font_size != 0
@@ -998,8 +1038,10 @@ impl ChannelLook {
             || self.text.is_some()
             || self.wallpaper.is_some()
             || self.wallpaper_blur.is_some()
-            || self.wallpaper_brightness.is_some()
-            || self.wallpaper_saturation.is_some()
+            || self.wallpaper_brightness_light.is_some()
+            || self.wallpaper_brightness_dark.is_some()
+            || self.wallpaper_saturation_light.is_some()
+            || self.wallpaper_saturation_dark.is_some()
             || self.background_opacity.is_some()
             || self.wallpaper_fit.is_some()
             || self.no_wallpaper
@@ -1023,10 +1065,18 @@ impl ChannelLook {
             self.wallpaper = None;
         }
         self.wallpaper_blur = self.wallpaper_blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
-        self.wallpaper_brightness = self.wallpaper_brightness.map(clamp_wallpaper_brightness);
-        self.wallpaper_saturation = self
-            .wallpaper_saturation
-            .map(|s| s.min(MAX_WALLPAPER_SATURATION));
+        for brightness in [
+            &mut self.wallpaper_brightness_light,
+            &mut self.wallpaper_brightness_dark,
+        ] {
+            *brightness = brightness.map(clamp_wallpaper_brightness);
+        }
+        for saturation in [
+            &mut self.wallpaper_saturation_light,
+            &mut self.wallpaper_saturation_dark,
+        ] {
+            *saturation = saturation.map(|s| s.min(MAX_WALLPAPER_SATURATION));
+        }
         self.background_opacity = self.background_opacity.map(|p| p.min(100));
         // "No wallpaper" and a wallpaper path exclude each other.
         if self.no_wallpaper {
@@ -1111,6 +1161,8 @@ impl Default for Appearance {
             channel_tree_opacity: 100,
             channel_log_opacity: 100,
             combined_log_opacity: 100,
+            background_blur: false,
+            background_blur_radius: DEFAULT_BACKGROUND_BLUR_RADIUS,
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
@@ -1334,6 +1386,13 @@ impl Appearance {
         if !(MIN_URL_TOOLTIP_OPACITY..=100).contains(&self.url_tooltip_opacity) {
             return Err(format!(
                 "URL tooltip opacity must be {MIN_URL_TOOLTIP_OPACITY} to 100."
+            ));
+        }
+        if !(MIN_BACKGROUND_BLUR_RADIUS..=MAX_BACKGROUND_BLUR_RADIUS)
+            .contains(&self.background_blur_radius)
+        {
+            return Err(format!(
+                "Background blur radius must be {MIN_BACKGROUND_BLUR_RADIUS} to {MAX_BACKGROUND_BLUR_RADIUS}."
             ));
         }
         for (label, percent) in [
@@ -4201,6 +4260,33 @@ mod tests {
         let mut settings = load_from(&path).unwrap().unwrap();
         assert!(!settings.appearance.compact_urls);
         settings.appearance.compact_urls = true;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn background_blur_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.background_blur);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        assert!(
+            old["appearance"]
+                .as_object_mut()
+                .unwrap()
+                .remove("background_blur")
+                .is_some()
+        );
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.background_blur);
+        assert_eq!(
+            settings.appearance.background_blur_radius,
+            DEFAULT_BACKGROUND_BLUR_RADIUS
+        );
+        settings.appearance.background_blur = true;
+        settings.appearance.background_blur_radius = 33;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }

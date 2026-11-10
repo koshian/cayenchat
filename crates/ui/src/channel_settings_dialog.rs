@@ -19,16 +19,15 @@ use crate::wallpaper_crop::CropState;
 use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
     AutoJoinEntry, ChannelLook, CharRefMode, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR,
-    DEFAULT_WALLPAPER_SATURATION, MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS,
-    MAX_WALLPAPER_PATH_BYTES, MAX_WALLPAPER_SATURATION, MIN_FONT_SIZE, ServerProfile, Settings,
-    TextEncoding, WallpaperFit, clamp_wallpaper_brightness, color_value,
-    default_wallpaper_brightness, format_auto_join,
+    MAX_FONT_SIZE, MAX_WALLPAPER_BLUR, MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_PATH_BYTES,
+    MAX_WALLPAPER_SATURATION, MIN_FONT_SIZE, ServerProfile, Settings, TextEncoding, WallpaperFit,
+    clamp_wallpaper_brightness, color_value, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, FocusNextField, FocusPreviousField,
-    channel_look::{background_opacity_of, blur_of, brightness_of, saturation_of},
+    channel_look::{background_opacity_of, blur_of, own_brightness, own_saturation},
     decorations,
     input::TextInput,
     localization::Localizer,
@@ -225,8 +224,10 @@ pub(crate) fn merge_look(
         text,
         wallpaper,
         wallpaper_blur,
-        wallpaper_brightness,
-        wallpaper_saturation,
+        wallpaper_brightness_light,
+        wallpaper_brightness_dark,
+        wallpaper_saturation_light,
+        wallpaper_saturation_dark,
         background_opacity,
         wallpaper_fit,
         no_wallpaper
@@ -248,12 +249,12 @@ struct LookFields {
     /// Whether the blur is the channel's own, also at the default value or 0:
     /// an inherited one follows the standard wallpaper's.
     blur_own: bool,
-    /// Brightness, -100 to 100, and whether it is the channel's own (#1047).
-    brightness: i8,
-    brightness_own: bool,
-    /// Saturation in percent, 0 to 200, and whether it is the channel's own.
-    saturation: u8,
-    saturation_own: bool,
+    /// The channel's own brightness (-100 to 100) in the light and in the
+    /// dark theme (indexed by `dark as usize`); `None` follows the standard
+    /// wallpaper (#1047).
+    brightness: [Option<i8>; 2],
+    /// The channel's own saturation (percent, 0 to 200), per theme likewise.
+    saturation: [Option<u8>; 2],
     /// Opacity in percent of the background color over the wallpaper.
     opacity: u8,
     /// Whether the opacity is the channel's own, also at the default value:
@@ -322,10 +323,8 @@ impl LookFields {
             ),
             blur: blur_of(&look),
             blur_own: look.wallpaper_blur.is_some(),
-            brightness: brightness_of(&look, crate::theme::current(cx).dark),
-            brightness_own: look.wallpaper_brightness.is_some(),
-            saturation: saturation_of(&look),
-            saturation_own: look.wallpaper_saturation.is_some(),
+            brightness: [false, true].map(|dark| own_brightness(&look, dark)),
+            saturation: [false, true].map(|dark| own_saturation(&look, dark)),
             opacity: background_opacity_of(&look),
             opacity_own: look.background_opacity.is_some(),
             fit: look.wallpaper_fit,
@@ -359,10 +358,8 @@ impl LookFields {
         }
         self.blur = DEFAULT_WALLPAPER_BLUR;
         self.blur_own = false;
-        self.brightness = default_wallpaper_brightness(crate::theme::current(cx).dark);
-        self.brightness_own = false;
-        self.saturation = DEFAULT_WALLPAPER_SATURATION;
-        self.saturation_own = false;
+        self.brightness = [None; 2];
+        self.saturation = [None; 2];
         self.opacity = DEFAULT_BACKGROUND_OPACITY;
         self.opacity_own = false;
         self.fit = None;
@@ -431,8 +428,10 @@ impl LookFields {
             text: color(&self.text, "channel_look_text")?,
             wallpaper: (!wallpaper.is_empty()).then_some(wallpaper),
             wallpaper_blur: self.blur_own.then_some(self.blur),
-            wallpaper_brightness: self.brightness_own.then_some(self.brightness),
-            wallpaper_saturation: self.saturation_own.then_some(self.saturation),
+            wallpaper_brightness_light: self.brightness[0],
+            wallpaper_brightness_dark: self.brightness[1],
+            wallpaper_saturation_light: self.saturation[0],
+            wallpaper_saturation_dark: self.saturation[1],
             background_opacity: self.opacity_own.then_some(self.opacity),
             wallpaper_fit: self.fit,
             no_wallpaper: choice == WallpaperChoice::Off,
@@ -895,16 +894,10 @@ impl ChannelSettingsView {
         // without a standard picture they are the defaults.
         let standard = self.standard_picture(cx).unwrap_or_default();
         (
-            if self.look.brightness_own {
-                self.look.brightness
-            } else {
-                standard.brightness_value(dark)
-            },
-            if self.look.saturation_own {
-                self.look.saturation
-            } else {
-                standard.saturation_percent()
-            },
+            self.look.brightness[usize::from(dark)]
+                .unwrap_or_else(|| standard.brightness_value(dark)),
+            self.look.saturation[usize::from(dark)]
+                .unwrap_or_else(|| standard.saturation_percent()),
         )
     }
 
@@ -950,14 +943,15 @@ impl ChannelSettingsView {
     }
 
     pub(crate) fn set_brightness(&mut self, brightness: i8, cx: &mut Context<Self>) {
-        self.look.brightness = clamp_wallpaper_brightness(brightness);
-        self.look.brightness_own = true;
+        let dark = usize::from(crate::theme::current(cx).dark);
+        self.look.brightness[dark] = Some(clamp_wallpaper_brightness(brightness));
         self.edited(cx);
     }
 
     pub(crate) fn set_saturation(&mut self, saturation: u32, cx: &mut Context<Self>) {
-        self.look.saturation = saturation.min(u32::from(MAX_WALLPAPER_SATURATION)) as u8;
-        self.look.saturation_own = true;
+        let dark = usize::from(crate::theme::current(cx).dark);
+        self.look.saturation[dark] =
+            Some(saturation.min(u32::from(MAX_WALLPAPER_SATURATION)) as u8);
         self.edited(cx);
     }
 

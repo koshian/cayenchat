@@ -544,6 +544,8 @@ impl SettingsForm {
             channel_tree_opacity: self.values.appearance.channel_tree_opacity,
             channel_log_opacity: self.values.appearance.channel_log_opacity,
             combined_log_opacity: self.values.appearance.combined_log_opacity,
+            background_blur: self.values.appearance.background_blur,
+            background_blur_radius: self.values.appearance.background_blur_radius,
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             compact_urls: self.values.appearance.compact_urls,
@@ -1329,6 +1331,14 @@ pub(crate) struct SettingsWindow {
     /// combined log, hover popup): their painted tracks and keyboard focus.
     opacity_tracks: [crate::slider::TrackBounds; 5],
     opacity_focus: [FocusHandle; 5],
+    /// Whether this window's platform can blur what lies behind it, read
+    /// from the window on each render (#1018).
+    blur_supported: bool,
+    /// Whether the blur strength can be chosen there (macOS only), with the
+    /// strength slider's painted track and keyboard focus (#1018).
+    blur_radius_supported: bool,
+    blur_radius_track: crate::slider::TrackBounds,
+    blur_radius_focus: FocusHandle,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1612,6 +1622,10 @@ impl SettingsWindow {
             line_height_tracks: Default::default(),
             opacity_tracks: Default::default(),
             opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            blur_supported: true,
+            blur_radius_supported: false,
+            blur_radius_track: Default::default(),
+            blur_radius_focus: cx.focus_handle().tab_stop(true),
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -5462,6 +5476,100 @@ impl SettingsWindow {
         field
     }
 
+    /// The window-wide background blur switch (#1018). It only does
+    /// something where the platform blurs behind the window, so elsewhere it
+    /// is shown disabled with the reason; the stored value is kept.
+    fn render_background_blur(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let supported = self.blur_supported;
+        let mut row = div()
+            .id("background-blur")
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .gap_2()
+            .child(settings_theme::checkbox(
+                self.settings.values.appearance.background_blur,
+                supported,
+                cx,
+            ))
+            .child(self.i18n.text("background_blur"));
+        if supported {
+            row = row.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                let value = &mut this.settings.values.appearance.background_blur;
+                *value = !*value;
+                cx.notify();
+            }));
+        } else {
+            row = row.text_color(theme.text_muted);
+        }
+        let hint = if supported && self.blur_radius_supported {
+            "background_blur_hint_adjustable"
+        } else if supported {
+            "background_blur_hint"
+        } else {
+            "background_blur_unsupported"
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(row)
+            .when(supported && self.blur_radius_supported, |d| {
+                d.child(self.blur_radius_slider(cx))
+            })
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text(hint)),
+            )
+    }
+
+    /// The strength slider of the background blur (#1018), shown where the
+    /// platform lets the app choose it. The value is the blur radius.
+    fn blur_radius_slider(&self, cx: &mut Context<Self>) -> Div {
+        use cayenchat_storage::{MAX_BACKGROUND_BLUR_RADIUS, MIN_BACKGROUND_BLUR_RADIUS};
+        let theme = settings_theme::palette(cx);
+        let primary = settings_theme::primary_color(cx);
+        let radius = self
+            .settings
+            .values
+            .appearance
+            .background_blur_radius
+            .clamp(MIN_BACKGROUND_BLUR_RADIUS, MAX_BACKGROUND_BLUR_RADIUS);
+        let colors = crate::slider::SliderColors {
+            track: theme.border,
+            fill: primary.into(),
+            knob: theme.surface,
+            ring: primary.into(),
+        };
+        let slider = crate::slider::slider(
+            "background-blur-radius",
+            u32::from(radius - MIN_BACKGROUND_BLUR_RADIUS),
+            u32::from(MAX_BACKGROUND_BLUR_RADIUS - MIN_BACKGROUND_BLUR_RADIUS),
+            &self.blur_radius_track,
+            &self.blur_radius_focus,
+            colors,
+            cx,
+            |this, value, _, _| {
+                this.settings.values.appearance.background_blur_radius =
+                    MIN_BACKGROUND_BLUR_RADIUS + value as u8;
+            },
+        );
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(settings_theme::label_column().child(self.i18n.text("background_blur_radius")))
+            .child(
+                div()
+                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
+                    .flex_shrink_0()
+                    .child(slider),
+            )
+            .child(div().w(px(48.)).flex_shrink_0().child(radius.to_string()))
+    }
+
     fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         account_settings::panel(cx)
@@ -5580,6 +5688,7 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
+            .child(self.render_background_blur(cx))
             .child(
                 div()
                     .id("alternate-rows")
@@ -6075,6 +6184,8 @@ impl SettingsWindow {
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
         let nav_focused = self.nav_focus.is_focused(window);
+        self.blur_supported = window.supports_background_blur();
+        self.blur_radius_supported = window.supports_background_blur_radius();
         let mut tabs = Self::settings_tabs();
         let experimental = tabs.pop();
         let mut nav = div()
