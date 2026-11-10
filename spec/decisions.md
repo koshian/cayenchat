@@ -3895,21 +3895,40 @@ the start of the session.
   them. A channel's own size keeps 0 for "follow the pane" (D084). Since the
   time size is always set now, it no longer follows a larger channel log size.
 - **Standard wallpapers.** `RegionWallpapers` (`wallpapers` for light,
-  `dark.wallpapers` for dark): a file path and a background opacity per area
-  (percent of the area's background color laid over the picture; 100 hides
-  it, as in D088) — channel log, combined log, member list, channel tree.
-  They reuse `media::wallpaper` and the drawing of D088 (default blur and fit;
-  one result per area, keyed by file and blur) with one slot per area. The
-  area's background over the picture has one effective opacity, as in D088 and
-  #930: the pane's own opacity times the wallpaper's (`region_wallpaper`,
-  `channel_look::resolve`). The channel log paints as D088 does for a
-  translucent pane; the other three areas always use the backdrop layer (the
-  picture, and over it the background at the effective opacity) and the
-  combined log's pane is opaque under it. The
-  alternate rows of the channel log show the picture again under their own
-  color (D088); those of the combined log are half transparent. The member
-  list and tree draw the picture and their background over it on the pane;
-  the cached views inside no longer paint the tree's background.
+  `dark.wallpapers` for dark): a file path, a background opacity and a blur
+  per area (opacity: percent of the area's background color laid over the
+  picture, 100 hides it, as in D088; blur: tenths of a pixel, 0 to 30, as in
+  D088; both with the sliders of the Appearance tab, one percent / tenth at a
+  time) — channel log, combined log, member list, channel tree.
+  They reuse `media::wallpaper` and the drawing of D088 (default fit;
+  one result per area, keyed by file and blur) with one slot per area.
+  **The mix and the pane's opacity are independent (#989).** The wallpaper's
+  opacity is the mix of picture and background color; the pane's opacity
+  (#930) is how much of that mix covers the desktop. They were one product
+  (the pane's times the wallpaper's on the color only), so changing the
+  pane's opacity also changed the mix. `channel_look::Layers` now holds the
+  two layers (`region_wallpaper`, `resolve`): the color with alpha `p·b` and
+  the picture under it with `p·(1−b)/(1−p·b)` (`p` the pane's opacity, `b`
+  the mix), whose "over" composition on the desktop is exactly
+  `p·(picture·(1−b) + color·b) + (1−p)·desktop`. GPUI has no group opacity,
+  so the picture is drawn with the element opacity. With `p = 1` it is the
+  former stack (opaque picture, color at `b`). The channel log paints as D088
+  does for a translucent pane (each row, the filler and the frame strips paint
+  the picture at its alpha and their color), and so does the combined log, its
+  alternate rows included (they used to add a half-transparent layer over the
+  picture, which broke the pane's opacity). Where a contain or center fit
+  leaves the box bare, the picture's layer carries the pane color (`gaps`,
+  `paint_picture`), so the pane's opacity holds there whatever the mix. The
+  member list and tree always use the backdrop layer and paint no background
+  of their own while their picture is on show. A test composes the layers
+  against that formula for pane opacities and mixes, and
+  `scripts/e2e/opacity_gui.py` checks the pixels of the channel log (picture,
+  beside it, frame) and of the combined log's rows. The alternate rows of
+  the channel log show the picture again under their own color (D088). The
+  member list and tree draw the picture and their background over it on the
+  pane; the cached views inside no longer paint the tree's background.
+  A channel's blur is its own once set, also 0 or the default (as its
+  opacity): an unset one follows the standard wallpaper's.
 - **Per-channel looks (D084) override the channel log's standard.**
   `ChannelLook::no_wallpaper` joins the path: *inherit* (neither), *none*
   (`no_wallpaper`), *own* (a path); the two never coexist. A channel's background
@@ -3939,7 +3958,59 @@ the start of the session.
   applied appearance depends on neither the distributed file nor the library:
   deleting a theme changes nothing applied. Applying then removes files there
   that neither the saved nor the new settings use (only names of that form).
-  A wallpaper the user picks by hand stays where it is, as with channels.
+  A wallpaper the user picks or drops (#989) is copied, after
+  `media::wallpaper::validate`, to `wallpapers/wallpaper-<hash>.<ext>` (named
+  by content, never pruned by theme applying, whose names are 32 hex digits),
+  so the original or a Photos file promise may vanish.
+- **Editing the standard wallpapers (#989).** The Appearance tab shows a
+  miniature of the chat window (channel log over combined log on the left,
+  member list over channel tree on the right) for one side at a time, chosen
+  by light/dark buttons, starting on the theme in use. Each of the four areas is its own drop target
+  (`ExternalPaths`, with the file promise kept alive until read) with its own
+  "Choose image…" button; the file dialog and a drop both end in
+  `SettingsWindow::wallpaper_offer`, whose target (side, area) is fixed when
+  it starts. A failure shows its reason and keeps the earlier wallpaper. The
+  selected area's change / clear / strength controls sit below. Each area
+  shows its picture under the pane color at the opacity
+  `channel_look::region_wallpaper` resolves, the chat window's own rule (the
+  miniature draws the pane opaque: it shows the mix, which the pane's
+  opacity does not change, on the settings window instead of the desktop). The
+  picture is loaded by the same `channel_look::Wallpaper` slot as the chat
+  window's (`media::wallpaper::load`: ≤ 640 px, first frame, decode gate,
+  released when the area has none), never by GPUI's path-based `img`, which
+  has no size limit and decodes every frame. A drag over an area marks that
+  area (border and fill) apart from the selected area's ring. The
+  miniature shows the standard values only, never a channel's own. The
+  selected area's strength (100 − the stored opacity) and blur are sliders;
+  the former ±5 % buttons are gone.
+  **Details (#989).** Each area has a "Details…" button that opens a panel for
+  the selected area: the same range editor as the channel settings
+  (`wallpaper_crop::CropState`, shared by both screens; "Choose a range…"
+  cuts the range out and keeps it as `wallpapers/wallpaper-<hash>.png`, set on
+  the area it was opened for) and the fit (`RegionWallpaper.fit`, also in
+  `.cayentheme`; unset is cover; a channel's own fit still wins, also an
+  explicit cover: the channel's fit is an `Option`, and while it is unset the
+  fit buttons show the standard wallpaper's). The strength and blur sliders and
+  their labels (`wallpaper_strength`, `wallpaper_blur`) are the same keys on
+  both screens; the channel's strength slider shows 100 − its background
+  opacity. The miniature's "Choose an image…" button is a Tab stop of the
+  channel settings (the old path form is gone).
+- **The channel settings show the same miniature for the channel log
+  (#989).** `channel_settings_dialog/wallpaper_preview.rs`: the picture the
+  channel shows (its own, the standard one or none, resolved by
+  `channel_look::resolve` from the dialog's fields and the chat window's
+  standard wallpaper) under the log's colors, with the same drop target
+  (marked while dragging), "Choose image…" button and "No wallpaper" label.
+  Its own `channel_look::Wallpaper` slot loads the picture like the chat
+  window's. A drop or choice ends in `offer_wallpaper` as before (the range
+  editor). The old path field, Browse button and drop hint are gone; the
+  path is kept as state only.
+- **The chat window keeps `saved.appearance` current.** An appearance saved
+  by the settings window is applied to the chat window (`apply_settings_change`)
+  and now also copied into `ChatWindow::saved`. The channel settings window
+  previews and takes back a look from `saved.appearance`; with the older copy,
+  opening it showed the appearance from before the standard wallpapers were
+  set and so removed all four from the chat window (#989).
 - **Export** writes only the edited light or dark half, under a name asked for
   first (the origin's name is the default) and a file name and place from the
   OS save dialog; it changes no setting, origin or modified state, and fails

@@ -1603,7 +1603,7 @@ impl SettingsWindow {
             pane_scroll: ScrollHandle::new(),
             reveal_focus: 0,
             font_picker: None,
-            themes: crate::theme_settings::ThemeUi::new(),
+            themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             line_height_tracks: Default::default(),
             opacity_tracks: Default::default(),
             opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
@@ -2645,6 +2645,12 @@ impl ChatWindow {
                 cx.notify();
             }
             if appearance_changed {
+                // The channel settings dialog previews and takes back looks
+                // from the saved appearance: it must be the one just saved,
+                // or opening that dialog would show the older appearance
+                // (without the standard wallpapers set since) (#989).
+                owner.saved.appearance = saved.appearance.clone();
+                owner.saved.theme = saved.theme;
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
             }
             if language_changed {
@@ -5451,7 +5457,7 @@ impl SettingsWindow {
         field
     }
 
-    fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         account_settings::panel(cx)
             .child(self.tab_heading("appearance"))
@@ -5588,7 +5594,7 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
-            .child(self.render_wallpaper_settings(cx))
+            .child(self.render_wallpaper_settings(window, cx))
             .child(self.render_font_mode(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
             .child(self.line_height_slider(0, cx))
@@ -6061,7 +6067,7 @@ impl SettingsWindow {
             })
     }
 
-    fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
         let nav_focused = self.nav_focus.is_focused(window);
         let mut tabs = Self::settings_tabs();
@@ -6094,7 +6100,9 @@ impl SettingsWindow {
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Application => self.render_application_settings(cx).into_any_element(),
-            SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
+            SettingsTab::Appearance => self
+                .render_appearance_settings(window, cx)
+                .into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
