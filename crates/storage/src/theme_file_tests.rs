@@ -32,6 +32,8 @@ fn sample() -> Appearance {
         path: Some("/home/me/secret-name/tree.png".into()),
         opacity: Some(55),
         blur: Some(12),
+        brightness: Some(-25),
+        saturation: Some(130),
         fit: Some(crate::WallpaperFit::Contain),
     };
     appearance.channel_looks.push(ChannelLook {
@@ -78,6 +80,7 @@ fn export_import_apply_round_trips_the_dark_side() {
     let tree = &target.dark.wallpapers.channel_tree;
     assert_eq!(tree.opacity, Some(55));
     assert_eq!(tree.blur, Some(12));
+    assert_eq!((tree.brightness, tree.saturation), (Some(-25), Some(130)));
     let path = tree.path.clone().unwrap();
     assert!(path.starts_with(dir.path().to_str().unwrap()));
     assert_eq!(std::fs::read(&path).unwrap(), b"IMG-tree-bytes");
@@ -240,6 +243,8 @@ fn bad_files_are_refused_without_touching_the_appearance() {
         data: text,
         opacity: None,
         blur: None,
+        brightness: None,
+        saturation: None,
         fit: None,
     });
     let mut appearance = Appearance::default();
@@ -405,6 +410,8 @@ fn hostile_settings_values_are_cleaned_on_load() {
         path: Some("x".repeat(5000)),
         opacity: Some(250),
         blur: Some(250),
+        brightness: Some(127),
+        saturation: Some(250),
         fit: None,
     };
     appearance.origin.name = Some("\u{202E}  ".into());
@@ -412,7 +419,73 @@ fn hostile_settings_values_are_cleaned_on_load() {
     appearance.clean_themes();
     assert_eq!(appearance.wallpapers.member_list.path, None);
     assert_eq!(appearance.wallpapers.member_list.opacity, Some(100));
+    assert_eq!(appearance.wallpapers.member_list.brightness, Some(100));
+    assert_eq!(appearance.wallpapers.member_list.saturation, Some(200));
     assert_eq!(appearance.origin, ThemeOrigin::default());
+    let mut look = ChannelLook {
+        wallpaper_brightness_light: Some(-128),
+        wallpaper_brightness_dark: Some(127),
+        wallpaper_saturation_light: Some(250),
+        wallpaper_saturation_dark: Some(201),
+        ..ChannelLook::default()
+    };
+    look.clean();
+    assert_eq!(look.wallpaper_brightness_light, Some(-100));
+    assert_eq!(look.wallpaper_brightness_dark, Some(100));
+    assert_eq!(look.wallpaper_saturation_light, Some(200));
+    assert_eq!(look.wallpaper_saturation_dark, Some(200));
+}
+
+#[test]
+fn brightness_and_saturation_default_by_theme_and_stay_out_of_the_fingerprint_until_changed() {
+    let wallpaper = RegionWallpaper::default();
+    assert_eq!(wallpaper.brightness_value(true), -40);
+    assert_eq!(wallpaper.brightness_value(false), 40);
+    assert_eq!(wallpaper.saturation_percent(), 80);
+    // An explicit default is the same appearance as unset.
+    // Separate wallpapers, so each theme has its own set to change.
+    let mut appearance = Appearance::default();
+    appearance.set_split_wallpapers(true, true);
+    let plain = (appearance.fingerprint(true), appearance.fingerprint(false));
+    appearance.wallpapers_mut(true).channel_log.brightness = Some(-40);
+    appearance.wallpapers_mut(false).channel_log.brightness = Some(40);
+    appearance.wallpapers_mut(true).channel_log.saturation = Some(80);
+    assert_eq!(
+        (appearance.fingerprint(true), appearance.fingerprint(false)),
+        plain
+    );
+    appearance.wallpapers_mut(true).channel_log.brightness = Some(-41);
+    assert_ne!(appearance.fingerprint(true), plain.0);
+    assert_eq!(appearance.fingerprint(false), plain.1);
+
+    // Shared wallpapers: the one set counts for both themes.
+    let mut shared = Appearance::default();
+    let plain = shared.fingerprint(true);
+    shared.wallpapers_mut(true).channel_log.saturation = Some(90);
+    assert_ne!(shared.fingerprint(true), plain);
+}
+
+#[test]
+fn a_theme_file_with_a_tone_out_of_range_is_capped() {
+    let image = STANDARD.encode(b"IMG-ok");
+    let parse = |extra: &str| {
+        let json = format!(
+            r#"{{"version":1,"name":"T","mode":"dark","wallpapers":{{"member_list":{{"data":"{image}"{extra}}}}}}}"#
+        );
+        ThemeFile::parse(json.as_bytes(), &check)
+    };
+    assert!(parse(r#","brightness":-100,"saturation":200"#).is_ok());
+    let tone = |extra: &str| {
+        let slot = parse(extra).unwrap().wallpapers.member_list.unwrap();
+        (slot.brightness, slot.saturation)
+    };
+    assert_eq!(tone(r#","brightness":101"#), (Some(100), None));
+    assert_eq!(tone(r#","brightness":-128"#), (Some(-100), None));
+    assert_eq!(tone(r#","saturation":201"#), (None, Some(200)));
+    // A file without them reads as unset.
+    let theme = parse("").unwrap();
+    let slot = theme.wallpapers.member_list.unwrap();
+    assert_eq!((slot.brightness, slot.saturation), (None, None));
 }
 
 #[test]

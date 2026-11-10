@@ -101,8 +101,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Ready avatars | 2 MiB charged (32×32 BGRA × 2 for CPU copy and GPU tile = 8 KiB each at 2×; 16×16 at 1× and 48×48 at 3× are 2 and 18 KiB; a 96×96 WHOIS image is 72 KiB) | application | Separate from the 32 MiB preview budget. Open WHOIS windows add their larger images to the same budget, so many of them evict the least recently used log images, which are made again from the kept originals. Released images leave the GPU atlas after both avatar panes redrew. |
 | Avatar response and decode | 2 MiB, 3 redirects, 5 s connect, 10 s total; ≤ 4096 px a side, ≤ 4.2 MP, decoder ≤ 24 MiB | per load | The process decode gate and allocation limit apply from decoder construction and header parsing. PNG iCCP/text metadata is discarded; its full input length is conservatively charged before making the filtered copy, and twice any eXIf length is charged because `png` keeps it twice under a limit fixed at construction, and the raster declared by IHDR is also taken off that limit (PNG only; a PNG not starting with a valid IHDR is rejected before stripping, and 512 KiB is kept aside for `png` buffers outside its limit, measured 283–299 KiB plain/Adam7 near the limit). The source raster and copy are charged before decoder intermediate buffers use the remainder. One decoder supplies both dimensions and pixels. Centered square cropped and scaled (area average, as for previews) to the size asked for, never enlarged. A `{size}` URL is always fetched at 128 px. |
 | Channel log looks (D084) | 256 channels, paths ≤ 1,024 bytes | settings | Looked up per drawn channel row by a linear scan of this list (empty for most users). |
-| Channel wallpaper (D084) | one image ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | The selected channel's only, loaded and blurred once per file and blur setting on a background thread, never per frame; released when the channel's look no longer has one. Decoding shares the process decode gate. The range editor of the channel settings window (D088) holds one decoded image ≤ 2048 px a side (about 16 MB) only while it is open, decoded and cut on background threads. |
-| Standard wallpapers (D089) | four images (channel log, combined log, member list, channel tree), each ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | One slot per area, loaded and filtered once per file and blur setting on a background thread, never per frame; released when the area has none. The channel log's standard is the same slot as a channel's own. The Appearance tab's miniature (window, one side) holds its own four slots of the same kind, so at most four more such images while the settings window is open. Each open channel settings window holds one more slot of that kind for its channel log miniature (#989). Decoding shares the process decode gate. A row resolves the channel log's look (`channel_look::resolve`), which clones the picture's path (one short string per row, as a channel's own wallpaper did before); no image data is copied. |
+| Channel wallpaper (D084) | one image ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | The selected channel's only, loaded, blurred and toned (brightness, saturation; D092, about 4 ms) once per file, blur and tone setting on a background thread, never per frame; released when the channel's look no longer has one. Decoding shares the process decode gate. The range editor of the channel settings window (D088) holds one decoded image ≤ 2048 px a side (about 16 MB) only while it is open, decoded and cut on background threads. |
+| Standard wallpapers (D089) | four images (channel log, combined log, member list, channel tree), each ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | One slot per area, loaded and filtered once per file, blur and tone setting on a background thread, never per frame; released when the area has none. The channel log's standard is the same slot as a channel's own. The Appearance tab's miniature (window, one side) holds its own four slots of the same kind, so at most four more such images while the settings window is open. Each open channel settings window holds one more slot of that kind for its channel log miniature (#989). Decoding shares the process decode gate. A row resolves the channel log's look (`channel_look::resolve`), which clones the picture's path (one short string per row, as a channel's own wallpaper did before); no image data is copied. |
 | Theme files (D089) | file ≤ 48 MiB, expanded JSON ≤ 64 MiB, image ≤ 8 MiB each (four), 64 imported themes | per import, apply, export | Read, expanded, decoded and written on a background thread; the expansion is bounded by `take`, so a compression bomb stops at the limit. Applying a theme writes at most four content-named files under `wallpapers/`. |
 | Linux shaping cache | swept every 128 lines | process | Age-based, not a byte bound. |
 
@@ -1501,3 +1501,48 @@ through the production order (text row, confirmation, placeholder, image).
   stay at 52, ready bytes and queue
   bounds are unchanged.
 - Limits: no Windows/macOS run; the no-op text system.
+
+## Wallpaper brightness and saturation (2026-11-10, #1047, D092)
+
+A short check, not a baseline run, in the Linux cloud container (x86_64,
+shared vCPUs; not comparable with the macOS numbers above). Release builds.
+
+**Load cost.** `media::wallpaper` `apply_timing`, an ignored test, on a
+640 × 640 picture (the largest kept), median of 9 runs, one session:
+
+```sh
+cargo test --release --locked -p cayenchat-media apply_timing -- --ignored --nocapture
+```
+
+| `apply` | Median |
+| --- | --- |
+| Neutral tone, no blur (the pass is skipped) | 0.05 ms |
+| Tone only (−40, 80) | 4.9 ms |
+| Strongest blur only | 14.1 ms |
+| Strongest blur and tone | 18.4 ms |
+
+The tone is applied once per load on the background thread, never per frame;
+a neutral tone (brightness 0, saturation 100) costs nothing extra.
+
+**Typing, switching, scrolling and event batches.** `perf_baseline` (headless
+UI test, 10 channels × 2,000 lines, no wallpaper), three runs each of the
+parent `7cfaedc` and the branch, medians in µs, run alternately in one session:
+
+```sh
+cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline -- --ignored --nocapture --test-threads=1 --exact
+```
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch |
+| --- | --- | --- | --- | --- |
+| Parent, runs 1 / 2 / 3 | 317 / 322 / 329 | 1,859 / 1,902 / 1,854 | 1,454 / 1,460 / 1,460 | 1,888 / 1,888 / 1,926 |
+| Branch, runs 1 / 2 / 3 | 354 / 372 / 323 | 1,884 / 1,891 / 1,908 | 1,501 / 1,451 / 1,472 | 1,899 / 2,046 / 1,883 |
+
+Switching, scrolling and batches match within run-to-run noise (the branch's
+typing medians are up to about 15 % over the parent's in two of three runs;
+the third is level, and typing draws no wallpaper).
+
+Limits: the test has no wallpaper, and the headless platform has no GPU, so
+the drawing of a pane with a wallpaper whose tone is unchanged was not timed.
+The code that draws it is unchanged by this change: the tone is applied to
+the held pixels at load, and a draw only reads the same image. No macOS or
+Windows run; no GUI frame-rate measurement.

@@ -26,8 +26,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Appearance, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, MAX_WALLPAPER_BLUR,
-    clamp_font_size, color_value, private_file,
+    Appearance, DEFAULT_BACKGROUND_OPACITY, DEFAULT_WALLPAPER_BLUR, DEFAULT_WALLPAPER_SATURATION,
+    MAX_WALLPAPER_BLUR, MAX_WALLPAPER_SATURATION, clamp_font_size, clamp_wallpaper_brightness,
+    color_value, default_wallpaper_brightness, private_file,
 };
 
 /// The file name extension of a theme file, without the dot.
@@ -93,6 +94,14 @@ pub struct RegionWallpaper {
     /// [`MAX_WALLPAPER_BLUR`]); unset is [`DEFAULT_WALLPAPER_BLUR`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blur: Option<u8>,
+    /// Brightness of the picture (-100 to 100); unset is
+    /// [`default_wallpaper_brightness`] of the theme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<i8>,
+    /// Saturation of the picture in percent (0 to 200); unset is
+    /// [`DEFAULT_WALLPAPER_SATURATION`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<u8>,
     /// How the picture fits the area; unset is [`WallpaperFit::default`]. A
     /// name this version does not know reads as unset.
     #[serde(
@@ -111,6 +120,20 @@ impl RegionWallpaper {
         self.blur
             .unwrap_or(DEFAULT_WALLPAPER_BLUR)
             .min(MAX_WALLPAPER_BLUR)
+    }
+
+    /// The brightness in the theme `dark`, capped to the range.
+    pub fn brightness_value(&self, dark: bool) -> i8 {
+        clamp_wallpaper_brightness(
+            self.brightness
+                .unwrap_or_else(|| default_wallpaper_brightness(dark)),
+        )
+    }
+
+    pub fn saturation_percent(&self) -> u8 {
+        self.saturation
+            .unwrap_or(DEFAULT_WALLPAPER_SATURATION)
+            .min(MAX_WALLPAPER_SATURATION)
     }
 }
 
@@ -155,6 +178,10 @@ impl RegionWallpapers {
             }
             wallpaper.opacity = wallpaper.opacity.map(|p| p.min(100));
             wallpaper.blur = wallpaper.blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
+            wallpaper.brightness = wallpaper.brightness.map(clamp_wallpaper_brightness);
+            wallpaper.saturation = wallpaper
+                .saturation
+                .map(|s| s.min(MAX_WALLPAPER_SATURATION));
         }
     }
 }
@@ -248,6 +275,10 @@ pub struct ThemeWallpaper {
     pub opacity: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<u8>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -407,6 +438,8 @@ impl ThemeFile {
                 data: STANDARD.encode(bytes),
                 opacity: wallpaper.opacity,
                 blur: wallpaper.blur,
+                brightness: wallpaper.brightness,
+                saturation: wallpaper.saturation,
                 fit: wallpaper.fit,
             });
         }
@@ -483,6 +516,12 @@ impl ThemeFile {
         for region in WallpaperRegion::ALL {
             let slot = self.wallpapers.slot(region);
             if let Some(wallpaper) = slot {
+                // The tone is capped like a settings file's; the other
+                // strengths refuse the file.
+                wallpaper.brightness = wallpaper.brightness.map(clamp_wallpaper_brightness);
+                wallpaper.saturation = wallpaper
+                    .saturation
+                    .map(|s| s.min(MAX_WALLPAPER_SATURATION));
                 if wallpaper.opacity.is_some_and(|o| o > 100) {
                     return Err("A wallpaper opacity is out of range.".into());
                 }
@@ -560,6 +599,8 @@ impl ThemeFile {
                 path: Some(path.to_string_lossy().into_owned()),
                 opacity: theme_wallpaper.opacity,
                 blur: theme_wallpaper.blur,
+                brightness: theme_wallpaper.brightness,
+                saturation: theme_wallpaper.saturation,
                 fit: theme_wallpaper.fit,
             };
         }
@@ -1042,6 +1083,19 @@ impl Appearance {
                 ];
                 if wallpaper.blur_tenths() != DEFAULT_WALLPAPER_BLUR {
                     entry.push(Value::from(wallpaper.blur_tenths()));
+                }
+                // The values in effect, so unset and the default are alike.
+                if wallpaper.brightness_value(dark) != default_wallpaper_brightness(dark) {
+                    entry.push(Value::from(format!(
+                        "brightness {}",
+                        wallpaper.brightness_value(dark)
+                    )));
+                }
+                if wallpaper.saturation_percent() != DEFAULT_WALLPAPER_SATURATION {
+                    entry.push(Value::from(format!(
+                        "saturation {}",
+                        wallpaper.saturation_percent()
+                    )));
                 }
                 if let Some(fit) = wallpaper
                     .fit

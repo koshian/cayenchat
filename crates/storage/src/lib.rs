@@ -917,6 +917,22 @@ pub struct ChannelLook {
         skip_serializing_if = "Option::is_none"
     )]
     pub wallpaper_blur: Option<u8>,
+    /// Brightness of the wallpaper (-100 to 100) in the light and in the dark
+    /// theme; unset follows the standard wallpaper, or
+    /// [`default_wallpaper_brightness`] without one. Each theme has its own,
+    /// so one picture can be toned for both (#1047).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_brightness_light: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_brightness_dark: Option<i8>,
+    /// Saturation of the wallpaper in percent (0 to
+    /// [`MAX_WALLPAPER_SATURATION`]) in the light and in the dark theme;
+    /// unset follows the standard wallpaper, or
+    /// [`DEFAULT_WALLPAPER_SATURATION`] without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_saturation_light: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_saturation_dark: Option<u8>,
     /// Opacity of the background color laid over the wallpaper, in percent
     /// (0 to 100; 100 hides the picture); unset is
     /// [`DEFAULT_BACKGROUND_OPACITY`]. Only a wallpaper makes it visible.
@@ -971,11 +987,49 @@ pub const MAX_WALLPAPER_PATH_BYTES: usize = 1024;
 pub const MAX_WALLPAPER_BLUR: u8 = 30;
 /// No blur unless set (the maintainer found even #950's first 3 too strong).
 pub const DEFAULT_WALLPAPER_BLUR: u8 = 0;
+/// The range of a wallpaper's brightness (#1047): -100 is black, 0 leaves the
+/// picture and +100 is white.
+pub const MAX_WALLPAPER_BRIGHTNESS: i8 = 100;
+/// The range of a wallpaper's saturation in percent: 0 is gray, 100 leaves
+/// the picture.
+pub const MAX_WALLPAPER_SATURATION: u8 = 200;
+/// Unset saturation, for both themes (a feel, not a computed value).
+pub const DEFAULT_WALLPAPER_SATURATION: u8 = 80;
+
+/// Unset brightness: toward black in the dark theme and toward white in the
+/// light one, the side away from the text color, so the text stays readable
+/// over the worst pixel at the default opacity.
+pub fn default_wallpaper_brightness(dark: bool) -> i8 {
+    if dark { -40 } else { 40 }
+}
+
+/// A brightness read from a file, capped to the range.
+pub fn clamp_wallpaper_brightness(brightness: i8) -> i8 {
+    brightness.clamp(-MAX_WALLPAPER_BRIGHTNESS, MAX_WALLPAPER_BRIGHTNESS)
+}
 /// The background color over a wallpaper is 50 % opaque unless set (the
 /// wallpaper shows at 50 %; the UI shows `100 - value`).
 pub const DEFAULT_BACKGROUND_OPACITY: u8 = 50;
 
 impl ChannelLook {
+    /// The brightness set for the theme `dark`, if any.
+    pub fn wallpaper_brightness(&self, dark: bool) -> Option<i8> {
+        if dark {
+            self.wallpaper_brightness_dark
+        } else {
+            self.wallpaper_brightness_light
+        }
+    }
+
+    /// The saturation set for the theme `dark`, if any.
+    pub fn wallpaper_saturation(&self, dark: bool) -> Option<u8> {
+        if dark {
+            self.wallpaper_saturation_dark
+        } else {
+            self.wallpaper_saturation_light
+        }
+    }
+
     /// Whether any field differs from the global appearance.
     pub fn is_set(&self) -> bool {
         self.font_size != 0
@@ -984,6 +1038,10 @@ impl ChannelLook {
             || self.text.is_some()
             || self.wallpaper.is_some()
             || self.wallpaper_blur.is_some()
+            || self.wallpaper_brightness_light.is_some()
+            || self.wallpaper_brightness_dark.is_some()
+            || self.wallpaper_saturation_light.is_some()
+            || self.wallpaper_saturation_dark.is_some()
             || self.background_opacity.is_some()
             || self.wallpaper_fit.is_some()
             || self.no_wallpaper
@@ -1007,6 +1065,18 @@ impl ChannelLook {
             self.wallpaper = None;
         }
         self.wallpaper_blur = self.wallpaper_blur.map(|b| b.min(MAX_WALLPAPER_BLUR));
+        for brightness in [
+            &mut self.wallpaper_brightness_light,
+            &mut self.wallpaper_brightness_dark,
+        ] {
+            *brightness = brightness.map(clamp_wallpaper_brightness);
+        }
+        for saturation in [
+            &mut self.wallpaper_saturation_light,
+            &mut self.wallpaper_saturation_dark,
+        ] {
+            *saturation = saturation.map(|s| s.min(MAX_WALLPAPER_SATURATION));
+        }
         self.background_opacity = self.background_opacity.map(|p| p.min(100));
         // "No wallpaper" and a wallpaper path exclude each other.
         if self.no_wallpaper {

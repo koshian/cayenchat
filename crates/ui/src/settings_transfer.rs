@@ -1114,6 +1114,7 @@ mod tests {
                         )
                         .panes
                         .channel_log,
+                        dark,
                     );
                     assert!(request.is_none(), "{region:?} dark={dark}");
                 }

@@ -4211,3 +4211,68 @@ the issue rules out. The maintainer chose the switch (issue comments).
   before the appearance, and the macOS window re-applies it at once while
   blurred. The slider is window-wide, not per pane, and independent of the
   panes' opacity, the wallpaper share and the wallpaper blur (#950).
+
+## D092 — Wallpaper brightness and saturation (#1047)
+
+A wallpaper's readability was tuned only by the background's opacity (D088,
+D089) and the blur, both applied to the whole pane. Raising the opacity until
+the text reads makes the picture look washed out (dark: sooty). Brightness and
+saturation change the picture itself, so the same readability costs less of it.
+They are separate from the blur, the opacity, the pane opacity (#930) and the
+background blur (#1018): none changes another's value or drawing.
+
+- **Formula.** In `media::wallpaper::load`, once per load, after the reduction
+  and the blur (`apply`), on the sRGB values as they are (0 to 1, no
+  linearisation). Saturation `s` (0 to 200 %):
+  `gray = 0.299 R + 0.587 G + 0.114 B`, `c' = clamp(gray + (c − gray) · s/100)`.
+  Then brightness `b` (−100 to +100): `b < 0` → `c'' = c' · (1 + b/100)`;
+  `b > 0` → `c'' = c' + (1 − c') · b/100`. It is a compression toward one end,
+  not an offset: the order of the tones is kept and only the side that meets
+  the text color is lost. `s = 100` and `b = 0` skip the pass, so the pixels
+  are those of before. −100 is black, +100 white, `s = 0` gray. The channels
+  are BGRA in memory; the weights follow R, G and B. About 5 ms for a
+  640 × 640 picture (release build), against about 14 ms for the strongest
+  blur; measured as in `spec/performance.md`, "Wallpaper brightness and saturation".
+- **Range and defaults.** Brightness −100 to 100 (`i8`), saturation 0 to 200
+  (`u8`, percent). Unset: brightness −40 in the dark theme and +40 in the
+  light one, saturation 80 in both. A value outside the range is capped when a
+  settings file is read (`clean`, as the blur is) and when it is used, and
+  when a theme file (`.cayentheme`) is imported (the blur and opacity of a
+  theme file are still refused when out of range).
+- **Why ±40.** Contrast of the body text over the worst pixel (white in dark,
+  black in light) under the default 50 % background: dark (#E3E6EA on #1F2124)
+  2.6 at 0, 4.4 at 30, 5.3 at 40, 6.4 at 50; light (#FFFFFF background, the
+  real text color #20262D, recomputed from the issue's assumed #1F2328) 3.8,
+  6.2, 7.2, 8.3. ±40 puts both above 4.5. Links and
+  NOTICE stay below 4.5 at ±40 in that worst case (dark link 2.9, light 4.0);
+  that is not a reason to default stronger. The saturation 80 is a feel, not a
+  computation, to be changed after trying it on real pictures. The opacity
+  default (50 %) is unchanged.
+- **Where it is stored.** The standard wallpapers (D089) hold `brightness` and
+  `saturation` per area and per theme (`RegionWallpaper`), also in the
+  `.cayentheme` wallpaper entries. A channel's look (`ChannelLook`) holds
+  `wallpaper_brightness_light/_dark` and `wallpaper_saturation_light/_dark`:
+  one pair per theme, so the sliders edit the theme on show only and one
+  picture used in both themes can be toned for each (maintainer, 2026-11-10;
+  a single pair for both themes made a switch between light and dark leave
+  the tone unchanged). Unset in a channel follows the standard wallpaper's value when that has a
+  picture, also when the channel shows its own picture; with no standard
+  picture it is the default of the theme on show. (The blur and opacity of a
+  channel's own picture still use the defaults, as before this change.) A value set in the
+  channel is its own also when equal to the default. The theme fingerprint
+  lists them only when they differ from the theme's defaults, so an applied
+  theme does not turn into "edited". No settings version bump: the fields are
+  optional.
+- **Existing users.** A settings file without the fields reads as the
+  defaults, so **everyone using a wallpaper sees it change after the update**.
+  The maintainer accepted this (2026-11-10); there is no migration branch.
+- **Loading.** `WallpaperRequest` carries the two values and the held picture's
+  key (`channel_look::Key`) includes them, so a change reloads through the same
+  path as the blur (the slot's `CancelFlag` stops the superseded load). The
+  Appearance tab's miniature and the channel settings miniature use the same
+  resolution, so nothing is drawn or kept twice.
+- **Controls.** Sliders "Brightness" (shown signed) and "Saturation" (percent)
+  under "Blur", on the Appearance tab (per selected area and theme) and in the
+  channel settings window, where they show the effective value while inherited
+  and become the channel's own only when moved. The clear button and "reset"
+  return them to unset.

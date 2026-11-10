@@ -130,6 +130,8 @@
   "wallpaper_loading": "画像を読み込んでいます…",
   "wallpaper_strength": "濃さ: {value}%",
   "wallpaper_blur": "ぼかし: {value}",
+  "wallpaper_brightness": "明るさ: {value}",
+  "wallpaper_saturation": "彩度: {value}%",
   "wallpaper_detail": "詳細設定…",
   "wallpaper_detail_close": "閉じる",
   "wallpaper_failed": "壁紙を設定できませんでした（以前の壁紙はそのままです）: {error}",
