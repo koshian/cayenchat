@@ -194,7 +194,10 @@ impl ChatWindow {
         }
         let conversation = match scope {
             Scope::Channel => self.state.casemapping(network).fold(conversation),
-            Scope::Private => cayenchat_irc_core::text::nickname_key(conversation),
+            Scope::Private => cayenchat_irc_core::text::nickname_key(
+                self.state.casemapping(network),
+                conversation,
+            ),
         };
         Some(Record {
             time: received_time(time, SystemTime::now()),

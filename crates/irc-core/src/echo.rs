@@ -36,6 +36,7 @@
 
 use std::{collections::VecDeque, time::Duration};
 
+use cayenchat_model::names::CaseMapping;
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Response, message::Tag};
 use tokio::time::Instant;
 
@@ -205,6 +206,7 @@ impl Echoes {
     /// is enabled; `current_nick` is our nickname.
     pub(crate) fn observe(
         &mut self,
+        mapping: CaseMapping,
         message: &IrcMessage,
         current_nick: &str,
         labeled: bool,
@@ -252,7 +254,7 @@ impl Echoes {
         if let Some(label) = label {
             let ours = |m: &IrcMessage| {
                 m.source_nickname()
-                    .is_some_and(|nick| same_nickname(nick, current_nick))
+                    .is_some_and(|nick| same_nickname(mapping, nick, current_nick))
             };
             match &message.command {
                 IrcCommand::PRIVMSG(..) | IrcCommand::NOTICE(..) if ours(message) => {
@@ -300,13 +302,13 @@ impl Echoes {
             &message.command
             && message
                 .source_nickname()
-                .is_some_and(|nick| same_nickname(nick, current_nick))
+                .is_some_and(|nick| same_nickname(mapping, nick, current_nick))
         {
             let notice = matches!(message.command, IrcCommand::NOTICE(..));
             if let Some(index) = self.pending.iter().position(|pending| {
                 (pending.label.is_none() || !labeled)
                     && pending.notice == notice
-                    && same_nickname(&pending.target, target)
+                    && same_nickname(mapping, &pending.target, target)
                     && pending.text == *text
             }) && let Some(pending) = self.pending.remove(index)
             {
@@ -389,7 +391,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let echo = format!("@label={label} :me!u@h PRIVMSG #a :\u{1}ACTION dances\u{1}");
-        let events = echoes.observe(&line(&echo), "me", true).unwrap();
+        let events = echoes
+            .observe(CaseMapping::Rfc1459, &line(&echo), "me", true)
+            .unwrap();
         assert!(matches!(
             events.as_slice(),
             [Event::OutgoingConfirmed { text: None, action: Some(action), .. }] if action == "dances"
@@ -406,20 +410,29 @@ mod tests {
         // Another client's message as us has no label: it is not ours.
         assert!(
             echoes
-                .observe(&line(":me!u@h PRIVMSG #a :from my phone"), "me", true)
+                .observe(
+                    CaseMapping::Rfc1459,
+                    &line(":me!u@h PRIVMSG #a :from my phone"),
+                    "me",
+                    true
+                )
                 .is_none()
         );
         let echo = format!(
             "@label={label};msgid=m9;time=2026-09-28T10:00:00.000Z :ME!u@h PRIVMSG #a :hello world"
         );
         assert_eq!(
-            describe(echoes.observe(&line(&echo), "me", true)),
+            describe(echoes.observe(CaseMapping::Rfc1459, &line(&echo), "me", true)),
             ["7 ok hello world m9"],
             "the server collapsed the double space"
         );
         assert!(echoes.pending.is_empty());
         // A repeated echo finds nothing pending.
-        assert!(echoes.observe(&line(&echo), "me", true).is_none());
+        assert!(
+            echoes
+                .observe(CaseMapping::Rfc1459, &line(&echo), "me", true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -438,11 +451,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            describe(echoes.observe(&line(&format!("@label={a} :srv ACK")), "me", true)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line(&format!("@label={a} :srv ACK")),
+                "me",
+                true
+            )),
             ["1 ok = "]
         );
         assert_eq!(
             describe(echoes.observe(
+                CaseMapping::Rfc1459,
                 &line(&format!(
                     "@label={b} :srv 404 me #a :Cannot send to channel"
                 )),
@@ -454,9 +473,13 @@ mod tests {
         // A multi-message response: batch start carries the label; lines
         // inside are matched through the batch reference.
         let start = format!("@label={c} :srv BATCH +x labeled-response");
-        assert_eq!(echoes.observe(&line(&start), "me", true), Some(Vec::new()));
+        assert_eq!(
+            echoes.observe(CaseMapping::Rfc1459, &line(&start), "me", true),
+            Some(Vec::new())
+        );
         assert_eq!(
             describe(echoes.observe(
+                CaseMapping::Rfc1459,
                 &line("@batch=x;msgid=m1 :me!u@h PRIVMSG bob :three"),
                 "me",
                 true
@@ -464,7 +487,7 @@ mod tests {
             ["3 ok = m1"]
         );
         assert_eq!(
-            echoes.observe(&line(":srv BATCH -x"), "me", true),
+            echoes.observe(CaseMapping::Rfc1459, &line(":srv BATCH -x"), "me", true),
             Some(Vec::new())
         );
         assert!(echoes.batches.is_empty());
@@ -474,16 +497,20 @@ mod tests {
             .unwrap()
             .unwrap();
         let start = format!("@label={e} :srv BATCH +y chathistory bob");
-        assert_eq!(echoes.observe(&line(&start), "me", true), Some(Vec::new()));
+        assert_eq!(
+            echoes.observe(CaseMapping::Rfc1459, &line(&start), "me", true),
+            Some(Vec::new())
+        );
         assert_eq!(
             describe(echoes.observe(
+                CaseMapping::Rfc1459,
                 &line("@batch=y;msgid=m5 :me!u@h PRIVMSG bob :five"),
                 "me",
                 true
             )),
             ["5 ok = m5"]
         );
-        echoes.observe(&line(":srv BATCH -y"), "me", true);
+        echoes.observe(CaseMapping::Rfc1459, &line(":srv BATCH -y"), "me", true);
         // FAIL replies too.
         let d = echoes
             .track(4, "#a", false, "four", false, true)
@@ -491,6 +518,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             describe(echoes.observe(
+                CaseMapping::Rfc1459,
                 &line(&format!("@label={d} :srv FAIL PRIVMSG BLOCKED :no")),
                 "me",
                 true
@@ -512,16 +540,28 @@ mod tests {
             ":alice!u@h PRIVMSG #a :hi",
         ] {
             assert!(
-                echoes.observe(&line(other), "me", false).is_none(),
+                echoes
+                    .observe(CaseMapping::Rfc1459, &line(other), "me", false)
+                    .is_none(),
                 "{other}"
             );
         }
         assert_eq!(
-            describe(echoes.observe(&line("@msgid=e1 :Me!u@h PRIVMSG #a :hi"), "me", false)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line("@msgid=e1 :Me!u@h PRIVMSG #a :hi"),
+                "me",
+                false
+            )),
             ["1 ok = e1"]
         );
         assert_eq!(
-            describe(echoes.observe(&line(":me!u@h NOTICE BOB :psst"), "me", false)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line(":me!u@h NOTICE BOB :psst"),
+                "me",
+                false
+            )),
             ["2 ok = "]
         );
     }
@@ -571,12 +611,17 @@ mod tests {
         // The delivered copy has no label (the specification forbids it).
         assert!(
             echoes
-                .observe(&line(":me!u@h PRIVMSG me :note"), "me", true)
+                .observe(
+                    CaseMapping::Rfc1459,
+                    &line(":me!u@h PRIVMSG me :note"),
+                    "me",
+                    true
+                )
                 .is_none()
         );
         let echo = format!("@label={label} :me!u@h PRIVMSG me :note");
         assert_eq!(
-            describe(echoes.observe(&line(&echo), "me", true)),
+            describe(echoes.observe(CaseMapping::Rfc1459, &line(&echo), "me", true)),
             ["1 ok = "]
         );
     }
@@ -592,17 +637,32 @@ mod tests {
         // The capability is gone (`labeled == false`): the echoes carry no
         // label, but they are matched by target and text, once.
         assert_eq!(
-            describe(echoes.observe(&line("@msgid=e1 :me!u@h PRIVMSG #A :one"), "me", false)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line("@msgid=e1 :me!u@h PRIVMSG #A :one"),
+                "me",
+                false
+            )),
             ["1 ok = e1"]
         );
         assert_eq!(
-            describe(echoes.observe(&line(":me!u@h NOTICE bob :two"), "me", false)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line(":me!u@h NOTICE bob :two"),
+                "me",
+                false
+            )),
             ["2 ok = "]
         );
         assert!(echoes.pending.is_empty(), "nothing is left to fail later");
         assert!(
             echoes
-                .observe(&line(":me!u@h PRIVMSG #a :one"), "me", false)
+                .observe(
+                    CaseMapping::Rfc1459,
+                    &line(":me!u@h PRIVMSG #a :one"),
+                    "me",
+                    false
+                )
                 .is_none(),
             "a repeat is another client's line"
         );
@@ -614,7 +674,7 @@ mod tests {
             .unwrap();
         let echo = format!("@label={late} :me!u@h PRIVMSG #a :late");
         assert_eq!(
-            describe(echoes.observe(&line(&echo), "me", false)),
+            describe(echoes.observe(CaseMapping::Rfc1459, &line(&echo), "me", false)),
             ["3 ok = "]
         );
         let _ = label;
@@ -629,7 +689,12 @@ mod tests {
         // being confirmed as something it may not be.
         assert!(
             echoes
-                .observe(&line(":me!u@h PRIVMSG #a :hello world"), "me", false)
+                .observe(
+                    CaseMapping::Rfc1459,
+                    &line(":me!u@h PRIVMSG #a :hello world"),
+                    "me",
+                    false
+                )
                 .is_none()
         );
         assert_eq!(echoes.outstanding(), [1]);
@@ -650,16 +715,26 @@ mod tests {
         // unlabeled echo, the labeled one does not (its echo has the label).
         assert!(
             echoes
-                .observe(&line(":me!u@h PRIVMSG #a :after"), "me", true)
+                .observe(
+                    CaseMapping::Rfc1459,
+                    &line(":me!u@h PRIVMSG #a :after"),
+                    "me",
+                    true
+                )
                 .is_none()
         );
         assert_eq!(
-            describe(echoes.observe(&line(":me!u@h PRIVMSG #a :before"), "me", true)),
+            describe(echoes.observe(
+                CaseMapping::Rfc1459,
+                &line(":me!u@h PRIVMSG #a :before"),
+                "me",
+                true
+            )),
             ["1 ok = "]
         );
         let echo = format!("@label={label} :me!u@h PRIVMSG #a :after");
         assert_eq!(
-            describe(echoes.observe(&line(&echo), "me", true)),
+            describe(echoes.observe(CaseMapping::Rfc1459, &line(&echo), "me", true)),
             ["2 ok = "]
         );
     }
@@ -676,7 +751,7 @@ mod tests {
         let echo = if replayed {
             None
         } else {
-            echoes.observe(&replay, "me", false)
+            echoes.observe(CaseMapping::Rfc1459, &replay, "me", false)
         };
         assert!(echo.is_none());
         assert_eq!(echoes.outstanding(), [1]);
@@ -687,7 +762,7 @@ mod tests {
         let echo = if live_replayed {
             None
         } else {
-            echoes.observe(&live, "me", false)
+            echoes.observe(CaseMapping::Rfc1459, &live, "me", false)
         };
         assert_eq!(describe(echo), ["1 ok = "]);
         assert!(echoes.outstanding().is_empty());

@@ -828,18 +828,33 @@ impl AppState {
         self.next_message_sequence
     }
 
-    /// How `network`'s server compares channel names: RFC 1459 until it
+    /// How `network`'s server compares names: RFC 1459 until it
     /// advertises otherwise.
     pub fn casemapping(&self, network: NetworkId) -> CaseMapping {
         self.casemappings.get(&network).copied().unwrap_or_default()
     }
 
-    /// Records the server's channel-name comparison and re-keys the network's
+    /// Records the server's name comparison and re-keys the network's
     /// channels under it, also when it is the default: configured channels
     /// were added without merging. Channels that differ under the new mapping
     /// stay separate conversations; where they fold alike, the first one is
     /// reached. Only names and IDs are read, never the logs.
+    ///
+    /// Nicknames follow the same mapping: a change re-keys the network's
+    /// private conversations by their peer's name and drops its avatar keys
+    /// (the worker announces the mapping before anyone is seen, so little is
+    /// lost; two peers the new mapping folds alike keep separate rows).
     pub fn set_casemapping(&mut self, network: NetworkId, mapping: CaseMapping) {
+        if self.casemapping(network) != mapping {
+            for conversation in &mut self.conversations {
+                if conversation.network == network
+                    && let ConversationKind::Private { peer_key } = &mut conversation.kind
+                {
+                    *peer_key = mapping.fold(&conversation.name);
+                }
+            }
+            self.avatars.remove_network(network);
+        }
         if mapping == CaseMapping::default() {
             self.casemappings.remove(&network);
         } else {

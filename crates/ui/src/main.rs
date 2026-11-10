@@ -704,10 +704,11 @@ fn forget_removed_profiles(
 /// Fills the account and real name a WHOIS reply lacks from what the
 /// connection tracks; what the server said wins.
 fn complete_whois(
+    mapping: cayenchat_model::names::CaseMapping,
     info: &mut WhoisInfo,
     tracked: &std::collections::HashMap<String, (Option<String>, Option<String>)>,
 ) {
-    let key = cayenchat_irc_core::text::nickname_key(&info.nickname);
+    let key = cayenchat_irc_core::text::nickname_key(mapping, &info.nickname);
     let Some((account, realname)) = tracked.get(&key) else {
         return;
     };
@@ -2001,8 +2002,9 @@ impl ChatWindow {
     }
 
     fn is_own_nickname(&self, network: NetworkId, nickname: &str) -> bool {
-        self.own_nickname(network)
-            .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
+        self.own_nickname(network).is_some_and(|own| {
+            cayenchat_irc_core::text::same_nickname(self.state.casemapping(network), own, nickname)
+        })
     }
 
     /// A right click on `nickname` in a private conversation: nothing is
@@ -2058,6 +2060,7 @@ impl ChatWindow {
     fn find_mentions(&self, network: NetworkId, sender: &str, body: &str) -> Found {
         use cayenchat_irc_core::text::{mention_ranges, plain_ranges};
 
+        let mapping = self.state.casemapping(network);
         if self.is_own_nickname(network, sender) {
             return Found::default();
         }
@@ -2066,7 +2069,7 @@ impl ChatWindow {
         let (mut mentioned, mut keyword) = (false, false);
         let ranges = plain_ranges(body, |plain| {
             let mut ranges = own
-                .map(|own| mention_ranges(plain, own))
+                .map(|own| mention_ranges(mapping, plain, own))
                 .unwrap_or_default();
             // A nickname inside a link is part of the address, not a mention.
             if !ranges.is_empty() {
@@ -3314,16 +3317,20 @@ impl ChatWindow {
         let Some(conversation) = self.state.conversation(id) else {
             return Vec::new();
         };
+        let mapping = self.state.casemapping(menu.network);
         let chosen = self
             .member_selection
-            .nicknames(id, &conversation.members)
+            .nicknames(mapping, id, &conversation.members)
             .iter()
-            .map(|nickname| cayenchat_irc_core::text::nickname_key(nickname))
+            .map(|nickname| cayenchat_irc_core::text::nickname_key(mapping, nickname))
             .collect::<Vec<_>>();
         menu.group
             .iter()
             .filter(|nickname| {
-                chosen.contains(&cayenchat_irc_core::text::nickname_key(nickname.as_str()))
+                chosen.contains(&cayenchat_irc_core::text::nickname_key(
+                    mapping,
+                    nickname.as_str(),
+                ))
             })
             .cloned()
             .collect()
@@ -3569,7 +3576,10 @@ impl ChatWindow {
                         .avatars()
                         .for_message(
                             *network,
-                            &cayenchat_irc_core::text::nickname_key(key),
+                            &cayenchat_irc_core::text::nickname_key(
+                                self.state.casemapping(*network),
+                                key,
+                            ),
                             u64::MAX,
                         )
                         .cloned()
@@ -3801,7 +3811,10 @@ impl ChatWindow {
             LogMenuChoice::Private => {
                 // Opens the conversation without sending anything.
                 if let Some(sender) = menu.sender {
-                    let key = cayenchat_irc_core::text::nickname_key(&sender);
+                    let key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(menu.network),
+                        &sender,
+                    );
                     if let Some(id) = self.state.private_conversation(
                         menu.network,
                         &key,
@@ -3888,9 +3901,11 @@ impl ChatWindow {
         if conversation.is_private() {
             return Some(conversation.name.clone());
         }
-        let mut chosen = self
-            .member_selection
-            .nicknames(conversation.id, &conversation.members);
+        let mut chosen = self.member_selection.nicknames(
+            self.state.casemapping(conversation.network),
+            conversation.id,
+            &conversation.members,
+        );
         (chosen.len() == 1).then(|| chosen.remove(0))
     }
 
@@ -5323,9 +5338,10 @@ impl ChatWindow {
             return;
         };
         let conversation = channel.id;
+        let mapping = self.state.casemapping(channel.network);
         let members = selected_participants(&self.state, &self.sessions);
         self.member_selection
-            .click(conversation, &members, index, click);
+            .click(mapping, conversation, &members, index, click);
     }
 
     /// The standard list keys while the channel tree has focus. Moving
@@ -5405,8 +5421,11 @@ impl ChatWindow {
         };
         cx.stop_propagation();
         let conversation = channel.id;
+        let mapping = self.state.casemapping(channel.network);
         let members = selected_participants(&self.state, &self.sessions);
-        let current = self.member_selection.anchor_index(conversation, &members);
+        let current = self
+            .member_selection
+            .anchor_index(mapping, conversation, &members);
         // The measured row height and the pixel range now in view.
         let (row_height, view_top, view_bottom) = {
             let state = self.members_scroll.0.borrow();
@@ -5423,6 +5442,7 @@ impl ChatWindow {
         let page = ((view_bottom - view_top) / row_height) as usize;
         if let Some(index) = list_keys::target(current, members.len(), key, page) {
             self.member_selection.click(
+                mapping,
                 conversation,
                 &members,
                 index,
@@ -5617,7 +5637,11 @@ impl ChatWindow {
                 // one (large channels republish on every JOIN and PART);
                 // only who left in between still matters.
                 if let Some(id) = self.state.channel_id(network, channel) {
-                    self.member_selection.retain_present(id, users);
+                    self.member_selection.retain_present(
+                        self.state.casemapping(network),
+                        id,
+                        users,
+                    );
                 }
                 continue;
             }
@@ -5982,7 +6006,10 @@ impl ChatWindow {
                 // A PRIVMSG opens a private conversation; a NOTICE (usually
                 // services and bots) joins one only if it already exists,
                 // and otherwise stays in the server log as before.
-                let key = cayenchat_irc_core::text::nickname_key(&sender);
+                let key = cayenchat_irc_core::text::nickname_key(
+                    self.state.casemapping(network),
+                    &sender,
+                );
                 let missing = if notice {
                     Missing::Ignore
                 } else {
@@ -6074,7 +6101,8 @@ impl ChatWindow {
                 self.append_own_private(network, &target, text, kind, meta);
             }
             Event::UserNickChanged { from, to } => {
-                let from_key = cayenchat_irc_core::text::nickname_key(&from);
+                let from_key =
+                    cayenchat_irc_core::text::nickname_key(self.state.casemapping(network), &from);
                 if let Some(id) = self.state.private_id(network, &from_key) {
                     self.log_event(
                         network,
@@ -6085,14 +6113,20 @@ impl ChatWindow {
                         &to,
                         None,
                     );
-                    let to_key = cayenchat_irc_core::text::nickname_key(&to);
+                    let to_key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(network),
+                        &to,
+                    );
                     self.state.rename_private(network, &from_key, &to_key, &to);
                     self.state
                         .append_conversation_activity(id, format!("{from} is now known as {to}"));
                 }
             }
             Event::UserQuit { nickname, reason } => {
-                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                let key = cayenchat_irc_core::text::nickname_key(
+                    self.state.casemapping(network),
+                    &nickname,
+                );
                 if let Some(id) = self.state.private_id(network, &key) {
                     let detail = reason.clone().unwrap_or_default();
                     self.log_event(
@@ -6115,7 +6149,10 @@ impl ChatWindow {
                 channel,
                 resumed: false,
             } if !valid_channel(&channel) => {
-                let key = cayenchat_irc_core::text::nickname_key(&channel);
+                let key = cayenchat_irc_core::text::nickname_key(
+                    self.state.casemapping(network),
+                    &channel,
+                );
                 if let Some(id) =
                     self.state
                         .private_conversation(network, &key, &channel, Missing::Create)
@@ -6150,7 +6187,10 @@ impl ChatWindow {
                 let id = if is_channel {
                     self.state.channel_id(network, &channel)
                 } else {
-                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    let key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(network),
+                        &channel,
+                    );
                     self.state.private_id(network, &key)
                 };
                 if let Some(id) = id {
@@ -6172,7 +6212,10 @@ impl ChatWindow {
                 let id = if valid_channel(&channel) {
                     self.state.channel_id(network, &channel)
                 } else {
-                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    let key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(network),
+                        &channel,
+                    );
                     self.state.private_id(network, &key)
                 };
                 if let Some(id) = id {
@@ -6206,8 +6249,11 @@ impl ChatWindow {
                 if let Some(id) = self.state.channel_id(network, &channel)
                     && let Some(conversation) = self.state.conversation(id)
                 {
-                    self.member_selection
-                        .retain_present(id, &conversation.members);
+                    self.member_selection.retain_present(
+                        self.state.casemapping(network),
+                        id,
+                        &conversation.members,
+                    );
                 }
             }
             Event::Topic {
@@ -6254,13 +6300,19 @@ impl ChatWindow {
                 realname,
             } => {
                 if let Some(session) = self.sessions.get_mut(&network) {
-                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    let key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(network),
+                        &nickname,
+                    );
                     session.user_accounts.insert(key, (account, realname));
                 }
             }
             Event::UserAccountForgotten { nickname } => {
                 if let Some(session) = self.sessions.get_mut(&network) {
-                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    let key = cayenchat_irc_core::text::nickname_key(
+                        self.state.casemapping(network),
+                        &nickname,
+                    );
                     session.user_accounts.remove(&key);
                 }
             }
@@ -6286,7 +6338,11 @@ impl ChatWindow {
                 let mut info = *info;
                 // Live tracking fills what WHOIS did not report.
                 if let Some(session) = self.sessions.get(&network) {
-                    complete_whois(&mut info, &session.user_accounts);
+                    complete_whois(
+                        self.state.casemapping(network),
+                        &mut info,
+                        &session.user_accounts,
+                    );
                 }
                 let key = (
                     network,
@@ -6374,7 +6430,10 @@ impl ChatWindow {
                     let id = if valid_channel(&channel) {
                         self.state.channel_id(network, &channel)
                     } else {
-                        let key = cayenchat_irc_core::text::nickname_key(&channel);
+                        let key = cayenchat_irc_core::text::nickname_key(
+                            self.state.casemapping(network),
+                            &channel,
+                        );
                         self.state.private_id(network, &key)
                     };
                     if let (Some(id), Some(session)) = (id, self.sessions.get_mut(&network))
@@ -6466,16 +6525,24 @@ impl ChatWindow {
             // Avatar references are recorded whether or not they are shown;
             // showing them (and downloading images) is the Appearance setting.
             Event::UserAvatar { nickname, url } => {
-                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                let key = cayenchat_irc_core::text::nickname_key(
+                    self.state.casemapping(network),
+                    &nickname,
+                );
                 self.state.set_avatar(network, &key, url.as_deref());
             }
             Event::PeerAvatar { nickname, url } => {
-                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                let key = cayenchat_irc_core::text::nickname_key(
+                    self.state.casemapping(network),
+                    &nickname,
+                );
                 self.state.set_peer_avatar(network, &key, url.as_deref());
             }
             Event::AvatarMoved { from, to } => {
-                let from = cayenchat_irc_core::text::nickname_key(&from);
-                let to = cayenchat_irc_core::text::nickname_key(&to);
+                let from =
+                    cayenchat_irc_core::text::nickname_key(self.state.casemapping(network), &from);
+                let to =
+                    cayenchat_irc_core::text::nickname_key(self.state.casemapping(network), &to);
                 self.state.rename_avatar(network, &from, &to);
             }
             Event::AvatarsReset => {
@@ -6505,7 +6572,7 @@ impl ChatWindow {
         meta: MessageMeta,
     ) {
         let own = self.own_nickname(network).unwrap_or("me").to_owned();
-        let key = cayenchat_irc_core::text::nickname_key(target);
+        let key = cayenchat_irc_core::text::nickname_key(self.state.casemapping(network), target);
         match self
             .state
             .private_conversation(network, &key, target, Missing::Create)
@@ -10060,7 +10127,10 @@ impl ChatWindow {
                                 .avatars()
                                 .for_message(
                                     network,
-                                    &cayenchat_irc_core::text::nickname_key(&message.sender),
+                                    &cayenchat_irc_core::text::nickname_key(
+                                        self.state.casemapping(network),
+                                        &message.sender,
+                                    ),
                                     message.sequence,
                                 )
                                 .cloned()
@@ -10549,7 +10619,11 @@ impl ChatWindow {
         (start..end)
             .map(|index| {
                 let member = participants.get(index).cloned().unwrap_or_default();
-                let selected = self.member_selection.contains(conversation, &member);
+                let selected = self.member_selection.contains(
+                    self.state.casemapping(network),
+                    conversation,
+                    &member,
+                );
                 let channel = channel.name.clone();
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
@@ -10558,7 +10632,13 @@ impl ChatWindow {
                     self.own_avatar_for(network, &nickname).unwrap_or_else(|| {
                         self.state
                             .avatars()
-                            .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
+                            .current(
+                                network,
+                                &cayenchat_irc_core::text::nickname_key(
+                                    self.state.casemapping(network),
+                                    &nickname,
+                                ),
+                            )
                             .cloned()
                     })
                 });
@@ -10640,7 +10720,11 @@ impl ChatWindow {
                                 this.state
                                     .selected_channel()
                                     .map(|channel| {
-                                        this.member_selection.nicknames(channel.id, &participants)
+                                        this.member_selection.nicknames(
+                                            this.state.casemapping(channel.network),
+                                            channel.id,
+                                            &participants,
+                                        )
                                     })
                                     .filter(|chosen| chosen.len() >= 2)
                                     .unwrap_or_default()
@@ -11550,7 +11634,7 @@ fn selected_participants<'a>(
     let own = sessions
         .get(&conversation.network)
         .and_then(|session| session.own_nickname.as_deref());
-    conversation_participants(conversation, own)
+    conversation_participants(state.casemapping(conversation.network), conversation, own)
 }
 
 /// The rows of the right-hand list for `conversation`: a channel's members
@@ -11558,15 +11642,20 @@ fn selected_participants<'a>(
 /// private conversation us followed by the peer, once when both are the same
 /// nickname.
 fn conversation_participants<'a>(
+    mapping: cayenchat_model::names::CaseMapping,
     conversation: &'a cayenchat_model::Conversation,
     own_nickname: Option<&str>,
 ) -> member_selection::Participants<'a> {
     if !conversation.is_private() {
-        return member_selection::Participants::own_first(&conversation.members, own_nickname);
+        return member_selection::Participants::own_first(
+            mapping,
+            &conversation.members,
+            own_nickname,
+        );
     }
     let mut participants = Vec::with_capacity(2);
     if let Some(own) = own_nickname
-        && !cayenchat_irc_core::text::same_nickname(own, &conversation.name)
+        && !cayenchat_irc_core::text::same_nickname(mapping, own, &conversation.name)
     {
         participants.push(own.to_owned());
     }
