@@ -515,6 +515,23 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Opens the range editor on the image the area already has; with none,
+    /// asks for one first.
+    fn wallpaper_range(&mut self, dark: bool, region: WallpaperRegion, cx: &mut Context<Self>) {
+        let current = self
+            .settings
+            .values
+            .appearance
+            .wallpapers(dark)
+            .get(region)
+            .path
+            .clone();
+        match current {
+            Some(path) => self.wallpaper_offer_range(dark, region, vec![PathBuf::from(path)], cx),
+            None => self.wallpaper_choose(dark, region, true, cx),
+        }
+    }
+
     /// Opens the range editor on the image named by `paths` for `region`.
     fn wallpaper_offer_range(
         &mut self,
@@ -1131,6 +1148,7 @@ impl SettingsWindow {
             let ui = &self.themes.wallpaper;
             let ring: Rgba = primary.into();
             let current_fit = wallpaper.fit.unwrap_or_default();
+            let has_image = wallpaper.path.is_some();
             let mut fits = div().flex().flex_wrap().gap_1();
             for (index, (fit, key)) in FIT_CHOICES.into_iter().enumerate() {
                 fits = fits.child(
@@ -1169,9 +1187,17 @@ impl SettingsWindow {
                                 .child(self.i18n.text("wallpaper_range"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
-                                    this.wallpaper_choose(dark, region, true, cx)
+                                    this.wallpaper_range(dark, region, cx)
                                 })),
                         )
+                        .children(has_image.then(|| {
+                            settings_theme::button("wallpaper-range-other", false, cx)
+                                .child(self.i18n.text("wallpaper_range_other"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let WallpaperUi { dark, region, .. } = this.themes.wallpaper;
+                                    this.wallpaper_choose(dark, region, true, cx)
+                                }))
+                        }))
                         .child(
                             settings_theme::button("wallpaper-detail-close", false, cx)
                                 .child(self.i18n.text("wallpaper_detail_close"))

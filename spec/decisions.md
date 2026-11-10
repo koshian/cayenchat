@@ -3987,7 +3987,9 @@ the start of the session.
   the selected area: the same range editor as the channel settings
   (`wallpaper_crop::CropState`, shared by both screens; "Choose a range…"
   cuts the range out and keeps it as `wallpapers/wallpaper-<hash>.png`, set on
-  the area it was opened for) and the fit (`RegionWallpaper.fit`, also in
+  the area it was opened for; when the area already has an image, it opens
+  the editor on that image without a file dialog (#1045), and "Choose a range
+  from another image…" asks for a file as before) and the fit (`RegionWallpaper.fit`, also in
   `.cayentheme`; unset is cover; a channel's own fit still wins, also an
   explicit cover: the channel's fit is an `Option`, and while it is unset the
   fit buttons show the standard wallpaper's). The strength and blur sliders and

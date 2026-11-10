@@ -132,6 +132,7 @@
   "wallpaper_detail": "Details…",
   "wallpaper_detail_close": "Close",
   "wallpaper_range": "Choose a range…",
+  "wallpaper_range_other": "Choose a range from another image…",
   "wallpaper_failed": "The wallpaper could not be set (the earlier one is kept): {error}",
   "channel_look_wallpaper_choice": "Wallpaper",
   "channel_look_wallpaper_inherit": "Use the standard",
