@@ -172,6 +172,10 @@ class Proxy:
         self.holding = False
         self.held = []
         self.links = []
+        # Progress seen on the wire, only to say where a wait got stuck.
+        self.connections = 0
+        self.welcomed = False
+        self.joined = False
         self.lock = threading.Lock()
         self.server = socket.socket()
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -189,6 +193,7 @@ class Proxy:
             server = socket.create_connection(self.upstream)
             with self.lock:
                 self.links.append((client, server))
+                self.connections += 1
             threading.Thread(target=self.client_to_server, args=(client, server), daemon=True).start()
             threading.Thread(target=self.server_to_client, args=(server, client), daemon=True).start()
 
@@ -216,6 +221,10 @@ class Proxy:
         try:
             while data := server.recv(4096):
                 with self.lock:
+                    if b" 001 " in data:
+                        self.welcomed = True
+                    if b" 366 " in data:
+                        self.joined = True
                     if self.holding:
                         self.held.append((client, data))
                         continue
@@ -246,14 +255,32 @@ class Proxy:
         with self.lock:
             return [line for line in self.sent if line.startswith("CHATHISTORY")]
 
-    def wait_for(self, what, predicate, timeout=30):
+    def stage(self):
+        """How far the connection got, for a failure message: the app
+        connected, registered (001), joined (366), and what it sent."""
+        with self.lock:
+            sent = list(self.sent)
+            connections, welcomed, joined = self.connections, self.welcomed, self.joined
+        names = [line.split(" ", 1)[0] for line in sent]
+        return (f"connections={connections} registered={welcomed} joined={joined} "
+                f"commands sent={names[:12]}")
+
+    def wait_for(self, what, predicate, timeout=90):
+        # The first wait covers the app's connection, registration and JOIN,
+        # which a loaded CI runner can take most of a minute to reach after
+        # the window opens. Progress is logged so a failure names the stage.
         deadline = time.time() + timeout
+        stage = None
         while time.time() < deadline:
             found = [line for line in self.history_commands() if predicate(line)]
             if found:
                 return found[-1]
+            now = self.stage()
+            if now != stage:
+                stage = now
+                log(f"waiting for {what}: {now}")
             time.sleep(0.1)
-        raise Failure(f"CayenChat did not send {what}; sent {self.history_commands()}")
+        raise Failure(f"CayenChat did not send {what}; {self.stage()}; history sent {self.history_commands()}")
 
 
 # --------------------------------------------------------------------- peer
@@ -377,6 +404,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     home = tempfile.mkdtemp(prefix="cayenchat-e2e-home-")
     processes = []
+    display = None
     try:
         run = os.path.join(args.ergo_dir, "run")
         port = int(re.search(r'"127\.0\.0\.1:(\d+)":', open(os.path.join(run, "ircd.yaml")).read()).group(1))
@@ -435,6 +463,11 @@ def main():
         return 0
     except Failure as failure:
         log("FAILED:", failure)
+        if display:
+            try:
+                display.save(display.grab(), "failed")
+            except Exception:
+                pass
         log(f"screenshots and logs in {out}")
         return 1
     finally:
