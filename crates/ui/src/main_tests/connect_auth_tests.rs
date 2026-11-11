@@ -71,10 +71,29 @@ fn type_password(
         .update(cx, |input, cx| input.set_text(text, cx));
 }
 
+/// Ends the test's real connection. Its event pump runs on a real worker
+/// thread that `run_until_parked` does not wait for: a late `Closed` or
+/// `Disconnected` would set `manual_disconnect` or start a retry between a
+/// test's injected event and its dialog. A new generation makes the pump
+/// drop whatever the worker still sends.
 fn stop(chat: &mut ChatWindow) {
-    if let Some(connection) = chat.sessions.get_mut(&NET).and_then(|s| s.irc.take()) {
-        let _ = connection.disconnect();
+    if let Some(session) = chat.sessions.get_mut(&NET) {
+        session.generation += 1;
+        if let Some(connection) = session.irc.take() {
+            let _ = connection.disconnect();
+        }
     }
+}
+
+/// The first dialog, or a failure that says there is none.
+fn first_prompt(chat: &ChatWindow) -> &crate::connect_auth::CredentialPrompt {
+    chat.credential_prompts.first().unwrap_or_else(|| {
+        panic!(
+            "no credential dialog was opened (manual_disconnect: {:?}, retry_pending: {:?})",
+            chat.sessions.get(&NET).map(|s| s.manual_disconnect),
+            chat.sessions.get(&NET).map(|s| s.retry_pending),
+        )
+    })
 }
 
 #[gpui::test]
@@ -647,7 +666,7 @@ fn a_464_asks_only_for_the_server_password_and_sends_the_typed_sasl_password_aga
     });
     cx.run_until_parked();
     chat.update_in(cx, |chat, window, cx| {
-        let prompt = &chat.credential_prompts[0];
+        let prompt = first_prompt(chat);
         assert!(prompt.server.is_some(), "the refused password is asked for");
         assert!(prompt.sasl.is_none() && prompt.account.is_none());
         assert_eq!(sent(chat), (None, None), "handed to the dialog");
@@ -686,7 +705,7 @@ fn a_sasl_failure_asks_for_the_account_and_password_and_sends_the_server_passwor
     });
     cx.run_until_parked();
     chat.update_in(cx, |chat, window, cx| {
-        let prompt = &chat.credential_prompts[0];
+        let prompt = first_prompt(chat);
         assert!(prompt.server.is_none(), "the server password is carried");
         assert!(prompt.sasl.is_some());
         assert_eq!(prompt.title_key(), "credential_prompt_sasl_rejected");

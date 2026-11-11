@@ -109,6 +109,14 @@ jobs:
         id: test
         run: cargo test --workspace --locked --verbose
 
+      # The 464 credential-dialog test failed once on macOS (#1054). Repeat it
+      # there with GPUI's seeded iterations to catch a late-event race again.
+      - name: Repeat the 464 credential test (macOS)
+        if: runner.os == 'macOS'
+        env:
+          ITERATIONS: "100"
+        run: cargo test -p cayenchat-ui --locked connect_auth_tests::a_464_asks_only_for_the_server_password_and_sends_the_typed_sasl_password_again -- --exact
+
       # The vendored GPUI crate has its own workspace; run the Linux pipe
       # reader tests explicitly because it is a path dependency here.
       - name: Test Wayland clipboard reader
