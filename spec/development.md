@@ -1285,6 +1285,12 @@ deliberate breakages were checked to fail it: resetting the log list when
 rows are inserted above (the pixel check fails) and placing recovered lines
 before our rejoin instead of after it (the order check fails).
 
+The first wait (for `CHATHISTORY LATEST` after the window opens) allows 90 s
+and logs how far the proxy saw the app get (connected, registered, joined),
+so a slow runner is told apart from a stuck step; a failure also saves a
+screenshot (`failed`). One CI failure (#1055) had the window open after 19 s
+and no connection reaching the proxy for the next 30 s.
+
 ```sh
 cargo build --locked -p cayenchat-ui
 ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
