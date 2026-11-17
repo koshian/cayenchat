@@ -4331,21 +4331,15 @@ fn saved_credential_transport_policies_reach_an_automatic_reconnect(cx: &mut Tes
         }
 
         chat.apply_servers(safer.clone(), cx);
-        for index in 0..2 {
+        for (index, server) in safer.servers.iter().enumerate().take(2) {
             let network = NetworkId(index as u32 + 1);
             let config = chat.reconnect_config(network).unwrap();
             assert_eq!(
                 config.verify_tls_certificates,
-                safer.servers[index].verify_tls_certificates
+                server.verify_tls_certificates
             );
-            assert_eq!(
-                config.allow_plaintext_pass,
-                safer.servers[index].allow_plaintext_pass
-            );
-            assert!(crate::connect_auth::matches_profile(
-                &safer.servers[index],
-                &config
-            ));
+            assert_eq!(config.allow_plaintext_pass, server.allow_plaintext_pass);
+            assert!(crate::connect_auth::matches_profile(server, &config));
         }
     });
 }
