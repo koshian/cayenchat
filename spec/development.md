@@ -184,6 +184,36 @@ compare with `vendor/README.md`. The packaging
 workflow installs a pinned cargo-deb version, since it writes the published
 `.deb`.
 
+OSV triage of 2026-11-18 (#1062; run on the lock files of #1059, 36 packages,
+39 reports, both lock files report the same set, the GPUI one with a few
+patch versions newer). Nothing is exploitable from the app, so nothing is
+fixed now. Re-triage when a report is new, not these:
+
+- Fix exists but the code is not built: `quinn-proto` (RUSTSEC-2026-0523,
+  0524) and `quinn-udp` (0538) are only an optional HTTP/3 dependency of
+  `zed-reqwest` that no enabled feature turns on (`cargo tree` does not list
+  them); they sit in the lock file only. `git2` (0183, 0184) comes through
+  `gpui_util` for its test support alone and the app never calls `Remote::list`
+  or `blame_buffer`. A `cargo update` is possible later but is not needed.
+- Fix exists, reachable only through a dependency we cannot change:
+  `grid` 0.18 (GHSA-38c5-483c-4qqp, integer overflow in `Grid::expand_rows`)
+  is pinned by `taffy` 0.9, which GPUI pins. CayenChat's UI uses no CSS-grid
+  layout and its sizes are small and fixed, so the overflow cannot be
+  triggered; it needs a GPUI/taffy update. `rustix` 1.1.5 (0486, xattr
+  functions with a zero-length buffer) is used by `tempfile`, `polling`,
+  `async-io`, `zbus` and the Wayland/X11 crates, none of which call the xattr
+  functions; a `cargo update -p rustix` to 1.1.6 is safe and should be done
+  with the next routine dependency update.
+- Unmaintained, no fix: `async-std`, `pin-utils`, `instant`, `paste`,
+  `proc-macro-error2`, `rustls-pemfile`, `rustybuzz` (two versions),
+  `ttf-parser` (three versions), `unsafe-libyaml`, `zbus_names`, `zvariant`,
+  `zvariant_derive`. They are not vulnerabilities, only notices, and they
+  arrive through GPUI, `gpui-component` (`rust-i18n` brings
+  `unsafe-libyaml`), `ashpd`/`oo7` and `vendor/irc` (`rustls-pemfile`). Nothing
+  here can replace them; they are accepted until GPUI or the upstream crate
+  moves. `rustybuzz` and `ttf-parser` parse font files, which are the user's
+  installed fonts and embedded fonts, not network data.
+
 On pull requests, CI runs only the jobs the changed paths can affect
 (`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
 `licenses/`) runs nothing, GPUI's per-platform sources under
