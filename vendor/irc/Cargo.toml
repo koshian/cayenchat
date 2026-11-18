@@ -42,13 +42,8 @@ name = "simple_plaintext"
 path = "examples/simple_plaintext.rs"
 required-features = ["tls-native"]
 
-[dependencies.chrono]
-version = "0.4.24"
-features = [
-    "clock",
-    "std",
-]
-default-features = false
+[dependencies.jiff]
+version = "0.2"
 
 [dependencies.encoding]
 version = "0.2.33"

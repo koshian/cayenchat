@@ -8,7 +8,6 @@ use std::{
     time::Duration,
 };
 
-use chrono::prelude::*;
 use futures_util::{future::Future, ready, sink::Sink, stream::Stream};
 use pin_project::pin_project;
 use super::queue::OutgoingSender;
@@ -92,7 +91,7 @@ impl Pinger {
         log::trace!("Sending PING");
 
         // Creates new ping data using the local timestamp.
-        let data = format!("{}", Local::now().timestamp());
+        let data = format!("{}", jiff::Timestamp::now().as_second());
 
         let mut this = self.project();
 
