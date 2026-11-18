@@ -601,8 +601,10 @@ timeout and keeps the link open. The UI adds a row for that server to the
 nickname dialog, prefilled with the rejected nick plus `_` (see Servers and
 sessions); submitting sends NICK (or reconnects if the server
 closed the link, which the core reports as `Refused` so it is not retried with
-the same nick) and replaces the nickname for this session's reconnects without
-changing saved settings. Disconnect closes that server's connection. After registration a rejected
+the same nick, with a copy of the configuration that only this attempt uses)
+and does not change saved settings or the nickname later reconnects start
+with: they try the configured nickname again, and a nickname still in use
+opens the dialog again. Disconnect closes that server's connection. After registration a rejected
 `/nick` only produces a server line instead of dropping the connection.
 Reconnection preserves the in-memory conversation logs and drafts, and
 with chathistory recovers what joined channels missed (see Channel

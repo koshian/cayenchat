@@ -562,6 +562,14 @@ mod disconnect_tests {
         cx.run_until_parked();
         assert_eq!(result, Ok(()));
         assert_eq!(chat.update(cx, |chat, _| chat.notices.all().len()), 1);
+        // The nickname chosen in the dialog is not kept for later reconnects.
+        let kept = chat.update(cx, |chat, _| {
+            chat.sessions[&NetworkId(1)]
+                .active_config
+                .as_ref()
+                .map(|config| config.nickname.clone())
+        });
+        assert_eq!(kept.as_deref(), Some("me"));
     }
 
     #[gpui::test]

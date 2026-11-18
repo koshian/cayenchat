@@ -4551,7 +4551,8 @@ impl ChatWindow {
     }
 
     /// Retries registration with the nickname from the prompt. The nickname
-    /// replaces the configured one for this session's reconnects only.
+    /// is used for this registration only; later reconnects start from the
+    /// configured nickname again.
     fn retry_nickname(
         &mut self,
         network: NetworkId,
@@ -4568,9 +4569,6 @@ impl ChatWindow {
         if let Some(connection) = &session.irc {
             connection.change_nickname(&nickname)?;
         }
-        if let Some(config) = session.active_config.as_mut() {
-            config.nickname = nickname.clone();
-        }
         session.own_nickname = Some(nickname.clone());
         let closed = session.irc.is_none();
         if closed {
@@ -4586,7 +4584,12 @@ impl ChatWindow {
         );
         if closed {
             // The user submitted this nickname, so a failure is announced.
-            self.start_reconnect(network, true, cx);
+            // Only this attempt registers with the chosen nickname; the kept
+            // configuration still holds the wanted one for later reconnects.
+            if let Some(mut config) = self.reconnect_config(network) {
+                config.nickname = nickname;
+                self.reconnect_with_stored_secrets(network, config, None, true, cx);
+            }
         }
         Ok(())
     }
