@@ -431,7 +431,7 @@ impl ConnectionConfig {
     /// within the wire limit.
     pub fn quit_reason_fits(&self, reason: &str) -> bool {
         let reason = reason.trim();
-        !reason.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+        !has_line_break(reason)
             && validate_wire(&format!("QUIT :{reason}\r\n"), &self.encoding).is_ok()
     }
 
@@ -472,33 +472,21 @@ impl ConnectionConfig {
             return Err("Username must not be empty or contain spaces, controls or @.".into());
         }
         check_realname(&self.realname)?;
-        if self
-            .quit_message
-            .chars()
-            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-        {
+        if has_line_break(&self.quit_message) {
             return Err("Quit message must not contain line breaks.".into());
         }
         validate_wire(
             &format!("QUIT :{}\r\n", self.wire_quit_message()),
             &self.encoding,
         )?;
-        if self
-            .sleep_quit_message
-            .chars()
-            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-        {
+        if has_line_break(&self.sleep_quit_message) {
             return Err("Sleep quit message must not contain line breaks.".into());
         }
         validate_wire(
             &format!("QUIT :{}\r\n", self.wire_sleep_quit_message()),
             &self.encoding,
         )?;
-        if self
-            .part_message
-            .chars()
-            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-        {
+        if has_line_break(&self.part_message) {
             return Err("Part message must not contain line breaks.".into());
         }
         if let Some(reason) = self.wire_part_message() {
@@ -529,7 +517,7 @@ impl ConnectionConfig {
         }
         ChannelCharsets::new(&self.channel_encodings)?;
         if let Some(password) = &self.server_password {
-            if password.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+            if has_line_break(password) {
                 return Err("Server password contains a protocol control character.".into());
             }
             if !password.is_empty() && !self.use_tls && !self.allow_plaintext_pass {
@@ -542,14 +530,8 @@ impl ConnectionConfig {
             }
             if sasl.username.is_empty()
                 || sasl.password.is_empty()
-                || sasl
-                    .username
-                    .chars()
-                    .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-                || sasl
-                    .password
-                    .chars()
-                    .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+                || has_line_break(&sasl.username)
+                || has_line_break(&sasl.password)
             {
                 return Err(
                     "SASL username and password must be nonempty and contain no protocol controls."
@@ -571,10 +553,17 @@ fn base_realname(configured: &str) -> &str {
     }
 }
 
+/// Whether `text` holds a character that ends or truncates a line: CR, LF or
+/// NUL. The socket gate is `LineCodec::encode`; this is the early check that
+/// gives a readable error. A test keeps the two character sets equal.
+fn has_line_break(text: &str) -> bool {
+    text.contains(['\r', '\n', '\0'])
+}
+
 /// A realname must fit one line; the encoding and length are checked with
 /// the whole command.
 fn check_realname(value: &str) -> Result<(), String> {
-    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+    if has_line_break(value) {
         return Err("Real name must not contain line breaks.".into());
     }
     Ok(())
@@ -750,7 +739,7 @@ pub fn valid_nickname(value: &str) -> bool {
 }
 
 fn validate_message_text(text: &str) -> Result<(), String> {
-    if text.is_empty() || text.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+    if text.is_empty() || has_line_break(text) {
         Err("Message must not be empty or contain line breaks.".into())
     } else {
         Ok(())
@@ -1874,10 +1863,7 @@ fn ctcp_request(nick: &str, tag: &str, args: &str) -> Result<Outgoing, String> {
 }
 
 fn checked_raw(wire: &str) -> Result<Outgoing, String> {
-    if wire.is_empty()
-        || wire.starts_with([':', '@'])
-        || wire.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-    {
+    if wire.is_empty() || wire.starts_with([':', '@']) || has_line_break(wire) {
         return Err("Invalid IRC command.".into());
     }
     let (command, _) = split_word(wire);
@@ -1904,11 +1890,7 @@ fn with_default_part_reason(mut outgoing: Outgoing, default: Option<&str>) -> Ou
 fn checked_command(command: IrcCommand) -> Result<Outgoing, String> {
     let message = IrcMessage::from(command);
     let wire = message.to_string();
-    if wire
-        .trim_end_matches(['\r', '\n'])
-        .chars()
-        .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-    {
+    if has_line_break(wire.trim_end_matches(['\r', '\n'])) {
         return Err("IRC command contains a protocol control.".into());
     }
     Ok(Outgoing::Raw(message))
