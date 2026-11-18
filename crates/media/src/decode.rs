@@ -7,6 +7,20 @@
 //! header and checked before any pixel buffer is allocated, the decoder's
 //! allocation is capped, and one decode runs at a time in the whole process,
 //! so the full-size image exists only briefly and only once.
+//!
+//! # Why PNG has its own budget handling
+//!
+//! `image`'s PNG decoder always inflates iCCP and compressed text chunks while
+//! it is constructed, and its allocation limit is fixed then
+//! (`png::Decoder::new_with_limits`; `ImageDecoder::set_limits` does not reach
+//! it). `png` could skip those chunks (`set_ignore_text_chunk`,
+//! `set_ignore_iccp_chunk`), but `image` does not expose that, and using `png`
+//! directly would mean our own `ImageDecoder` for every PNG colour type and
+//! Adam7. So for PNG we strip those chunks (`strip_png_metadata`) and take the
+//! copy, twice any eXIf (avatar orientation needs it, and `png` holds it twice),
+//! the IHDR raster and `PNG_UNRESERVED_HEADROOM` off the limit up front
+//! (`png_reservations`). Both walks share the one chunk reader, `PngChunks`.
+//! The measurements behind the headroom are in `spec/performance.md`.
 
 use std::{borrow::Cow, io::Cursor, sync::Mutex};
 
@@ -155,87 +169,87 @@ struct PngScan {
     has_trns: bool,
 }
 
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
+/// Whether `kind` is a chunk `strip_png_metadata` removes.
+fn is_png_metadata(kind: &[u8; 4]) -> bool {
+    matches!(kind, b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt")
+}
+
+/// The one place PNG chunk framing is read. Yields each well-framed chunk as
+/// (type, range of the whole chunk including length, type and CRC) and stops
+/// at the first malformed or truncated one; `rest` then gives where it stopped.
+/// Empty if `bytes` lacks the PNG signature.
+struct PngChunks<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PngChunks<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        let offset = if bytes.starts_with(PNG_SIGNATURE) {
+            PNG_SIGNATURE.len()
+        } else {
+            bytes.len()
+        };
+        Self { bytes, offset }
+    }
+
+    /// Offset of the first byte not yielded as a well-framed chunk.
+    fn rest(&self) -> usize {
+        self.offset
+    }
+}
+
+impl Iterator for PngChunks<'_> {
+    type Item = ([u8; 4], std::ops::Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let start = self.offset;
+        let header = self.bytes.get(start..start.checked_add(8)?)?;
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let end = start.checked_add(8)?.checked_add(length)?.checked_add(4)?;
+        if end > self.bytes.len() {
+            return None;
+        }
+        self.offset = end;
+        Some((header[4..8].try_into().unwrap(), start..end))
+    }
+}
+
 /// Walks well-framed PNG chunks.
 fn scan_png_chunks(bytes: &[u8]) -> PngScan {
-    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     let mut scan = PngScan::default();
-    if !bytes.starts_with(SIGNATURE) {
-        return scan;
-    }
-    let mut offset = SIGNATURE.len();
-    while offset < bytes.len() {
-        let Some(header_end) = offset.checked_add(8) else {
-            break;
-        };
-        let Some(header) = bytes.get(offset..header_end) else {
-            break;
-        };
-        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        let Some(chunk_end) = header_end
-            .checked_add(length)
-            .and_then(|n| n.checked_add(4))
-        else {
-            break;
-        };
-        if chunk_end > bytes.len() {
-            break;
-        }
-        match &header[4..8] {
-            b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt" => scan.has_metadata = true,
-            b"eXIf" => scan.exif_bytes += length as u64,
+    for (kind, range) in PngChunks::new(bytes) {
+        match &kind {
+            b"eXIf" => scan.exif_bytes += (range.len() - 12) as u64,
             b"tRNS" => scan.has_trns = true,
+            _ if is_png_metadata(&kind) => scan.has_metadata = true,
             _ => {}
         }
-        offset = chunk_end;
     }
     scan
 }
 
 /// Drops compressed and uncompressed PNG metadata chunks that the media
 /// decoder does not consume. Malformed chunk framing is left for `png` to
-/// reject, rather than interpreting it differently here.
+/// reject, rather than interpreting it differently here: everything from the
+/// first malformed chunk on is passed through unchanged.
 fn strip_png_metadata(bytes: &[u8]) -> Cow<'_, [u8]> {
-    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if !bytes.starts_with(SIGNATURE) {
-        return Cow::Borrowed(bytes);
-    }
-
-    let mut offset = SIGNATURE.len();
+    let mut chunks = PngChunks::new(bytes);
     let mut output: Option<Vec<u8>> = None;
-    while offset < bytes.len() {
-        let Some(header_end) = offset.checked_add(8) else {
-            return finish_png_filter(bytes, offset, output);
-        };
-        let Some(header) = bytes.get(offset..header_end) else {
-            return finish_png_filter(bytes, offset, output);
-        };
-        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        let Some(chunk_end) = header_end
-            .checked_add(length)
-            .and_then(|n| n.checked_add(4))
-        else {
-            return finish_png_filter(bytes, offset, output);
-        };
-        if chunk_end > bytes.len() {
-            return finish_png_filter(bytes, offset, output);
-        }
-        let kind = &header[4..8];
-        let is_metadata = matches!(kind, b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt");
+    for (kind, range) in chunks.by_ref() {
+        let is_metadata = is_png_metadata(&kind);
         if is_metadata && output.is_none() {
             let mut filtered = Vec::with_capacity(bytes.len());
-            filtered.extend_from_slice(&bytes[..offset]);
+            filtered.extend_from_slice(&bytes[..range.start]);
             output = Some(filtered);
         } else if !is_metadata && let Some(filtered) = &mut output {
-            filtered.extend_from_slice(&bytes[offset..chunk_end]);
+            filtered.extend_from_slice(&bytes[range]);
         }
-        offset = chunk_end;
     }
-    output.map_or(Cow::Borrowed(bytes), Cow::Owned)
-}
-
-fn finish_png_filter<'a>(bytes: &'a [u8], offset: usize, output: Option<Vec<u8>>) -> Cow<'a, [u8]> {
     output.map_or(Cow::Borrowed(bytes), |mut filtered| {
-        filtered.extend_from_slice(&bytes[offset..]);
+        filtered.extend_from_slice(&bytes[chunks.rest()..]);
         Cow::Owned(filtered)
     })
 }
