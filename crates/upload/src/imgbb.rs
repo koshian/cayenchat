@@ -113,7 +113,7 @@ mod tests {
         assert_eq!(interpret(400, bad_key), Err(UploadError::Authentication));
         assert!(matches!(
             interpret(400, r#"{"status_code":400,"error":{"message":"Invalid\r\nimage","code":310}}"#),
-            Err(UploadError::Rejected(message)) if message == "HTTP 400: Invalidimage"
+            Err(UploadError::Rejected(message)) if message == "HTTP 400: Invalid  image"
         ));
         assert!(matches!(
             interpret(429, ""),

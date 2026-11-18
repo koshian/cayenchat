@@ -95,6 +95,36 @@ pub fn strip_formatting(text: &str) -> String {
     plain
 }
 
+/// The one gate for a single line of untrusted text drawn inside the app:
+/// every control character (line breaks and tabs included) becomes a space,
+/// bidirectional controls become U+200B ([`neutralize_bidi`]), the ends are
+/// trimmed, and with `limit` a longer line is cut and ends in `…` (whole
+/// characters only, the result has `limit` at most; `Some(0)` gives an empty
+/// line). Applying it again changes nothing. mIRC formatting codes are
+/// controls here, so they become spaces; callers that want them gone first
+/// use [`strip_formatting`]. The operating system surfaces have their own
+/// gate ([`os_title`], [`os_body`]).
+pub fn shown_line(text: &str, limit: Option<usize>) -> String {
+    let flat: String = text
+        .chars()
+        .map(|ch| match ch {
+            '\u{2028}' | '\u{2029}' => ' ',
+            ch if ch.is_control() => ' ',
+            ch if is_bidi_control(ch) => '\u{200B}',
+            ch => ch,
+        })
+        .collect();
+    let line = flat.trim();
+    match limit {
+        Some(0) if !line.is_empty() => String::new(),
+        Some(limit) if line.chars().nth(limit).is_some() => {
+            let end = line.char_indices().nth(limit - 1).map_or(0, |(i, _)| i);
+            format!("{}…", &line[..end])
+        }
+        _ => line.to_owned(),
+    }
+}
+
 /// The longest title or subject handed to the operating system, in characters.
 pub const OS_TITLE_LIMIT: usize = 200;
 /// The longest dialog or notification body handed to the operating system,
@@ -184,6 +214,25 @@ mod tests {
             assert_eq!(os_body(text), text);
         }
         assert_eq!(os_body("one\ntwo"), "one\ntwo");
+    }
+
+    #[test]
+    fn shown_line_flattens_neutralizes_and_cuts() {
+        let dirty = " a\u{202E}b\r\nc\t\u{2028}\u{7}d ";
+        assert_eq!(shown_line(dirty, None), "a\u{200B}b  c   d");
+        assert_eq!(shown_line("日本語 hello", Some(100)), "日本語 hello");
+        assert_eq!(shown_line("abcdef", Some(6)), "abcdef");
+        assert_eq!(shown_line("abcdefg", Some(6)), "abcde…");
+        assert_eq!(shown_line("あいう", Some(1)), "…");
+        assert_eq!(shown_line("abc", Some(0)), "");
+        assert_eq!(shown_line("", Some(0)), "");
+        assert_eq!(shown_line("a\u{200E}b\u{200F}", None), "a\u{200E}b\u{200F}");
+        for text in [dirty, "abc def ghi", "x\u{202E}y\n\n\n"] {
+            for limit in [None, Some(0), Some(1), Some(4), Some(50)] {
+                let once = shown_line(text, limit);
+                assert_eq!(shown_line(&once, limit), once);
+            }
+        }
     }
 
     #[test]
