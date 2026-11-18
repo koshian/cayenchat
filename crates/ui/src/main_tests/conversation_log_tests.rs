@@ -39,7 +39,7 @@ fn logged(directory: &std::path::Path, relative: &str) -> Vec<String> {
 
 /// The day's file of `conversation` below the first server's directory.
 fn day_file(conversation: &str) -> String {
-    let day = chrono::Local::now().format("%Y-%m-%d");
+    let day = jiff::Zoned::now().strftime("%Y-%m-%d");
     format!("irc.ircnet.com/{conversation}/{day}.log")
 }
 
@@ -455,15 +455,16 @@ fn server_times_far_from_now_do_not_pick_the_day_file(cx: &mut TestAppContext) {
             .finish(std::time::Duration::from_secs(5));
     });
     let files = day_files(directory.path());
-    let near_time = chrono::DateTime::<chrono::Local>::from(near)
-        .format("%Y-%m-%dT%H:%M:%S%.3f")
-        .to_string();
-    let near_day = chrono::DateTime::<chrono::Local>::from(near)
-        .format("%Y-%m-%d.log")
-        .to_string();
-    let today = chrono::DateTime::<chrono::Local>::from(now)
-        .format("%Y-%m-%d.log")
-        .to_string();
+    let local = |time: SystemTime, format: &str| {
+        jiff::Timestamp::try_from(time)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::system())
+            .strftime(format)
+            .to_string()
+    };
+    let near_time = local(near, "%Y-%m-%dT%H:%M:%S%.3f");
+    let near_day = local(near, "%Y-%m-%d.log");
+    let today = local(now, "%Y-%m-%d.log");
     // No file for the days two days away; only today's and the near time's.
     let mut expected_names = vec![near_day.clone(), today.clone()];
     expected_names.sort();

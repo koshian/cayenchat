@@ -124,8 +124,9 @@ pub fn has_tag(message: &IrcMessage, key: &str) -> bool {
 /// Formats an instant as server-time does (`YYYY-MM-DDThh:mm:ss.sssZ`,
 /// UTC, milliseconds), for CHATHISTORY `timestamp=` references.
 pub fn format_server_time(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time)
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+    jiff::Timestamp::try_from(time)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
 }
 
@@ -422,5 +423,13 @@ mod tests {
             format_server_time(SystemTime::UNIX_EPOCH),
             "1970-01-01T00:00:00.000Z"
         );
+        // Sub-millisecond digits are cut, not rounded.
+        assert_eq!(
+            format_server_time(SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(1_999)),
+            "1970-01-01T00:00:00.001Z"
+        );
+        // A value beyond the calendar does not panic.
+        let far = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(u64::MAX / 4);
+        assert!(!format_server_time(far).is_empty());
     }
 }

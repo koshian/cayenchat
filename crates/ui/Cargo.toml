@@ -58,7 +58,7 @@ native-theme-derive = "=0.5.7"
 gpui-component = { version = "=0.5.1", default-features = false }
 unicode-segmentation = "1.12"
 serde_json.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 sys-locale = "0.3.2"
 log = "0.4"
 # OS notifications: org.freedesktop.Notifications over zbus on Linux/BSD,

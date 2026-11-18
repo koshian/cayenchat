@@ -1416,7 +1416,7 @@ Other CTCP (D029): `irc-core::ctcp::CtcpReplies` runs in the worker after
 `PeerAvatars` and before `translate_message`, and consumes every CTCP
 PRIVMSG or NOTICE except ACTION (and AVATAR while peer avatars are on). A
 live private request from a user is answered by `NOTICE <sender>` for PING,
-VERSION (`CayenChat <CARGO_PKG_VERSION>`), TIME (local, via chrono),
+VERSION (`CayenChat <CARGO_PKG_VERSION>`), TIME (local, via jiff),
 CLIENTINFO, USERINFO, FINGER, SOURCE and ERRMSG (an unknown plain tag gets
 `ERRMSG <TAG> :Unknown query`); DCC is never interpreted, and nothing sent
 to a channel is answered. `/ctcp` and `/ping` parse to `Outgoing::Ctcp`;

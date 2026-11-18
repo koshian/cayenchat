@@ -2289,8 +2289,11 @@ fn sorted_members(mut members: Vec<String>) -> Vec<String> {
 /// Local time of day for a message: the server-provided instant when there
 /// is one, otherwise now (receipt time).
 fn display_time(received: Option<SystemTime>) -> TimeOfDay {
-    use chrono::Timelike;
-    let local = received.map_or_else(chrono::Local::now, chrono::DateTime::<chrono::Local>::from);
+    let local = received
+        .and_then(|time| jiff::Timestamp::try_from(time).ok())
+        .map_or_else(jiff::Zoned::now, |time| {
+            time.to_zoned(jiff::tz::TimeZone::system())
+        });
     TimeOfDay::new(local.hour() as u8, local.minute() as u8)
 }
 

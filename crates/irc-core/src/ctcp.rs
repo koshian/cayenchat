@@ -474,8 +474,8 @@ fn shown_params(params: &str) -> String {
 }
 
 fn local_time() -> String {
-    chrono::Local::now()
-        .format("%a %b %e %H:%M:%S %Y %z")
+    jiff::Zoned::now()
+        .strftime("%a %b %e %H:%M:%S %Y %z")
         .to_string()
 }
 
@@ -612,7 +612,17 @@ mod tests {
             ]
         );
         // The real clock gives a non-empty time.
-        assert!(!local_time().is_empty());
+        // Its shape is "Mon Sep 28 12:34:56 2026 +0900", a single-digit day
+        // padded with a space.
+        let time = local_time();
+        let fields: Vec<_> = time.split_whitespace().collect();
+        assert_eq!(fields.len(), 6, "{time}");
+        let offset = fields[5].as_bytes();
+        assert!(
+            matches!(offset[0], b'+' | b'-') && offset[1..].iter().all(u8::is_ascii_digit),
+            "{time}"
+        );
+        assert_eq!(offset.len(), 5, "{time}");
     }
 
     #[test]

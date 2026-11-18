@@ -7,14 +7,15 @@
 //! confirmed echo changes it without any bookkeeping.
 
 use cayenchat_model::{Message, Timestamp, names::CaseMapping};
-use chrono::{Local, NaiveDate, TimeZone};
+use jiff::civil::Date;
 
 /// The calendar day of `at` in the zone the shown times use, so messages on
 /// either side of local midnight never join, and the same "HH:MM" on another
-/// day is not a continuation. `None` for an instant chrono cannot represent.
-fn local_date(at: Timestamp) -> Option<NaiveDate> {
+/// day is not a continuation. `None` for an instant jiff cannot represent.
+fn local_date(at: Timestamp) -> Option<Date> {
     let millis = i64::try_from(at.as_millis()).ok()?;
-    Some(Local.timestamp_millis_opt(millis).single()?.date_naive())
+    let instant = jiff::Timestamp::from_millisecond(millis).ok()?;
+    Some(instant.to_zoned(jiff::tz::TimeZone::system()).date())
 }
 
 /// What stands left of / above a Reiwa mode line. The discriminants are the
@@ -67,6 +68,16 @@ pub fn lead(above: Option<&Message>, message: &Message, mapping: CaseMapping) ->
 mod tests {
     use super::*;
     use cayenchat_model::TimeOfDay;
+
+    /// 2026-10-`day` `hour`:`minute` in the local zone, as epoch milliseconds.
+    fn local_millis(day: i8, hour: i8, minute: i8) -> u64 {
+        jiff::civil::date(2026, 10, day)
+            .at(hour, minute, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .unwrap()
+            .timestamp()
+            .as_millisecond() as u64
+    }
 
     fn said(sender: &str, hour: u8, minute: u8) -> Message {
         Message {
@@ -159,13 +170,7 @@ mod tests {
     #[test]
     fn a_notice_does_not_join_across_midnight() {
         let at = |day, hour, minute| Message {
-            timestamp: Some(Timestamp::from_millis(
-                Local
-                    .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
-                    .earliest()
-                    .unwrap()
-                    .timestamp_millis() as u64,
-            )),
+            timestamp: Some(Timestamp::from_millis(local_millis(day, hour, minute))),
             ..noticed("Alice", 1, 10)
         };
         assert_eq!(
@@ -180,13 +185,7 @@ mod tests {
             timestamp: Some(Timestamp::from_millis(millis)),
             ..said("Alice", 1, 10)
         };
-        let local = |day, hour, minute| {
-            Local
-                .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
-                .earliest()
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let local = local_millis;
         let noon = local(24, 12, 0);
         assert_eq!(lead(Some(&at(noon)), &at(noon + 5_000), MAP), Lead::Text);
         assert_eq!(

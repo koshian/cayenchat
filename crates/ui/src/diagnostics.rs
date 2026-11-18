@@ -88,7 +88,7 @@ pub fn configure(settings: &Experimental) -> Result<(), String> {
                 stderr,
                 "[CayenChat {}] Debug stderr logging enabled ({})",
                 env!("CARGO_PKG_VERSION"),
-                chrono::Local::now().to_rfc3339()
+                jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%.9f%:z")
             );
         }
         Ok(())

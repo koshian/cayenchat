@@ -10,7 +10,7 @@ license = "MPL-2.0"
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 # OS credential stores: Keychain, Credential Manager, freedesktop Secret Service.
 keyring = "4.2"
 uuid = { version = "1", features = ["v4"] }
