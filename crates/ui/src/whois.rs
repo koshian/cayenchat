@@ -377,11 +377,31 @@ fn idle_text(seconds: u64) -> String {
 }
 
 fn signon_text(timestamp: i64) -> Option<String> {
-    jiff::Timestamp::from_second(timestamp).ok().map(|time| {
-        time.to_zoned(jiff::tz::TimeZone::system())
-            .strftime("%Y-%m-%d %H:%M:%S")
-            .to_string()
-    })
+    signon_in(timestamp, &jiff::tz::TimeZone::system())
+}
+
+/// The sign-on time in `zone`. `jiff::Timestamp` ends about a day before
+/// 9999-12-31, but the server may send any second of that year: the last
+/// hours are converted by civil arithmetic with the offset `zone` has at the
+/// end of `Timestamp`'s range (UTC if that would leave the year). Beyond the
+/// calendar nothing is shown.
+fn signon_in(timestamp: i64, zone: &jiff::tz::TimeZone) -> Option<String> {
+    const FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+    if let Ok(time) = jiff::Timestamp::from_second(timestamp) {
+        return Some(time.to_zoned(zone.clone()).strftime(FORMAT).to_string());
+    }
+    let utc = jiff::civil::date(1970, 1, 1)
+        .at(0, 0, 0, 0)
+        .checked_add(jiff::SignedDuration::from_secs(timestamp))
+        .ok()?;
+    let shift =
+        jiff::SignedDuration::from_secs(i64::from(zone.to_offset(jiff::Timestamp::MAX).seconds()));
+    Some(
+        utc.checked_add(shift)
+            .unwrap_or(utc)
+            .strftime(FORMAT)
+            .to_string(),
+    )
 }
 
 fn button(
@@ -624,6 +644,22 @@ mod tests {
     use crate::avatars::Shown;
     use gpui::RenderImage;
     use std::sync::Arc;
+
+    #[test]
+    fn signon_keeps_the_last_day_of_year_9999() {
+        let tokyo = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
+        // 9999-12-31T00:00:00Z, past jiff's `Timestamp` range.
+        assert_eq!(
+            super::signon_in(253_402_214_400, &tokyo).as_deref(),
+            Some("9999-12-31 09:00:00")
+        );
+        // Local time would fall in year 10000: UTC stands in.
+        assert_eq!(
+            super::signon_in(253_402_300_799, &tokyo).as_deref(),
+            Some("9999-12-31 23:59:59")
+        );
+        assert_eq!(super::signon_in(i64::MAX, &tokyo), None);
+    }
 
     #[test]
     fn slot_shows_image_default_or_nothing_while_loading() {

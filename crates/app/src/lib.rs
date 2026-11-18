@@ -2289,11 +2289,35 @@ fn sorted_members(mut members: Vec<String>) -> Vec<String> {
 /// Local time of day for a message: the server-provided instant when there
 /// is one, otherwise now (receipt time).
 fn display_time(received: Option<SystemTime>) -> TimeOfDay {
-    let local = received
-        .and_then(|time| jiff::Timestamp::try_from(time).ok())
-        .map_or_else(jiff::Zoned::now, |time| {
-            time.to_zoned(jiff::tz::TimeZone::system())
-        });
+    local_time_of_day(received, &jiff::tz::TimeZone::system())
+}
+
+/// `display_time` in `zone`. `jiff::Timestamp` ends about a day before
+/// 9999-12-31, yet a `server-time` tag may name any instant of that year;
+/// those last hours are converted by civil arithmetic with the offset `zone`
+/// has at the end of `Timestamp`'s range (UTC if that would leave the year).
+/// Beyond the calendar, which no tag can name, the receipt time stands in.
+fn local_time_of_day(received: Option<SystemTime>, zone: &jiff::tz::TimeZone) -> TimeOfDay {
+    let Some(time) = received else {
+        let now = jiff::Zoned::now();
+        return TimeOfDay::new(now.hour() as u8, now.minute() as u8);
+    };
+    if let Ok(instant) = jiff::Timestamp::try_from(time) {
+        let local = instant.to_zoned(zone.clone());
+        return TimeOfDay::new(local.hour() as u8, local.minute() as u8);
+    }
+    let epoch = jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0);
+    let utc = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|after| jiff::SignedDuration::try_from(after).ok())
+        .and_then(|after| epoch.checked_add(after).ok());
+    let Some(utc) = utc else {
+        return display_time(None);
+    };
+    let shift =
+        jiff::SignedDuration::from_secs(i64::from(zone.to_offset(jiff::Timestamp::MAX).seconds()));
+    let local = utc.checked_add(shift).unwrap_or(utc);
     TimeOfDay::new(local.hour() as u8, local.minute() as u8)
 }
 

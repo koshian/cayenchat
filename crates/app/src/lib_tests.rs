@@ -3003,3 +3003,28 @@ fn notified_history_lines_follow_their_line_when_the_block_is_ordered() {
         .unwrap();
     assert_eq!(line.text, "newer");
 }
+
+#[test]
+fn the_last_day_of_year_9999_keeps_its_time_of_day() {
+    // Past jiff's `Timestamp` range, yet a `server-time` tag may name it.
+    let tokyo = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
+    let at = |secs: u64| Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+    // 9999-12-31T00:00:00Z and T13:45:00Z.
+    assert_eq!(
+        local_time_of_day(at(253_402_214_400), &tokyo).to_string(),
+        "09:00"
+    );
+    assert_eq!(
+        local_time_of_day(
+            at(253_402_214_400 + 13 * 3600 + 45 * 60),
+            &jiff::tz::TimeZone::UTC
+        )
+        .to_string(),
+        "13:45"
+    );
+    // Local time would fall in year 10000: UTC stands in.
+    assert_eq!(
+        local_time_of_day(at(253_402_300_799), &tokyo).to_string(),
+        "23:59"
+    );
+}
