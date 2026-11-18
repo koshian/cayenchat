@@ -13,9 +13,12 @@
 [advisories]
 unmaintained = "workspace"
 # RUSTSEC-2026-0543: chrono is marked unmaintained (no known vulnerability, no
-# patched version). Four workspace crates use it for timestamps and local time
-# formatting; moving to jiff or time is a separate, wider change. Remove this
-# entry when chrono is replaced or the advisory is withdrawn.
+# patched version). Four workspace crates use it only for the current time,
+# local time conversion and formatting; no untrusted input reaches it
+# (server-time tags are parsed by hand in irc-core/src/tags.rs).
+# gpui-component requires chrono even in 0.10, so replacing our uses would not
+# remove it; revisit when gpui-component drops it or the advisory is
+# withdrawn. A real chrono vulnerability still fails this check.
 ignore = ["RUSTSEC-2026-0543"]
 
 # Several versions of one crate exist (mostly separate GPUI generations of
