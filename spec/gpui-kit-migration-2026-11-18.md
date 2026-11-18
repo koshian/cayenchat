@@ -48,8 +48,11 @@ vendor/gpui/PATCHES.md の項目を 0.3.12 のソースと突き合わせた。
   `gpui-pre-windows/src/events.rs` は同じ順序。
 - Windows: `WM_QUERYENDSESSION` / `WM_ENDSESSION` でシャットダウン時に終了処理を
   実行 (#284)。0.3.12 は `handle_end_session` を持つ。
-- Windows: IME の ON/OFF (`update_ime_enabled`) と `InputHandler::accepts_text_input`
-  (元は Zed からの移植)。Wayland の `update_ime_enabled` も上流にある。
+- Windows: IME の ON/OFF の基本機能 (`update_ime_enabled`) と
+  `InputHandler::accepts_text_input` (元は Zed からの移植)。Wayland の
+  `update_ime_enabled` も上流にある。**ただし CayenChat 固有の保護は含まれない**
+  (次の「未取り込み」の `discarding_ime_commit` を参照)。関数が存在することと、
+  パッチ全体が同等であることを区別すること。
 - Wayland: サーバー装飾が無いとき client 側装飾にフォールバック。
 - Linux: XDG portal の外観変更で `RefCell` の借用を保持したまま呼ばない。
 - `hoverable_tooltip` (`elements/div.rs`)、`SystemMenuType::Window`。
@@ -61,6 +64,13 @@ vendor/gpui/PATCHES.md の項目を 0.3.12 のソースと突き合わせた。
 - `InputHandler::prefers_direct_input` (CayenChat 独自。macOS の
   `allowedInputSourceLocales` の切り替えを含む)。**日本語 IME まわりの回帰に直結する。**
   上流の `accepts_text_input` だけでは「入力欄だが IME を切る」場面を表せない。
+- Windows: IME 確定文字の破棄 (`discarding_ime_commit`、`events.rs` の
+  `handle_ime_composition` と IME 無効化側)。フォーカス移動で IME を外すとき、
+  `ImmNotifyIME(CPS_COMPLETE)` が返す確定文字を、新しくフォーカスを得た欄へ
+  渡さない (パスワード欄の文字が別の欄へ流出し、選択範囲を置き換えるのを防ぐ)。
+  公開済み `gpui-pre-windows 0.3.12` の同等処理は `CPS_COMPLETE` の確定文字を
+  通常の入力ハンドラーへ渡すので、**この保護は上流にない**。`prefers_direct_input`
+  とは別に移植し、回帰確認の対象にする。
 - `App::on_quit_request` (macOS の Dock からの Quit を取り消せる)。
 - `Menu::menu_type` が `Option<SystemMenuType>` であること (上流は `SystemMenuType`
   で、`None` に相当する値が違う)。
@@ -87,7 +97,7 @@ vendor/gpui/PATCHES.md の項目を 0.3.12 のソースと突き合わせた。
 
 つまり vendor/gpui を**そのまま捨てることはできない**。Windows の IME 修正
 (#880 と language-key) は上流に入ったが、独自の API (`prefers_direct_input`、
-`on_quit_request`、背景ぼかし、クリップボード上限、折り返し) を載せるパッチは
+`on_quit_request`、`discarding_ime_commit`、背景ぼかし、クリップボード上限、折り返し) を載せるパッチは
 0.3.12 に対して再作成が必要。`gpui-pre-*` は crate が分割されているので、vendor は
 `gpui-pre`、`-windows`、`-linux`、`-macos`、`-platform` に分かれ、`[patch.crates-io]`
 の対象と PATCHES.md の記述も組み替えになる。
@@ -165,14 +175,28 @@ vendor/gpui/PATCHES.md の項目を 0.3.12 のソースと突き合わせた。
 1. **移行は可能だが、独立した大きな作業**。型の修正だけなら数百行の機械的な
    変更で済むが、独自の GPUI パッチ (IME 切り替え、背景ぼかし、クリップボード上限、
    折り返し、macOS の drop など) を 0.3.12 の分割 crate に載せ直す作業が本体。
-2. Windows の IME 修正 (language key、`RESULTSTR` 順序) は上流に入ったので、移行後は
-   その二つのパッチは不要。ただし日本語 IME の実機確認は必須。
+2. Windows の IME 修正のうち language key と `RESULTSTR` 順序は上流に入ったので、
+   移行後はその二つのパッチは不要。IME の ON/OFF の基本機能も上流にあるが、
+   確定文字の破棄 (`discarding_ime_commit`) は上流になく、載せ直す。日本語 IME の
+   実機確認は必須で、確認項目に「未確定文字がある状態から別の入力欄 (特に
+   パスワード欄から他の欄) へ直接フォーカスを移し、新しい欄に文字が混入しない
+   こと」を含める。
 3. 移行の順序案: (a) `gpui-pre 0.3.12` + `gpui-component 0.9.1` + 0.7.1 コネクタへの
    更新と、独自 API のパッチの再作成を一つのPRで。(b) Windows / macOS / Linux で
    起動・日本語 IME・キー操作・背景ぼかしを確認。(c) その上で #262 → #622 → #623。
    (a) は `vendor/gpui` を段階的に分割する大きな PR になるので、API の読み替え
    (focus、unparse など) だけの PR と、パッチの載せ替えの PR に分けるのが安全。
-4. 上流への還元で `vendor/gpui` を縮められる項目: `prefers_direct_input`、
+4. **段階分割と #1025 の完了条件**: 本PRは予備調査 (段階1) であり、Issue の
+   「候補版での起動・日本語 IME・キー操作・基本UIの確認」は**完了していない**。
+   候補依存は現状コンパイルできず実行確認ができないため、完了には段階2 として
+   「候補依存 + 再作成パッチが通り、起動できる検証用ブランチ」の作成と、
+   Windows / macOS / Linux での確認が要る。#1024 の設定画面改修は段階2 の確認後に
+   着手する。この分割はメンテナーの合意待ち (Issue #1025 で確認する)。
+   そのため本PRは Issue を閉じない (`Refs`)。
+5. 再現性のため、試験で変更した依存に `native-theme-derive =0.7.1` も含める。
+   `native-theme-gpui 0.7.1` は推移依存として `gpui-kit 0.9.1` を引くので、
+   facade を直接指定しなくても依存には残る。
+6. 上流への還元で `vendor/gpui` を縮められる項目: `prefers_direct_input`、
    `PathPromptFilter`、`on_quit_request`、クリップボードの上限。
 
 ## 未確認
