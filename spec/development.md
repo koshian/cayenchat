@@ -185,16 +185,24 @@ workflow installs a pinned cargo-deb version, since it writes the published
 `.deb`.
 
 OSV triage of 2026-11-18 (#1062; run on the lock files of #1059, 36 packages,
-39 reports, both lock files report the same set, the GPUI one with a few
-patch versions newer). Nothing is exploitable from the app, so nothing is
-fixed now. Re-triage when a report is new, not these:
+39 reports: 22 in `Cargo.lock` and 17 in `vendor/gpui/Cargo.lock`, the GPUI
+one with a few patch versions newer). Only the root lock reports `quinn-proto`
+(both reports), `quinn-udp`, `rustix` and `unsafe-libyaml`; every other report
+below appears in both. Nothing was found exploitable from the app in this
+dependency configuration and at these versions, so the accepted reports are
+not fixed now (the fixable ones are updated in #1064). The acceptance holds
+only for this configuration. Re-evaluate it when a dependency path, enabled
+feature or version changes (HTTP/3 turned on, a CSS-grid layout, an xattr
+call, a new `git2` use) or when an advisory's text changes, and triage new
+reports as usual:
 
 - Fix exists but the code is not built: `quinn-proto` (RUSTSEC-2026-0523,
   0524) and `quinn-udp` (0538) are only an optional HTTP/3 dependency of
   `zed-reqwest` that no enabled feature turns on (`cargo tree` does not list
   them); they sit in the lock file only. `git2` (0183, 0184) comes through
   `gpui_util` for its test support alone and the app never calls `Remote::list`
-  or `blame_buffer`. A `cargo update` is possible later but is not needed.
+  or `blame_buffer`. Both versions are in both locks; updating needs `git2`
+  0.21 from `gpui_util`.
 - Fix exists, reachable only through a dependency we cannot change:
   `grid` 0.18 (GHSA-38c5-483c-4qqp, integer overflow in `Grid::expand_rows`)
   is pinned by `taffy` 0.9, which GPUI pins. CayenChat's UI uses no CSS-grid
@@ -202,8 +210,8 @@ fixed now. Re-triage when a report is new, not these:
   triggered; it needs a GPUI/taffy update. `rustix` 1.1.5 (0486, xattr
   functions with a zero-length buffer) is used by `tempfile`, `polling`,
   `async-io`, `zbus` and the Wayland/X11 crates, none of which call the xattr
-  functions; a `cargo update -p rustix` to 1.1.6 is safe and should be done
-  with the next routine dependency update.
+  functions; the update to 1.1.6 (like `quinn-proto` and `quinn-udp`) is in
+  #1064.
 - Unmaintained, no fix: `async-std`, `pin-utils`, `instant`, `paste`,
   `proc-macro-error2`, `rustls-pemfile`, `rustybuzz` (two versions),
   `ttf-parser` (three versions), `unsafe-libyaml`, `zbus_names`, `zvariant`,
