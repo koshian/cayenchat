@@ -12,7 +12,11 @@
 
 [advisories]
 unmaintained = "workspace"
-ignore = []
+# RUSTSEC-2026-0543: chrono is marked unmaintained (no known vulnerability, no
+# patched version). Four workspace crates use it for timestamps and local time
+# formatting; moving to jiff or time is a separate, wider change. Remove this
+# entry when chrono is replaced or the advisory is withdrawn.
+ignore = ["RUSTSEC-2026-0543"]
 
 # Several versions of one crate exist (mostly separate GPUI generations of
 # hashbrown, ttf-parser, getrandom, syn and others). Forbidding them would
