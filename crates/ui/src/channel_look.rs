@@ -711,15 +711,7 @@ impl Wallpaper {
                         };
                         entry.state = match result {
                             Ok(thumbnail) => {
-                                let buffer = image::RgbaImage::from_raw(
-                                    thumbnail.width,
-                                    thumbnail.height,
-                                    thumbnail.bgra,
-                                )
-                                .expect("wallpaper buffer matches its size");
-                                State::Ready(Arc::new(RenderImage::new(vec![image::Frame::new(
-                                    buffer,
-                                )])))
+                                State::Ready(crate::render_image::from_thumbnail(thumbnail).0)
                             }
                             Err(_) => State::Failed,
                         };
