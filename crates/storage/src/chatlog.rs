@@ -208,7 +208,7 @@ fn is_device_name(stem: &str) -> bool {
 /// Bidirectional embedding, override and isolate controls (U+202A–U+202E,
 /// U+2066–U+2069). The same range as `cayenchat_model::display::is_bidi_control`
 /// (a test keeps them equal); `storage` does not depend on `model`.
-fn is_bidi_control(ch: char) -> bool {
+pub(crate) fn is_bidi_control(ch: char) -> bool {
     matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 

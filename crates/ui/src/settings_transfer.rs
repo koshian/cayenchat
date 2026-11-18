@@ -44,20 +44,7 @@ fn shown_text(text: &str) -> String {
 }
 
 fn shown_with_limit(text: &str, limit: usize) -> String {
-    let flat: String = text
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect();
-    let flat = display::neutralize_bidi_owned(flat);
-    let mut chars = flat.trim().chars();
-    let mut out: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        if limit > 0 {
-            out.pop();
-        }
-        out.push('…');
-    }
-    out
+    display::shown_line(text, Some(limit))
 }
 /// The file name the save dialog starts with.
 const EXPORT_FILE_NAME: &str = "cayenchat-settings.json";
