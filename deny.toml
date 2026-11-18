@@ -12,7 +12,12 @@
 
 [advisories]
 unmaintained = "workspace"
-ignore = []
+ignore = [
+    # chrono is unmaintained (no known bug). The workspace crates use it for
+    # local time and log timestamps, and gpui-component depends on it too, so
+    # replacing it (jiff or time) is a separate migration.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; migration tracked separately" },
+]
 
 # Several versions of one crate exist (mostly separate GPUI generations of
 # hashbrown, ttf-parser, getrandom, syn and others). Forbidding them would
