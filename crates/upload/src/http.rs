@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cayenchat_model::{attachment::Attachment, display::neutralize_bidi_owned};
+use cayenchat_model::{attachment::Attachment, display};
 
 use crate::{
     NETWORK_CONNECTION_FAILED, NETWORK_HOST_NOT_FOUND, NETWORK_OTHER, NETWORK_REPLY_TOO_LARGE,
@@ -125,15 +125,10 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// A provider message made safe to show: no control characters,
-/// bidirectional controls neutralized, bounded.
+/// A provider message made safe to show: one line, bounded
+/// ([`display::shown_line`]).
 pub(crate) fn display_message(text: &str) -> String {
-    let plain: String = text
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(160)
-        .collect();
-    neutralize_bidi_owned(plain)
+    display::shown_line(text, Some(160))
 }
 
 #[cfg(test)]
@@ -171,7 +166,7 @@ mod tests {
         assert!(text.contains("name=\"image\"; filename=\"a_b.png\""));
         assert!(text.contains("Content-Type: image/png\r\n\r\n\u{fffd}PNG"));
         assert!(text.ends_with(&format!("\r\n--{boundary}--\r\n")));
-        assert_eq!(display_message("a\r\nb"), "ab");
+        assert_eq!(display_message("a\r\nb"), "a  b");
         assert_eq!(
             display_message("a\u{202E}b\u{2066}\x07\n"),
             "a\u{200B}b\u{200B}"

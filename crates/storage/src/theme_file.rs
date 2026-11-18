@@ -369,16 +369,18 @@ pub type ThemeError = String;
 pub type ImageCheck<'a> = &'a dyn Fn(&[u8]) -> Result<&'static str, String>;
 
 /// A theme name made safe to show: control and bidirectional control
-/// characters are dropped, the ends trimmed, the length bounded.
+/// characters are dropped, the ends trimmed, the length bounded. The
+/// bidirectional controls are `chatlog::is_bidi_control` (`storage` cannot
+/// use `model::display`). The marks LRM, RLM and ALM, which other text keeps,
+/// are dropped here too: a name is stored in the library index and compared
+/// and sorted as plain text, and the marks would make two names look equal.
 pub fn clean_theme_name(name: &str) -> String {
     let kept: String = name
         .chars()
         .filter(|c| {
             !c.is_control()
-                && !matches!(
-                    *c,
-                    '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-                )
+                && !crate::chatlog::is_bidi_control(*c)
+                && !matches!(*c, '\u{061C}' | '\u{200E}' | '\u{200F}')
         })
         .collect();
     kept.trim().chars().take(MAX_THEME_NAME_CHARS).collect()

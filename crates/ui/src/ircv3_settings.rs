@@ -1181,11 +1181,7 @@ pub(crate) fn own_avatar_failure(failure: AvatarRequestFailure) -> Failure {
 /// service, made safe where it is drawn: controls (including line breaks)
 /// become spaces and bidirectional controls are neutralized.
 pub(crate) fn feedback_line(text: &str) -> String {
-    let flat: String = text
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect();
-    cayenchat_model::display::neutralize_bidi_owned(flat)
+    cayenchat_model::display::shown_line(text, None)
 }
 
 /// The line describing `outcome`, and whether it is a failure.
