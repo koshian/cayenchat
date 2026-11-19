@@ -2305,8 +2305,14 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
         let mut state = client.borrow_mut();
         match event {
             zwp_text_input_v3::Event::Enter { .. } => {
+                let window = state.keyboard_focused_window.clone();
                 drop(state);
-                this.enable_ime();
+                // Honor a direct-input field's wish right away: waiting for the
+                // next frame would let composed text reach it (#1081).
+                match enter_ime_action(window.and_then(|window| window.query_ime_enabled())) {
+                    true => this.enable_ime(),
+                    false => this.disable_ime(),
+                }
             }
             zwp_text_input_v3::Event::Leave { .. } => {
                 drop(state);
@@ -2369,6 +2375,13 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
             _ => {}
         }
     }
+}
+
+/// Whether a text-input `enter` should enable the IME, given the focused
+/// handler's wish. Without a handler the compositor default (enabled) stands
+/// until the next frame decides.
+fn enter_ime_action(handler_wish: Option<bool>) -> bool {
+    handler_wish.unwrap_or(true)
 }
 
 fn linux_button_to_gpui(button: u32) -> Option<MouseButton> {
@@ -3217,6 +3230,13 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn enter_keeps_the_ime_off_for_direct_input_fields() {
+        assert!(!enter_ime_action(Some(false)));
+        assert!(enter_ime_action(Some(true)));
+        assert!(enter_ime_action(None));
+    }
 
     #[test]
     fn rejects_required_globals_below_supported_versions() {

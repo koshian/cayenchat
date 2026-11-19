@@ -1069,21 +1069,23 @@ impl WaylandWindowStatePtr {
         self.schedule_frame();
     }
 
+    /// Whether the focused input handler wants the IME, or `None` when the
+    /// window has no handler registered at the moment.
+    pub fn query_ime_enabled(&self) -> Option<bool> {
+        let mut input_handler = self.state.borrow_mut().input_handler.take()?;
+        let enabled = input_handler.query_ime_enabled();
+        self.state.borrow_mut().input_handler = Some(input_handler);
+        Some(enabled)
+    }
+
     fn update_ime_enabled(&self) {
-        let mut state = self.state.borrow_mut();
+        let state = self.state.borrow();
         if !state.active {
             return;
         }
         let client = state.client.clone();
-        let ime_enabled = if let Some(mut input_handler) = state.input_handler.take() {
-            drop(state);
-            let accepts_text_input = input_handler.query_ime_enabled();
-            self.state.borrow_mut().input_handler = Some(input_handler);
-            accepts_text_input
-        } else {
-            drop(state);
-            false
-        };
+        drop(state);
+        let ime_enabled = self.query_ime_enabled().unwrap_or(false);
         if Some(ime_enabled) == client.ime_enabled() {
             return;
         }

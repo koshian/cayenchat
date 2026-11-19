@@ -2351,9 +2351,10 @@ OS-wide settings stay untouched.
   composition; `IACE_DEFAULT` to attach again. It runs after the frame, because
   completing the composition needs the window. Wayland: text-input
   disable/enable, applied only while that window is active. 0.3.12's
-  text-input `enter` enables the IME unconditionally, so a direct-input field
-  keeps it on after a window switch until the next frame (the 0.2.2 copy
-  honored the wish on enter; not re-applied). macOS: `allowedInputSourceLocales`
+  text-input `enter` enables the IME unconditionally; the patch makes it ask
+  the focused window's handler first and leave the IME off for a direct-input
+  field (without a handler it still enables, and the next frame decides).
+  macOS: `allowedInputSourceLocales`
   of the window's own view limited to Roman input sources, as for a password
   field; a missing input context is not cached as done, so the next handler
   registration asks again. X11/XIM: no per-field switch; typing works as
