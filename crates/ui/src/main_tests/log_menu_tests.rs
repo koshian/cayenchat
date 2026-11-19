@@ -159,7 +159,7 @@ fn escape_closes_the_menu_while_the_message_input_has_focus(cx: &mut TestAppCont
     let (chat, cx) = open_chat(cx);
     chat.update_in(cx, |chat, window, cx| {
         let input = chat.inputs[&chat.state.selection()].clone();
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         input.update(cx, |input, cx| input.set_text("draft", cx));
         chat.open_log_menu(point(px(10.), px(10.)), Some("bob"), window, cx);
     });
@@ -179,7 +179,7 @@ fn pasting_waits_for_a_finished_composition(cx: &mut TestAppContext) {
     let (chat, cx) = open_chat(cx);
     chat.update_in(cx, |chat, window, cx| {
         let input = chat.inputs[&chat.state.selection()].clone();
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         cx.write_to_clipboard(ClipboardItem::new_string("pasted".into()));
         input.update(cx, |input, cx| {
             input.replace_and_mark_text_in_range(None, "かな", None, window, cx)

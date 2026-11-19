@@ -178,7 +178,7 @@ impl ChatWindow {
             input.set_placeholder(&placeholder, cx);
             input.select_everything(cx);
         });
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         if !was_open {
             // A term kept from last time is searched again, in the logs as
             // they are now.
@@ -217,7 +217,7 @@ impl ChatWindow {
         search.jump_pending = false;
         search.reveal = None;
         if let Some(input) = self.inputs.get(&self.state.selection()) {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -567,7 +567,7 @@ impl ChatWindow {
         };
         let input = search.input.clone();
         input.update(cx, |input, cx| input.set_text("", cx));
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
     }
 
     pub(crate) fn search_set_scope(
@@ -584,7 +584,7 @@ impl ChatWindow {
             self.search_begin(true, window, cx);
         }
         if let Some(search) = self.search.as_ref() {
-            window.focus(&search.input.focus_handle(cx));
+            window.focus(&search.input.focus_handle(cx), cx);
         }
     }
 

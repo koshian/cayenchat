@@ -270,8 +270,8 @@ cargo build --locked -p cayenchat-ui
 ```
 
 Commit Cargo.lock when committing the application. No rust-toolchain override is used:
-The desktop UI requires Rust 1.94 (`crates/ui/Cargo.toml`) for the pinned
-`native-theme-gpui` 0.5.7 connector. Other workspace crates retain Rust 1.88
+The desktop UI requires Rust 1.95 (`crates/ui/Cargo.toml`) for the pinned
+`native-theme-gpui` 0.7.1 connector (#1081). Other workspace crates retain Rust 1.88
 (`rust-version` in the workspace manifest): GPUI 0.2.2
 uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
 several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it

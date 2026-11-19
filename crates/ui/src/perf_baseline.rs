@@ -385,7 +385,7 @@ fn run_with(
         (ids, input)
     });
     cx.update(|window, cx| {
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         window.refresh();
     });
     cx.run_until_parked();

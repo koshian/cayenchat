@@ -983,8 +983,8 @@ impl ChatWindow {
     fn close_key_prompt(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.key_prompts.remove(index);
         match self.key_prompts.first() {
-            Some(next) => window.focus(&next.input.focus_handle(cx)),
-            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx)),
+            Some(next) => window.focus(&next.input.focus_handle(cx), cx),
+            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx),
         }
     }
 
@@ -1009,7 +1009,7 @@ impl ChatWindow {
         if let Some(index) = pending
             && !typing
         {
-            window.focus(&self.key_prompts[index].input.focus_handle(cx));
+            window.focus(&self.key_prompts[index].input.focus_handle(cx), cx);
         }
         let theme = theme::current(cx);
         let border = theme.border;

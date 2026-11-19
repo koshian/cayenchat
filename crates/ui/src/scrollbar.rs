@@ -63,12 +63,12 @@ impl Source {
         let (viewport, max, offset) = match self {
             Self::List(state) => (
                 state.viewport_bounds().size.height,
-                state.max_offset_for_scrollbar().height,
+                state.max_offset_for_scrollbar().y,
                 -state.scroll_px_offset_for_scrollbar().y,
             ),
             Self::Handle(handle) => (
                 handle.bounds().size.height,
-                handle.max_offset().height,
+                handle.max_offset().y,
                 -handle.offset().y,
             ),
         };

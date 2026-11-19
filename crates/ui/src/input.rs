@@ -746,7 +746,7 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         if self.double_click_selects_all && event.click_count >= 2 && !event.modifiers.shift {
             // Not a drag start, so moving the mouse keeps the selection.
             self.is_selecting = false;
@@ -795,7 +795,7 @@ impl TextInput {
     /// Opens the edit menu at the pointer. The field takes the focus, the
     /// selection stays, so a selected text can be cut or copied from it.
     fn open_menu(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.menu = Some(InputMenu {
             position: event.position,
         });
@@ -807,7 +807,7 @@ impl TextInput {
     fn choose(&mut self, choice: MenuChoice, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         cx.notify();
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         let action: Box<dyn gpui::Action> = match choice {
             MenuChoice::Undo => Box::new(Undo),
             MenuChoice::Redo => Box::new(Redo),
@@ -965,7 +965,7 @@ impl TextInput {
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         let read = cx.read_from_clipboard_async();
         self.clipboard_read = Some(cx.spawn_in(window, async move |this, cx| {
-            let item = read.await;
+            let item = read.await.ok().flatten();
             let _ = this.update_in(cx, |this, window, cx| {
                 let Some(item) = item else {
                     return;
@@ -1191,11 +1191,22 @@ fn nickname_matches(prefix: &str, members: &[String]) -> Vec<String> {
         .collect()
 }
 
-impl EntityInputHandler for TextInput {
-    fn prefers_direct_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+impl TextInput {
+    /// Whether the platform IME is to be detached while this input has focus.
+    // TODO(#1081): `EntityInputHandler::prefers_direct_input` is a GPUI patch
+    // that is not re-applied yet (the IME and focus patch); until then the
+    // platform is not told, and these fields keep the IME on.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn prefers_direct_input(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> bool {
         self.prefers_direct_input
     }
+}
 
+impl EntityInputHandler for TextInput {
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -1693,8 +1704,15 @@ impl Element for TextElement {
                 window.paint_quad(selection)
             }
             let origin = point(bounds.left() - scroll_x, bounds.top());
-            line.paint(origin, window.line_height(), window, cx)
-                .unwrap();
+            line.paint(
+                origin,
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .unwrap();
 
             if focus_handle.is_focused(window)
                 && let Some(cursor) = prepaint.cursor.take()
@@ -1844,15 +1862,13 @@ impl Render for TextInput {
                     .on_action(cx.listener(Self::document_end))
                     .on_action(cx.listener(Self::select_document_start))
                     .on_action(cx.listener(Self::select_document_end))
-                    .on_scroll_wheel(cx.listener(
-                        |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                            if this.multiline {
-                                let delta = event.delta.pixel_delta(window.line_height());
-                                this.scroll_by(-delta.y, cx);
-                                cx.stop_propagation();
-                            }
-                        },
-                    ))
+                    .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, window, cx| {
+                        if this.multiline {
+                            let delta = event.delta.pixel_delta(window.line_height());
+                            this.scroll_by(-delta.y, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
                     .on_action(cx.listener(Self::paste))
                     .on_action(cx.listener(Self::cut))
                     .on_action(cx.listener(Self::copy))
@@ -2017,12 +2033,12 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
         KeyBinding::new("right", Right, Some("TextInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
-        KeyBinding::new("secondary-a", SelectAll, Some("TextInput")),
-        KeyBinding::new("secondary-v", Paste, Some("TextInput")),
-        KeyBinding::new("secondary-c", Copy, Some("TextInput")),
-        KeyBinding::new("secondary-x", Cut, Some("TextInput")),
-        KeyBinding::new("secondary-z", Undo, Some("TextInput")),
-        KeyBinding::new("secondary-shift-z", Redo, Some("TextInput")),
+        KeyBinding::new(secondary!("a"), SelectAll, Some("TextInput")),
+        KeyBinding::new(secondary!("v"), Paste, Some("TextInput")),
+        KeyBinding::new(secondary!("c"), Copy, Some("TextInput")),
+        KeyBinding::new(secondary!("x"), Cut, Some("TextInput")),
+        KeyBinding::new(secondary!("z"), Undo, Some("TextInput")),
+        KeyBinding::new(secondary!("shift-z"), Redo, Some("TextInput")),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
@@ -2946,13 +2962,17 @@ mod tests {
         input.read_with(cx, |input, _| assert!(input.menu.is_none()));
     }
 
-    #[test]
-    fn application_shortcuts_parse() {
+    #[gpui::test]
+    fn application_shortcuts_parse(cx: &mut gpui::TestAppContext) {
         use cayenchat_storage::ChannelNumberModifier;
         for modifier in [ChannelNumberModifier::Alt, ChannelNumberModifier::Super] {
-            assert!(crate::shortcut_bindings(modifier, &Default::default()).len() >= 30);
+            let count =
+                cx.update(|cx| crate::shortcut_bindings(modifier, &Default::default(), cx).len());
+            assert!(count >= 30);
         }
-        let bindings = crate::shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
+        let bindings = cx.update(|cx| {
+            crate::shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default(), cx)
+        });
         assert!(bindings.len() >= 30);
         let settings = bindings
             .iter()

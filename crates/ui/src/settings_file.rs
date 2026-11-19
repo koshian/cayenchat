@@ -356,7 +356,7 @@ mod tests {
         let nickname = form.read_with(cx, |form, _| form.settings.nickname.clone());
         let text = |cx: &gpui::App| nickname.read(cx).text().to_owned();
         let before = cx.update(|_, cx| text(cx));
-        cx.update(|window, cx| window.focus(&nickname.read(cx).focus_handle(cx)));
+        cx.update(|window, cx| window.focus(&nickname.read(cx).focus_handle(cx), cx));
         form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
         cx.simulate_input("X");
         assert_eq!(cx.update(|_, cx| text(cx)), before);
@@ -387,6 +387,7 @@ mod tests {
             cx.bind_keys(crate::shortcut_bindings(
                 cayenchat_storage::ChannelNumberModifier::Ctrl,
                 &Default::default(),
+                cx,
             ));
         });
         let (form, cx) = open(&settings, cx);
@@ -406,7 +407,7 @@ mod tests {
         };
         let (_, _, _, pane_before) = state(&form, cx);
         assert!(form.read_with(cx, |form, _| {
-            form.auto_join.as_ref().unwrap().scroll.max_offset().height > gpui::px(0.)
+            form.auto_join.as_ref().unwrap().scroll.max_offset().y > gpui::px(0.)
         }));
 
         let row_focused = |form: &gpui::Entity<SettingsWindow>,
@@ -427,7 +428,7 @@ mod tests {
             let first = form.auto_join.as_ref().unwrap().rows[0]
                 .name
                 .focus_handle(cx);
-            window.focus(&first);
+            window.focus(&first, cx);
         });
         cx.run_until_parked();
         // Forward to the last row: it is shown, and the pane behind stays.
@@ -495,7 +496,7 @@ mod tests {
         assert!(!row_focused(&form, cx, 0), "Shift+Tab stayed on the row");
         form.update(cx, |form, _| {
             let scroll = &form.auto_join.as_ref().unwrap().scroll;
-            let max = scroll.max_offset().height;
+            let max = scroll.max_offset().y;
             scroll.set_offset(gpui::point(scroll.offset().x, -max));
         });
         for _ in 0..3 {

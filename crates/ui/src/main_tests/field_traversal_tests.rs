@@ -41,6 +41,7 @@ fn bind(cx: &mut TestAppContext) {
         cx.bind_keys(shortcut_bindings(
             ChannelNumberModifier::Ctrl,
             &Default::default(),
+            cx,
         ));
     });
 }
@@ -64,7 +65,7 @@ fn tab_moves_between_settings_fields_without_chat_commands(cx: &mut TestAppConte
                 cx.new(|cx| TextInput::new_settings_field(name, "", name == "Password", cx))
             })
             .collect();
-        window.focus(&fields[0].focus_handle(cx));
+        window.focus(&fields[0].focus_handle(cx), cx);
         Settings { fields }
     });
     cx.run_until_parked();
@@ -90,7 +91,7 @@ fn tab_still_completes_nicknames_in_chat(cx: &mut TestAppContext) {
     bind(cx);
     let (view, cx) = cx.add_window_view(|window, cx| {
         let draft = cx.new(|cx| TextInput::new_live("Draft", cx));
-        window.focus(&draft.focus_handle(cx));
+        window.focus(&draft.focus_handle(cx), cx);
         Chat {
             draft,
             completions: 0,

@@ -402,17 +402,6 @@ fn the_upload_button_explains_a_missing_service_before_asking_for_a_file(cx: &mu
     assert!(cx.has_pending_prompt(), "the missing service is announced");
 }
 
-#[test]
-fn the_file_dialog_offers_the_images_the_upload_accepts() {
-    let filter = crate::image_upload::image_file_filter(&Localizer::new(Language::English));
-    assert_eq!(filter.name.as_ref(), "Images");
-    let extensions: Vec<&str> = filter.extensions.iter().map(|e| e.as_ref()).collect();
-    assert_eq!(
-        extensions,
-        cayenchat_model::attachment::ImageFormat::FILE_EXTENSIONS
-    );
-}
-
 #[gpui::test]
 fn double_clicking_a_server_leaves_one_waiting_to_retry_alone(cx: &mut TestAppContext) {
     crate::support::install_test_globals(cx);

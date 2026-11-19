@@ -42,14 +42,14 @@ fn type_draft(chat: &gpui::Entity<ChatWindow>, cx: &mut VisualTestContext, text:
     let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
     input.update(cx, |input, cx| input.set_text(text, cx));
     let handle = input.read_with(cx, |input, cx| input.focus_handle(cx));
-    cx.update(|window, _| window.focus(&handle));
+    cx.update(|window, cx| window.focus(&handle, cx));
     cx.run_until_parked();
 }
 
 /// A whole press: the key down, then the key up.
 fn press(cx: &mut VisualTestContext, keys: &str) {
     cx.simulate_keystrokes(keys);
-    let keystroke = gpui::Keystroke::parse(keys).unwrap();
+    let keystroke = gpui::Keystroke::parse_with_os(keys, crate::shortcuts::HOST_OS).unwrap();
     cx.simulate_event(gpui::KeyUpEvent { keystroke });
     cx.run_until_parked();
 }
@@ -158,7 +158,7 @@ fn losing_the_focus_or_changing_the_setting_starts_double_enter_over(cx: &mut Te
     let (chat, cx) = open_chat(cx, SendKey::DoubleEnter);
 
     press(cx, "enter");
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     cx.run_until_parked();
     type_draft(&chat, cx, "hello");
     press(cx, "enter");

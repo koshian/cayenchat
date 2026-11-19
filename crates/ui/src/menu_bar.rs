@@ -620,7 +620,7 @@ mod tests {
                         Menu {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
-                            menu_type: None,
+                            disabled: false,
                         }
                         .owned(),
                     ],
@@ -649,7 +649,7 @@ mod tests {
         // which actions are available (that used to panic on startup).
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             let mut menu = MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu);
             menu.set_always(true);
             View { menu, input }
@@ -733,7 +733,7 @@ mod tests {
                         Menu {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
-                            menu_type: None,
+                            disabled: false,
                         }
                         .owned(),
                     ],
@@ -760,7 +760,7 @@ mod tests {
         });
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             View {
                 menu: MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu),
                 input,
@@ -823,7 +823,7 @@ mod tests {
                         Menu {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
-                            menu_type: None,
+                            disabled: false,
                         }
                         .owned(),
                     ],
@@ -852,7 +852,7 @@ mod tests {
         // exists. Querying action availability here used to panic on startup.
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             TestView {
                 menu: MenuBar::new_in_window(window, cx, |this: &mut TestView| &mut this.menu),
                 input,
@@ -923,7 +923,8 @@ mod tests {
             keys: vec![Some('f'), None, Some('e')],
             suffix: false,
         };
-        let press = |text: &str| gpui::Keystroke::parse(text).unwrap();
+        let press =
+            |text: &str| gpui::Keystroke::parse_with_os(text, crate::shortcuts::HOST_OS).unwrap();
         let mut state = MenuBar::default();
         assert!(!state.access_key(&press("e"), &keys, 3, false));
         assert!(!state.access_key(&press("ctrl-alt-e"), &keys, 3, false));

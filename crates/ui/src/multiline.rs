@@ -9,6 +9,8 @@
 //! belongs to the lower row, so Down and a click at the start of a row land
 //! where they look.
 
+use std::rc::Rc;
+
 use gpui::{App, Bounds, Pixels, Point, TextAlign, Window, WrappedLine, point, px, size};
 
 /// Width of the mark that stands for a selected line break.
@@ -31,7 +33,7 @@ struct Row {
 
 #[derive(Clone)]
 pub(crate) struct WrappedText {
-    lines: Vec<WrappedLine>,
+    lines: Rc<[WrappedLine]>,
     rows: Vec<Row>,
     line_height: Pixels,
 }
@@ -73,7 +75,7 @@ impl WrappedText {
             base += line.len() + 1;
         }
         Self {
-            lines,
+            lines: lines.into(),
             rows,
             line_height,
         }
@@ -172,7 +174,7 @@ impl WrappedText {
     /// Draws the text with its top left at `origin`.
     pub(crate) fn paint(&self, origin: Point<Pixels>, window: &mut Window, cx: &mut App) {
         let mut row = 0;
-        for line in &self.lines {
+        for line in self.lines.iter() {
             let at = point(origin.x, origin.y + self.line_height * row);
             // A failed paint only loses this line.
             let _ = line.paint(at, self.line_height, TextAlign::Left, None, window, cx);

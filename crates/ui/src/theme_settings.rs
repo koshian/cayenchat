@@ -23,6 +23,8 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 
+use crate::gpui_pending::PromisedFiles;
+
 use crate::{
     SettingsWindow, channel_look,
     image_upload::{acceptable_attachment, read_in_background},
@@ -298,7 +300,6 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: None,
-            filter: None,
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = chosen.await else {
@@ -513,13 +514,9 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("wallpaper_choose").into()),
-            filter: Some(PathPromptFilter {
-                name: self.i18n.text("upload_image_files").into(),
-                extensions: wallpaper::FILE_EXTENSIONS
-                    .iter()
-                    .map(|extension| SharedString::from(*extension))
-                    .collect(),
-            }),
+            // TODO(#1081): the dialog's file type filter (`PathPromptFilter`)
+            // returns with the file patch (PR 2-3); the attachment check
+            // refuses other files until then.
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {
@@ -1020,7 +1017,7 @@ impl SettingsWindow {
                             dark,
                             region,
                             paths.paths().to_vec(),
-                            paths.keep_alive(),
+                            crate::gpui_pending::keep_alive(paths),
                             AttachmentSource::Drop,
                             cx,
                         )

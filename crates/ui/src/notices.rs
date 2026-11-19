@@ -271,7 +271,7 @@ impl ChatWindow {
         if window.focused(cx).is_none()
             && let Some(input) = self.inputs.get(&self.state.selection())
         {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
         }
         self.open_next_notice(window, cx);
         cx.notify();
