@@ -3191,6 +3191,7 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("sasl_key_import_prompt").into()),
+            filter: None,
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = chosen.await else {

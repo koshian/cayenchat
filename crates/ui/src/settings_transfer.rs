@@ -187,6 +187,7 @@ impl ChatWindow {
             directories: false,
             multiple: false,
             prompt: None,
+            filter: None,
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = chosen.await;

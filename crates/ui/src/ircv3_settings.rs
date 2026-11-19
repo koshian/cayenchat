@@ -22,8 +22,6 @@ use cayenchat_storage::{Ircv3Preferences, ServerProfile, Settings, TextEncoding}
 use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
-use crate::gpui_pending::PromisedFiles;
-
 use crate::os_text::WindowOsText;
 
 use crate::{
@@ -380,12 +378,7 @@ impl SettingsWindow {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                        this.drop_avatar_image(
-                            paths.paths(),
-                            crate::gpui_pending::keep_alive(paths),
-                            window,
-                            cx,
-                        )
+                        this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
                     }))
             })
             .child(
@@ -678,6 +671,7 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("ircv3_avatar_choose_prompt").into()),
+            filter: Some(crate::image_upload::image_file_filter(&self.i18n)),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {

@@ -494,6 +494,7 @@ impl SettingsWindow {
             directories: true,
             multiple: false,
             prompt: Some(self.i18n.text("conversation_log_choose_prompt").into()),
+            filter: None,
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = chosen.await else {

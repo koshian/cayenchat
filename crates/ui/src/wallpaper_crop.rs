@@ -23,8 +23,6 @@ use cayenchat_media::avatar_edit::{self, AvatarSource};
 use cayenchat_model::attachment::{AttachmentError, AttachmentSource};
 use gpui::{prelude::*, *};
 
-use crate::gpui_pending::PromisedFiles;
-
 use crate::{
     avatar_editor::open_error_key,
     crop_editor::{CropConstraint, ImageCropEditor},
