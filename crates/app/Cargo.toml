@@ -8,5 +8,5 @@ license = "MPL-2.0"
 
 [dependencies]
 cayenchat-model.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 url = "2.5.8"

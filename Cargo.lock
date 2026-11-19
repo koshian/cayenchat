@@ -884,7 +884,7 @@ name = "cayenchat-app"
 version = "1.2.0"
 dependencies = [
  "cayenchat-model",
- "chrono",
+ "jiff",
  "url",
 ]
 
@@ -895,13 +895,13 @@ dependencies = [
  "base64 0.22.1",
  "cayenchat-model",
  "cayenchat-storage",
- "chrono",
  "encoding_rs",
  "futures-util",
  "getrandom 0.3.4",
  "hmac 0.12.1",
  "irc",
  "irc-proto",
+ "jiff",
  "p256",
  "pbkdf2",
  "rustls",
@@ -936,9 +936,9 @@ version = "1.2.0"
 dependencies = [
  "base64 0.22.1",
  "cayenchat-model",
- "chrono",
  "dirs 5.0.1",
  "flate2",
+ "jiff",
  "keyring",
  "libc",
  "security-framework",
@@ -962,7 +962,6 @@ dependencies = [
  "cayenchat-model",
  "cayenchat-storage",
  "cayenchat-upload",
- "chrono",
  "core-foundation 0.10.0",
  "core-foundation-sys",
  "embed-resource",
@@ -971,6 +970,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "image",
+ "jiff",
  "libc",
  "log",
  "native-theme",
@@ -3534,9 +3534,9 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 name = "irc"
 version = "1.1.0"
 dependencies = [
- "chrono",
  "futures-util",
  "irc-proto",
+ "jiff",
  "log",
  "parking_lot",
  "pin-project",

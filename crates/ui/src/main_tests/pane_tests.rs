@@ -3111,8 +3111,9 @@ fn old_server_times_display_locally_and_still_notify(cx: &mut TestAppContext) {
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     let old = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
     let local = |time: SystemTime| {
-        use chrono::Timelike;
-        let time = chrono::DateTime::<chrono::Local>::from(time);
+        let time = jiff::Timestamp::try_from(time)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::system());
         cayenchat_model::TimeOfDay::new(time.hour() as u8, time.minute() as u8)
     };
     chat.update(cx, |chat, cx| {

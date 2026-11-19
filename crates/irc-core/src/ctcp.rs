@@ -472,9 +472,11 @@ fn shown_params(params: &str) -> String {
 }
 
 fn local_time() -> String {
-    chrono::Local::now()
-        .format("%a %b %e %H:%M:%S %Y %z")
-        .to_string()
+    format_local_time(&jiff::Zoned::now())
+}
+
+fn format_local_time(time: &jiff::Zoned) -> String {
+    time.strftime("%a %b %e %H:%M:%S %Y %z").to_string()
 }
 
 #[cfg(test)]
@@ -609,8 +611,25 @@ mod tests {
                 "NOTICE bob :\u{1}CLIENTINFO ACTION AVATAR CLIENTINFO ERRMSG FINGER PING SOURCE TIME USERINFO VERSION\u{1}"
             ]
         );
-        // The real clock gives a non-empty time.
-        assert!(!local_time().is_empty());
+        // A single-digit day is padded with a space.
+        let at = |day: i8| {
+            jiff::civil::date(2026, 9, day)
+                .at(2, 4, 6, 0)
+                .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(9)))
+                .unwrap()
+        };
+        assert_eq!(format_local_time(&at(8)), "Tue Sep  8 02:04:06 2026 +0900");
+        assert_eq!(format_local_time(&at(28)), "Mon Sep 28 02:04:06 2026 +0900");
+        // The real clock has the same shape.
+        let time = local_time();
+        let fields: Vec<_> = time.split_whitespace().collect();
+        assert_eq!(fields.len(), 6, "{time}");
+        let offset = fields[5].as_bytes();
+        assert!(
+            matches!(offset[0], b'+' | b'-') && offset[1..].iter().all(u8::is_ascii_digit),
+            "{time}"
+        );
+        assert_eq!(offset.len(), 5, "{time}");
     }
 
     #[test]

@@ -762,8 +762,9 @@ fn no_servers_select_nothing_until_one_is_added() {
 fn server_times_show_as_local_time_without_changing_arrival_order() {
     use std::time::{Duration, UNIX_EPOCH};
     let local = |time: SystemTime| {
-        use chrono::Timelike;
-        let local = chrono::DateTime::<chrono::Local>::from(time);
+        let local = jiff::Timestamp::try_from(time)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::system());
         TimeOfDay::new(local.hour() as u8, local.minute() as u8)
     };
     let mut state = live_state("irc.example.org".into(), vec!["#test".into()]);

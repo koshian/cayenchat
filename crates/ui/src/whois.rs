@@ -377,11 +377,11 @@ fn idle_text(seconds: u64) -> String {
 }
 
 fn signon_text(timestamp: i64) -> Option<String> {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(timestamp, 0)
-        .single()
-        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+    jiff::Timestamp::from_second(timestamp).ok().map(|time| {
+        time.to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    })
 }
 
 fn button(

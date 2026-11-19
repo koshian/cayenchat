@@ -31,7 +31,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use chrono::{DateTime, Local, TimeZone};
+use jiff::{Timestamp, tz::TimeZone};
 use sha2::{Digest, Sha256};
 
 use crate::private_file;
@@ -213,15 +213,20 @@ pub(crate) fn is_bidi_control(ch: char) -> bool {
 }
 
 /// The file `record` belongs to: the day is the record's date in `zone`.
-pub fn path_for<Tz: TimeZone>(root: &Path, record: &Record, zone: &Tz) -> PathBuf
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let date = DateTime::<chrono::Utc>::from(record.time).with_timezone(zone);
+pub fn path_for(root: &Path, record: &Record, zone: &TimeZone) -> PathBuf {
+    let date = zoned(record.time, zone);
     root.join(path_component(&record.network))
         .join(record.scope.directory())
         .join(path_component(&record.conversation))
-        .join(format!("{}.log", date.format("%Y-%m-%d")))
+        .join(format!("{}.log", date.strftime("%Y-%m-%d")))
+}
+
+/// `time` in `zone`. An instant outside jiff's range (years ±9999) cannot
+/// come from a clock; it is logged as the epoch rather than panicking.
+fn zoned(time: SystemTime, zone: &TimeZone) -> jiff::Zoned {
+    Timestamp::try_from(time)
+        .unwrap_or(Timestamp::UNIX_EPOCH)
+        .to_zoned(zone.clone())
 }
 
 /// Replaces what would break the four columns. Tabs become spaces and other
@@ -241,14 +246,11 @@ fn cell(text: &str, spaces: bool) -> String {
 }
 
 /// The line for `record` in `zone`, with its newline.
-pub fn line_for<Tz: TimeZone>(record: &Record, zone: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let time = DateTime::<chrono::Utc>::from(record.time).with_timezone(zone);
+pub fn line_for(record: &Record, zone: &TimeZone) -> String {
+    let time = zoned(record.time, zone);
     format!(
         "{}\t{}\t{}\t{}\n",
-        time.format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
+        time.strftime("%Y-%m-%dT%H:%M:%S%.3f%:z"),
         record.kind.label(),
         cell(&record.nick, true),
         cell(&record.body, false),
@@ -582,8 +584,8 @@ impl Writer {
     }
 
     fn write(&mut self, record: &Record) {
-        let path = path_for(&self.root, record, &Local);
-        let line = line_for(record, &Local);
+        let path = path_for(&self.root, record, &TimeZone::system());
+        let line = line_for(record, &TimeZone::system());
         if let Err(error) = self.append(&path, &line) {
             // Reopened at the next record.
             self.files.remove(&path);
@@ -749,8 +751,6 @@ fn check_private(_: &fs::Metadata, _: &str, _: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::FixedOffset;
-
     use super::*;
 
     fn record(kind: Kind, nick: &str, body: &str) -> Record {
@@ -778,8 +778,8 @@ mod tests {
         directory
     }
 
-    fn tokyo() -> FixedOffset {
-        FixedOffset::east_opt(9 * 3600).unwrap()
+    fn tokyo() -> TimeZone {
+        TimeZone::fixed(jiff::tz::offset(9))
     }
 
     #[test]
@@ -837,7 +837,7 @@ mod tests {
             Path::new("logs/Libera/channels/#rust/2026-10-13.log")
         );
         assert_eq!(
-            path_for(root, &late, &FixedOffset::east_opt(0).unwrap()),
+            path_for(root, &late, &TimeZone::UTC),
             Path::new("logs/Libera/channels/#rust/2026-10-12.log")
         );
         let mut private = record(Kind::Msg, "alice", "hi");
@@ -935,7 +935,7 @@ mod tests {
         let text = fs::read_to_string(path_for(
             directory.path(),
             &record(Kind::Msg, "", ""),
-            &Local,
+            &TimeZone::system(),
         ))
         .unwrap();
         assert!(text.contains("old") && text.contains("new"));
@@ -948,7 +948,7 @@ mod tests {
 
         let directory = private_tempdir();
         let root = directory.path().join("logs");
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
         crate::private_file::create_dir(path.parent().unwrap()).unwrap();
         fs::write(&path, b"# cayenchat-log 1\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -967,7 +967,7 @@ mod tests {
 
         let directory = private_tempdir();
         let root = directory.path().join("logs");
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
         let logger = ChatLogger::start(root);
@@ -983,7 +983,7 @@ mod tests {
     fn a_pipe_in_place_of_the_file_is_refused_without_waiting() {
         let directory = private_tempdir();
         let root = directory.path().join("logs");
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
         crate::private_file::create_dir(path.parent().unwrap()).unwrap();
         let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
@@ -1007,7 +1007,11 @@ mod tests {
         assert!(!status.locked && status.failure.is_none());
         drop(second);
 
-        let path = path_for(directory.path(), &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(
+            directory.path(),
+            &record(Kind::Msg, "", ""),
+            &TimeZone::system(),
+        );
         let text = fs::read_to_string(path).unwrap();
         let lines: Vec<_> = text.lines().collect();
         assert_eq!(lines[0], "# cayenchat-log 1");
@@ -1030,7 +1034,11 @@ mod tests {
         drop(second);
         first.log(record(Kind::Msg, "alice", "kept"));
         drop(first);
-        let path = path_for(directory.path(), &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(
+            directory.path(),
+            &record(Kind::Msg, "", ""),
+            &TimeZone::system(),
+        );
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains("kept") && !text.contains("ignored"));
         // Released with the first logger.
@@ -1040,7 +1048,7 @@ mod tests {
         let text = fs::read_to_string(path_for(
             directory.path(),
             &record(Kind::Msg, "", ""),
-            &Local,
+            &TimeZone::system(),
         ))
         .unwrap();
         assert!(text.contains("again"));
@@ -1082,7 +1090,7 @@ mod tests {
         let path = path_for(
             &directory.path().join("logs"),
             &record(Kind::Msg, "", ""),
-            &Local,
+            &TimeZone::system(),
         );
         crate::private_file::create_dir(path.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&target, &path).unwrap();
@@ -1100,7 +1108,7 @@ mod tests {
     fn a_symbolic_link_in_a_log_directory_is_refused() {
         let directory = private_tempdir();
         let root = directory.path().join("logs");
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
         let network = path.parent().unwrap().parent().unwrap().parent().unwrap();
         let target = directory.path().join("target");
         crate::private_file::create_dir(network).unwrap();
@@ -1118,7 +1126,7 @@ mod tests {
     fn private_log_directories_are_allowed() {
         let directory = private_tempdir();
         let root = directory.path().join("logs");
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
 
         let file = open(&root, &path).unwrap();
 
@@ -1163,7 +1171,11 @@ mod tests {
             ChatLogger::start_after(other.path().to_owned(), std::slice::from_ref(&stuck), None);
         logger.log(record(Kind::Msg, "alice", "now"));
         drop(logger);
-        let path = path_for(other.path(), &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(
+            other.path(),
+            &record(Kind::Msg, "", ""),
+            &TimeZone::system(),
+        );
         assert!(fs::read_to_string(path).unwrap().contains("now"));
         // The same folder waits, and a logger retired meanwhile ends at once.
         let waiting = ChatLogger::start_after(stuck_directory.path().to_owned(), &[stuck], None);
@@ -1181,7 +1193,7 @@ mod tests {
         let logger = ChatLogger::start(root.clone());
         logger.log(record(Kind::Msg, "alice", "private"));
         drop(logger);
-        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &TimeZone::system());
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(path.parent().unwrap()), 0o700);
@@ -1198,7 +1210,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let record = record(Kind::Msg, "alice", "private");
-        let path = path_for(&root, &record, &Local);
+        let path = path_for(&root, &record, &TimeZone::system());
         let error = open(&root, &path).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(!path.exists());
