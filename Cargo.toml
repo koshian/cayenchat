@@ -54,9 +54,6 @@ gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
-# Linux shaping reuses per-word results (`shape-run-cache`, #1081); see
-# vendor/gpui-pre-wgpu/PATCHES.md.
-gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit and decodes
