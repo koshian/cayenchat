@@ -629,6 +629,12 @@ impl Drop for WindowsWindow {
             .spawn(async move {
                 this.dialog_owner.when_idle().await;
                 let handle = this.hwnd;
+                // Closing from the title bar or Alt+F4 lets `DefWindowProcW`
+                // destroy the window before GPUI drops it, so the handle is
+                // already invalid here.
+                if !unsafe { IsWindow(Some(handle)) }.as_bool() {
+                    return;
+                }
                 unsafe {
                     RevokeDragDrop(handle).log_err();
                     DestroyWindow(handle).log_err();
@@ -864,7 +870,19 @@ impl PlatformWindow for WindowsWindow {
                         },
                     },
                 ];
-                unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+                // CayenChat: skip it when a window of this process is already
+                // in front. `SetForegroundWindow` succeeds then, and the Alt
+                // would only reach our own window and focus its menu bar.
+                let foreground_is_ours = unsafe {
+                    let foreground = GetForegroundWindow();
+                    let mut pid = 0u32;
+                    !foreground.is_invalid()
+                        && GetWindowThreadProcessId(foreground, Some(&mut pid)) != 0
+                        && pid == windows::Win32::System::Threading::GetCurrentProcessId()
+                };
+                if !foreground_is_ours {
+                    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+                }
 
                 // todo(windows)
                 // crate `windows 0.56` reports true as Err

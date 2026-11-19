@@ -36,3 +36,17 @@ Switch back when a `gpui-pre` release builds on FreeBSD.
 Upstream already has the `GCS_RESULTSTR`-before-`GCS_COMPSTR` order (#880) and
 the language-key handling, so those patches of the 0.2.2 copy are dropped.
 Candidate for an upstream proposal.
+
+## Quit request and Window menu (#1081)
+
+- `App::on_quit_request` and `Platform::on_quit_request` (default: ignored).
+  The handler is asked before a quit the user starts from outside the
+  application and cancels it by returning `false`. `App::quit` and the
+  system's shutdown never reach it. If the app state is borrowed when the
+  platform asks, the quit is cancelled instead of panicking. Only macOS asks
+  (`gpui-pre-macos/PATCHES.md`). Candidate for an upstream proposal.
+- `Menu::menu_type: Option<SystemMenuType>` and `OwnedMenu::menu_type` mark a
+  top-level menu the system manages whatever its (translated) name is.
+  `SystemMenuType::Window` is new; macOS gives the marked menu to AppKit as
+  the Window menu (and a nested `os_submenu` of that type the same way).
+  Upstream decides by the name `"Window"` only. Other platforms ignore it.

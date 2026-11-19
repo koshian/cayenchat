@@ -925,6 +925,7 @@ pub struct App {
     pub(crate) release_listeners: SubscriberSet<EntityId, ReleaseListener>,
     pub(crate) global_observers: SubscriberSet<TypeId, Handler>,
     pub(crate) quit_observers: SingleSubscriberSet<QuitHandler>,
+    quit_request: Option<Box<dyn FnMut(&mut App) -> bool>>,
     pub(crate) restart_observers: SingleSubscriberSet<Handler>,
     pub(crate) window_closed_observers: SingleSubscriberSet<WindowClosedHandler>,
 
@@ -1072,6 +1073,7 @@ impl App {
                 memory_warning_observers: SingleSubscriberSet::new(),
                 global_observers: SubscriberSet::new(),
                 quit_observers: SingleSubscriberSet::new(),
+                quit_request: None,
                 restart_observers: SingleSubscriberSet::new(),
                 restart_path: None,
                 restart_arguments: Vec::new(),
@@ -1221,6 +1223,26 @@ impl App {
             }
         }));
 
+        platform.on_quit_request(Box::new({
+            let cx = Rc::downgrade(&app);
+            move || {
+                let Some(cx) = cx.upgrade() else {
+                    return true;
+                };
+                let Ok(mut cx) = cx.try_borrow_mut() else {
+                    // The app state is borrowed, so the handler cannot run now;
+                    // the platform keeps the application open.
+                    return false;
+                };
+                let Some(mut handler) = cx.quit_request.take() else {
+                    return true;
+                };
+                let allowed = handler(&mut cx);
+                cx.quit_request.get_or_insert(handler);
+                allowed
+            }
+        }));
+
         app
     }
 
@@ -1337,6 +1359,14 @@ impl App {
             callback(cx);
             true
         }))
+    }
+
+    /// Register a handler for quit requests the user makes outside the
+    /// application (macOS Dock "Quit"). Return `false` to cancel the request,
+    /// for instance while asking for confirmation, and call [`App::quit`] once
+    /// it is given. [`App::quit`] and system shutdown never reach the handler.
+    pub fn on_quit_request(&mut self, handler: impl FnMut(&mut App) -> bool + 'static) {
+        self.quit_request = Some(Box::new(handler));
     }
 
     /// Gracefully quit the application via the platform's standard routine.

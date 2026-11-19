@@ -16,3 +16,17 @@ it loses focus. `update_ime_enabled` asks `query_ime_enabled()` (gpui-pre's
 
 Not built or run in CI on Linux; check with MS-IME and Google Japanese Input
 on Windows.
+
+## Window teardown and activation (#1081)
+
+- `WindowsWindow`'s drop skips `RevokeDragDrop`/`DestroyWindow` when `IsWindow`
+  reports the handle is gone. Closing from the title bar or Alt+F4 lets
+  `DefWindowProcW` destroy the window first, so upstream logged `0x80040102`
+  and `0x80070578` every time.
+- `activate` does not send the simulated Alt press when a window of this
+  process is already the foreground window (`GetForegroundWindow` +
+  `GetWindowThreadProcessId`): `SetForegroundWindow` succeeds then, and the
+  Alt would only reach our own window and focus its menu bar (#354).
+
+Check on Windows: no `0x80040102` in the log after closing a window, and no
+menu bar focus when the settings window opens at startup.
