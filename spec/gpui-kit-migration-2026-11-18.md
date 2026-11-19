@@ -278,6 +278,12 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 - `icon_follows_its_room_after_an_unspaced_prefix`、
   `a_decoded_reference_shows_its_original_and_copies_only_that`: テキストのパッチが要る。
 
+CI の GUI 検査 (`.github/workflows/ci.yml`): 統合ブランチ (`gpui-kit-migration`) と、
+それ宛ての PR では、仮実装に依存する 3 本 (`url_bubble_gui.py`: リンクのホバーとクリック、
+`log_colors_gui.py`: 行の背景色、`opacity_gui.py`: 背景の透過) をステップ単位で外す。
+`history_gui.py` は外さず、起動・描画・履歴の操作は引き続き検査する。
+この 3 本は、対応する載せ直しの PR (ツールチップ・背景ぼかし) で戻し、master では常に動く。
+
 ignore から戻したテスト (レビュー 1 回目):
 
 - `typing_reuses_panes_*` 3 件と `perf_baseline` の入力: 最初の 1 文字で、ペインが一度だけ

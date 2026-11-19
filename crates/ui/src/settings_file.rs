@@ -291,6 +291,10 @@ mod tests {
         gpui::Entity<SettingsWindow>,
         &'a mut gpui::VisualTestContext,
     ) {
+        // The credential store works on its own thread; its completion wakes
+        // the test scheduler from outside, which GPUI 0.3 refuses unless
+        // allowed before the work starts.
+        cx.executor().allow_parking();
         cx.update(|cx| {
             if !cx.has_global::<secrets::Credentials>() {
                 secrets::install_memory(cx);
