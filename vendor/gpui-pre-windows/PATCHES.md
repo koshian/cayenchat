@@ -36,3 +36,12 @@ menu bar focus when the settings window opens at startup.
 `file_open_dialog` sets `PathPromptOptions::filter` (gpui-pre's patch) with
 `SetFileTypes` as one `*.ext;*.ext` entry named by the filter. Not compiled on
 Linux; check on Windows that the open dialog lists only the offered images.
+
+## Clipboard text size (#1081, CayenChat #684)
+
+`get_clipboard_string` (`clipboard.rs`) decodes through
+`decode_clipboard_utf16` (`clipboard_data.rs`), which refuses an empty or
+odd-sized allocation, one over 16 MiB, and one without a UTF-16 NUL inside the
+`GlobalSize`-bounded bytes. Upstream scans for a NUL but falls back to the
+whole buffer and has no size cap. The decoder has no `windows` dependency and
+its tests run in CayenChat's workspace (`crates/ui/src/main.rs`).

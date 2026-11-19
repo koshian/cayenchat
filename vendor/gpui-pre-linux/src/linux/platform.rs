@@ -1180,6 +1180,19 @@ impl Platform for LinuxPlatform {
         self.connection.borrow().read_from_clipboard()
     }
 
+    // Wayland reads the selection's pipe on the background executor, so a slow
+    // or huge selection cannot freeze the UI (CayenChat #684).
+    fn read_from_clipboard_async(
+        &self,
+    ) -> Task<Result<Option<ClipboardItem>, gpui::ClipboardReadError>> {
+        let executor = self.background_executor();
+        let read = self.connection.borrow().read_from_clipboard_async(&executor);
+        match read {
+            Some(read) => executor.spawn(async move { Ok(read.await) }),
+            None => Task::ready(Ok(self.read_from_clipboard())),
+        }
+    }
+
     fn add_recent_document(&self, _path: &Path) {}
 }
 
@@ -1343,10 +1356,24 @@ pub(super) fn get_xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::S
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) const PIPE_READ_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// The most `read_fd_with_timeout` accepts from one pipe. The other end is a
+/// client of the compositor and can send without end (CayenChat #684).
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) const PIPE_READ_MAX_BYTES: usize = 32 * 1024 * 1024;
+
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn read_fd_with_timeout(
+    fd: filedescriptor::FileDescriptor,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    read_fd_bounded(fd, timeout, PIPE_READ_MAX_BYTES)
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+fn read_fd_bounded(
     mut fd: filedescriptor::FileDescriptor,
     timeout: Duration,
+    max_bytes: usize,
 ) -> Result<Vec<u8>> {
     fd.set_non_blocking(true)?;
     let mut buffer = Vec::new();
@@ -1371,12 +1398,65 @@ pub(super) fn read_fd_with_timeout(
         }
         match fd.read(&mut chunk) {
             Ok(0) => return Ok(buffer),
-            Ok(len) => buffer.extend_from_slice(&chunk[..len]),
+            Ok(len) => {
+                anyhow::ensure!(
+                    buffer.len() + len <= max_bytes,
+                    "pipe data exceeds the {max_bytes} byte limit"
+                );
+                buffer.extend_from_slice(&chunk[..len]);
+            }
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock
                     || err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(err) => return Err(err.into()),
         }
+    }
+}
+
+/// Total time one asynchronous clipboard read may take, across all formats.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) const CLIPBOARD_READ_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Reads `fd` without blocking a worker: while no data is ready it awaits a
+/// short timer, so dropping the future (cancelling the task) ends the read and
+/// closes the pipe, and an unrelated task can use the worker meanwhile. Gives
+/// up at `deadline` however slowly the other end keeps sending, and takes at
+/// most `*budget` bytes, which it decreases by the amount read so that several
+/// formats of one paste share one limit (CayenChat #684).
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) async fn read_fd_async(
+    mut fd: filedescriptor::FileDescriptor,
+    executor: &gpui::BackgroundExecutor,
+    deadline: std::time::Instant,
+    budget: &mut usize,
+) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    fd.set_non_blocking(true)?;
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        match fd.read(&mut chunk) {
+            Ok(0) => return Ok(buffer),
+            Ok(len) => {
+                anyhow::ensure!(len <= *budget, "clipboard data exceeds the size limit");
+                *budget -= len;
+                buffer.extend_from_slice(&chunk[..len]);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                anyhow::ensure!(!remaining.is_zero(), "clipboard read timed out");
+                executor
+                    .timer(remaining.min(Duration::from_millis(10)))
+                    .await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        // A sender that never pauses must not get past the deadline either.
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "clipboard read timed out"
+        );
     }
 }
 
@@ -1953,7 +2033,7 @@ mod tests {
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     mod read_fd_with_timeout {
-        use super::super::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
+        use super::super::{PIPE_READ_TIMEOUT, read_fd_bounded, read_fd_with_timeout};
         use std::io::Write as _;
         use std::time::{Duration, Instant};
 
@@ -2031,6 +2111,29 @@ mod tests {
         }
 
         #[test]
+        fn rejects_data_over_the_limit() {
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            let _open_writer = pipe.write;
+
+            let err = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 99).unwrap_err();
+            assert!(
+                err.to_string().contains("limit"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn accepts_data_at_the_limit() {
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            drop(pipe.write);
+
+            let bytes = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 100).unwrap();
+            assert_eq!(bytes.len(), 100);
+        }
+
+        #[test]
         fn reads_payload_larger_than_pipe_capacity() {
             let pipe = filedescriptor::Pipe::new().unwrap();
             // Exceeds the 64 KiB pipe capacity, forcing the writer to block.
@@ -2044,6 +2147,125 @@ mod tests {
             let bytes = read_fd_with_timeout(pipe.read, PIPE_READ_TIMEOUT).unwrap();
             writer.join().unwrap();
             assert_eq!(bytes, payload);
+        }
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    mod read_fd_async {
+        use super::super::read_fd_async;
+        use crate::linux::{LinuxDispatcher, PriorityQueueCalloopReceiver};
+        use gpui::BackgroundExecutor;
+        use std::io::Write as _;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        /// A real background executor on the Linux dispatcher. The receiver
+        /// must outlive it.
+        fn executor() -> (BackgroundExecutor, impl Sized) {
+            let (main_sender, main_receiver) = PriorityQueueCalloopReceiver::new();
+            let dispatcher = Arc::new(LinuxDispatcher::new(main_sender));
+            (BackgroundExecutor::new(dispatcher), main_receiver)
+        }
+
+        fn worker_count() -> usize {
+            std::thread::available_parallelism().map_or(2, |n| n.get().max(2))
+        }
+
+        #[test]
+        fn reads_data_and_charges_the_budget() {
+            let (executor, _main) = executor();
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            drop(pipe.write);
+
+            let mut budget = 150;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (bytes, budget) = futures::executor::block_on(executor.spawn({
+                let executor = executor.clone();
+                async move {
+                    let bytes = read_fd_async(pipe.read, &executor, deadline, &mut budget).await;
+                    (bytes, budget)
+                }
+            }));
+            assert_eq!(bytes.unwrap().len(), 100);
+            assert_eq!(budget, 50);
+        }
+
+        #[test]
+        fn rejects_data_over_the_budget() {
+            let (executor, _main) = executor();
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            let _open_writer = pipe.write;
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let result = futures::executor::block_on(executor.spawn({
+                let executor = executor.clone();
+                async move { read_fd_async(pipe.read, &executor, deadline, &mut 99).await }
+            }));
+            assert!(result.unwrap_err().to_string().contains("limit"));
+        }
+
+        #[test]
+        fn a_slow_but_steady_sender_still_hits_the_deadline() {
+            let (executor, _main) = executor();
+            let pipe = filedescriptor::Pipe::new().unwrap();
+            let mut write = pipe.write;
+            let writer = std::thread::spawn(move || {
+                // One byte every 20 ms never lets an idle timeout fire.
+                while write.write_all(b"x").is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let started = Instant::now();
+            let result = futures::executor::block_on(executor.spawn({
+                let executor = executor.clone();
+                async move {
+                    let mut budget = usize::MAX;
+                    read_fd_async(pipe.read, &executor, deadline, &mut budget).await
+                }
+            }));
+            assert!(result.unwrap_err().to_string().contains("timed out"));
+            assert!(started.elapsed() < Duration::from_secs(2));
+            // The pipe was closed when the read ended, so the writer stops.
+            writer.join().unwrap();
+        }
+
+        #[test]
+        fn waiting_reads_do_not_hold_workers_and_cancelling_closes_the_pipes() {
+            let (executor, _main) = executor();
+            // More stalled reads than workers.
+            let count = worker_count() * 3;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut tasks = Vec::new();
+            let mut writers = Vec::new();
+            for _ in 0..count {
+                let pipe = filedescriptor::Pipe::new().unwrap();
+                writers.push(pipe.write);
+                let executor = executor.clone();
+                tasks.push(executor.clone().spawn(async move {
+                    let mut budget = usize::MAX;
+                    read_fd_async(pipe.read, &executor, deadline, &mut budget).await
+                }));
+            }
+
+            // Unrelated work still runs while every read is waiting.
+            let started = Instant::now();
+            futures::executor::block_on(executor.spawn(async {}));
+            assert!(started.elapsed() < Duration::from_secs(2));
+
+            // Cancelling the reads closes their pipes: writing now fails.
+            drop(tasks);
+            for mut write in writers {
+                let closed = (0..100).any(|_| {
+                    std::thread::sleep(Duration::from_millis(20));
+                    write.write_all(b"x").is_err()
+                });
+                assert!(closed, "the read end was not closed after cancelling");
+            }
+            futures::executor::block_on(executor.spawn(async {}));
         }
     }
 }

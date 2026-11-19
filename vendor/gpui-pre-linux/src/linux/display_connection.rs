@@ -190,6 +190,22 @@ impl DisplayConnection {
         dispatch!(self, connection => connection.read_from_clipboard(), headless => None)
     }
 
+    /// A clipboard read that does not block the calling thread, for the
+    /// connections that can read the selection's pipe in the background
+    /// (Wayland); `None` means the caller reads synchronously.
+    pub(crate) fn read_from_clipboard_async(
+        &self,
+        executor: &gpui::BackgroundExecutor,
+    ) -> Option<gpui::Task<Option<ClipboardItem>>> {
+        match self {
+            #[cfg(feature = "wayland")]
+            DisplayConnection::Wayland(connection) => {
+                Some(connection.read_from_clipboard_async(executor))
+            }
+            _ => None,
+        }
+    }
+
     #[cfg(any(feature = "wayland", feature = "x11"))]
     pub(crate) fn window_identifier(
         &self,

@@ -1493,6 +1493,13 @@ impl WaylandConnection {
         self.0.borrow_mut().clipboard.read()
     }
 
+    pub(crate) fn read_from_clipboard_async(
+        &self,
+        executor: &gpui::BackgroundExecutor,
+    ) -> gpui::Task<Option<gpui::ClipboardItem>> {
+        self.0.borrow_mut().clipboard.read_async(executor)
+    }
+
     pub(crate) fn active_window(&self) -> Option<AnyWindowHandle> {
         self.0
             .borrow_mut()

@@ -27,3 +27,29 @@ the X server composes see-through pixels over black. X11 has no blur request
 (`supports_background_blur` is false). Wayland answers true when the
 ext-background-effect or the KDE blur manager global was bound; the manager's
 capability event is not consulted.
+
+## Clipboard reads (#1081, CayenChat #684)
+
+Upstream reads a Wayland selection's pipe on the calling thread with an idle
+timeout and no size limit, so a slow selection froze the UI and an endless one
+grew memory without bound.
+
+- `read_fd_with_timeout` (`linux/platform.rs`) now refuses more than 32 MiB
+  (`PIPE_READ_MAX_BYTES`, through `read_fd_bounded`). The synchronous clipboard
+  read and the drag-and-drop file list read both go through it.
+- `Platform::read_from_clipboard_async` is overridden (`linux/platform.rs`,
+  `display_connection.rs`, `wayland/client.rs`). Wayland runs
+  `Clipboard::read_async` (`wayland/clipboard.rs`), which does the existing
+  text-then-image read on the background executor; X11 and headless keep the
+  synchronous read. The pipe is read by `read_fd_async` (`linux/platform.rs`),
+  which awaits a short timer while no data is ready, so it never holds a worker
+  while waiting. It ends at one 5 second deadline for the whole paste
+  (`CLIPBOARD_READ_DEADLINE`) however steadily the owner sends, and all formats
+  of one paste share one 32 MiB budget. Dropping the task drops the future,
+  which ends the read and closes the pipe. Tests run the real function on a
+  real Linux dispatcher: a steady trickle hits the deadline, more waiting reads
+  than workers leave an unrelated task running, and cancelling closes the pipes.
+  (The synchronous read keeps its 4 second idle timeout; it blocks the caller
+  anyway.)
+Check on Wayland: pasting text and an image still works, and the UI stays
+responsive while a selection owner stalls.

@@ -2,16 +2,20 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    time::Instant,
 };
 
 use calloop::{LoopHandle, PostAction};
-use filedescriptor::Pipe;
+use filedescriptor::{FileDescriptor, Pipe};
 use strum::IntoEnumIterator;
 use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
-use crate::linux::platform::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+use crate::linux::platform::{
+    CLIPBOARD_READ_DEADLINE, PIPE_READ_MAX_BYTES, PIPE_READ_TIMEOUT, read_fd_async,
+    read_fd_with_timeout,
+};
+use gpui::{BackgroundExecutor, ClipboardEntry, ClipboardItem, Image, ImageFormat, Task, hash};
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -76,7 +80,8 @@ impl<T: ReceiveData> DataOffer<T> {
         self.mime_types.iter().any(|t| t == mime_type)
     }
 
-    fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
+    /// Asks the selection owner to write `mime_type` and returns the read end.
+    fn request(&self, connection: &Connection, mime_type: &str) -> FileDescriptor {
         let pipe = Pipe::new().unwrap();
         self.inner.receive_data(mime_type.to_string(), unsafe {
             BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
@@ -85,7 +90,72 @@ impl<T: ReceiveData> DataOffer<T> {
         drop(pipe.write);
 
         connection.flush().unwrap();
+        fd
+    }
 
+    /// Reads `mime_type` without blocking a worker. `budget` is what is left of
+    /// the limit this paste may read in total.
+    async fn read_bytes_async(
+        &self,
+        connection: &Connection,
+        executor: &BackgroundExecutor,
+        mime_type: &str,
+        deadline: Instant,
+        budget: &mut usize,
+    ) -> Option<Vec<u8>> {
+        let fd = self.request(connection, mime_type);
+        match read_fd_async(fd, executor, deadline, budget).await {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                log::error!("error reading clipboard pipe: {err:?}");
+                None
+            }
+        }
+    }
+
+    async fn read_async(
+        &self,
+        connection: &Connection,
+        executor: &BackgroundExecutor,
+    ) -> Option<ClipboardItem> {
+        let deadline = Instant::now() + CLIPBOARD_READ_DEADLINE;
+        let mut budget = PIPE_READ_MAX_BYTES;
+        if let Some(mime_type) = self.text_mime_type() {
+            let bytes = self
+                .read_bytes_async(connection, executor, mime_type, deadline, &mut budget)
+                .await;
+            if let Some(item) = bytes.and_then(text_item) {
+                return Some(item);
+            }
+        }
+        for format in ImageFormat::iter() {
+            let mime_type = format.mime_type();
+            if !self.has_mime_type(mime_type) {
+                continue;
+            }
+            if let Some(bytes) = self
+                .read_bytes_async(connection, executor, mime_type, deadline, &mut budget)
+                .await
+            {
+                return Some(image_item(format, bytes));
+            }
+        }
+        None
+    }
+
+    fn text_mime_type(&self) -> Option<&str> {
+        self.mime_types
+            .iter()
+            .find(|&mime_type| {
+                ALLOWED_TEXT_MIME_TYPES
+                    .iter()
+                    .any(|&allowed| allowed == mime_type)
+            })
+            .map(String::as_str)
+    }
+
+    fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
+        let fd = self.request(connection, mime_type);
         match read_fd_with_timeout(fd, PIPE_READ_TIMEOUT) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
@@ -96,25 +166,8 @@ impl<T: ReceiveData> DataOffer<T> {
     }
 
     fn read_text(&self, connection: &Connection) -> Option<ClipboardItem> {
-        let mime_type = self.mime_types.iter().find(|&mime_type| {
-            ALLOWED_TEXT_MIME_TYPES
-                .iter()
-                .any(|&allowed| allowed == mime_type)
-        })?;
-        let bytes = self.read_bytes(connection, mime_type)?;
-        let text_content = match String::from_utf8(bytes) {
-            Ok(content) => content,
-            Err(e) => {
-                log::error!("Failed to convert clipboard content to UTF-8: {}", e);
-                return None;
-            }
-        };
-
-        // Normalize the text to unix line endings, otherwise
-        // copying from eg: firefox inserts a lot of blank
-        // lines, and that is super annoying.
-        let result = text_content.replace("\r\n", "\n");
-        Some(ClipboardItem::new_string(result))
+        let mime_type = self.text_mime_type()?;
+        text_item(self.read_bytes(connection, mime_type)?)
     }
 
     fn read_image(&self, connection: &Connection) -> Option<ClipboardItem> {
@@ -125,13 +178,32 @@ impl<T: ReceiveData> DataOffer<T> {
             }
 
             if let Some(bytes) = self.read_bytes(connection, mime_type) {
-                let id = hash(&bytes);
-                return Some(ClipboardItem {
-                    entries: vec![ClipboardEntry::Image(Image { format, bytes, id })],
-                });
+                return Some(image_item(format, bytes));
             }
         }
         None
+    }
+}
+
+fn text_item(bytes: Vec<u8>) -> Option<ClipboardItem> {
+    let text_content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Failed to convert clipboard content to UTF-8: {}", e);
+            return None;
+        }
+    };
+
+    // Normalize the text to unix line endings, otherwise
+    // copying from eg: firefox inserts a lot of blank
+    // lines, and that is super annoying.
+    Some(ClipboardItem::new_string(text_content.replace("\r\n", "\n")))
+}
+
+fn image_item(format: ImageFormat, bytes: Vec<u8>) -> ClipboardItem {
+    let id = hash(&bytes);
+    ClipboardItem {
+        entries: vec![ClipboardEntry::Image(Image { format, bytes, id })],
     }
 }
 
@@ -206,6 +278,26 @@ impl Clipboard {
 
         self.cached_read = Some(item.clone());
         Some(item)
+    }
+
+    /// Like [`Self::read`], but the pipe is read on the background executor so
+    /// a slow selection owner cannot stall the UI thread. The read yields the
+    /// worker while it waits, ends at a 5 second deadline and takes at most
+    /// 32 MiB over all formats. Dropping the task cancels it and closes the pipe.
+    pub fn read_async(&mut self, executor: &BackgroundExecutor) -> Task<Option<ClipboardItem>> {
+        let Some(offer) = self.current_offer.clone() else {
+            return Task::ready(None);
+        };
+        if let Some(cached) = self.cached_read.clone() {
+            return Task::ready(Some(cached));
+        }
+        if offer.has_mime_type(&self.self_mime) {
+            return Task::ready(self.contents.clone());
+        }
+
+        let connection = self.connection.clone();
+        let task_executor = executor.clone();
+        executor.spawn(async move { offer.read_async(&connection, &task_executor).await })
     }
 
     pub fn read_primary(&mut self) -> Option<ClipboardItem> {

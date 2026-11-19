@@ -11887,7 +11887,7 @@ mod unread_log_position_tests;
 mod send_key_tests;
 
 #[cfg(test)]
-#[path = "../../../vendor/gpui/src/platform/clipboard_data.rs"]
+#[path = "../../../vendor/gpui-pre-windows/src/clipboard_data.rs"]
 mod clipboard_data_regression_tests;
 
 #[cfg(test)]
