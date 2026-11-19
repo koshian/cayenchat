@@ -505,9 +505,7 @@ fn initial_region(source: &AvatarSource, constraint: CropConstraint) -> Region {
 }
 
 fn render_image(thumbnail: Thumbnail) -> Arc<RenderImage> {
-    let buffer = image::RgbaImage::from_raw(thumbnail.width, thumbnail.height, thumbnail.bgra)
-        .expect("thumbnail buffer matches its size");
-    Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
+    crate::render_image::from_thumbnail(thumbnail).0
 }
 
 /// `image`, covering `full` working pixels, placed so that working pixels

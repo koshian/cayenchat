@@ -8244,3 +8244,21 @@ fn private_messages_tell_nicknames_apart_by_the_connection_casemapping() {
     ));
     assert!(private_message(CaseMapping::Ascii, &from_other, "me[m]", false, None).is_none());
 }
+
+/// `has_line_break` and the socket gate in `irc-proto` (`is_single_line`,
+/// used by `LineCodec::encode`) must agree on which characters break a line.
+#[test]
+fn has_line_break_matches_the_codec_gate() {
+    for ch in (0..=0x7f_u8)
+        .map(char::from)
+        .chain(['\u{85}', '\u{2028}', '\u{2029}'])
+    {
+        let text = format!("a{ch}b");
+        assert_eq!(
+            has_line_break(&text),
+            !irc::proto::line::is_single_line(&text),
+            "disagree on {ch:?}"
+        );
+    }
+    assert!(!has_line_break("plain text"));
+}

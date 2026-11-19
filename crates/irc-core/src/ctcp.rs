@@ -46,7 +46,7 @@ use crate::{
     text::{nickname_key, strip_formatting},
     valid_channel,
 };
-use cayenchat_model::names::CaseMapping;
+use cayenchat_model::{display::shown_line, names::CaseMapping};
 
 const WINDOW: Duration = Duration::from_secs(10);
 /// Requests handled (answered or shown) per [`WINDOW`] in total and per user.
@@ -455,12 +455,10 @@ fn shown_tag(tag: &str) -> String {
     }
 }
 
-/// Untrusted text as plain text for the server log.
+/// Untrusted text as plain text for the server log: formatting removed, then
+/// one line through `display::shown_line`.
 fn plain(text: &str) -> String {
-    strip_formatting(text)
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .collect()
+    shown_line(&strip_formatting(text), None)
 }
 
 /// Reply parameters as plain text for the server log, cut when long.

@@ -165,8 +165,7 @@ impl Previews {
     }
 }
 
-/// Wraps a thumbnail for GPUI. Charges its bytes twice: the pixels stay in
-/// the `RenderImage` and are copied into the GPU sprite atlas when drawn.
+/// Wraps a thumbnail for GPUI with its display size.
 fn to_preview(thumbnail: Thumbnail) -> (Preview, usize) {
     let (width, height) = decode::fit(
         thumbnail.source_width,
@@ -174,10 +173,7 @@ fn to_preview(thumbnail: Thumbnail) -> (Preview, usize) {
         BOX_WIDTH,
         BOX_HEIGHT,
     );
-    let bytes = thumbnail.byte_len() * 2;
-    let buffer = image::RgbaImage::from_raw(thumbnail.width, thumbnail.height, thumbnail.bgra)
-        .expect("thumbnail buffer matches its size");
-    let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+    let (image, bytes) = crate::render_image::from_thumbnail(thumbnail);
     (
         Preview {
             image,

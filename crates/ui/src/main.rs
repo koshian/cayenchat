@@ -56,6 +56,7 @@ mod previews;
 mod process_mta;
 mod quit_dialog;
 mod reiwa_group;
+mod render_image;
 mod scrollbar;
 mod secrets;
 mod select_unit;

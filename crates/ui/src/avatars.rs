@@ -21,7 +21,7 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc, time::Instant};
 
 use cayenchat_media::{
-    Fetcher, HttpFetcher, Limits, LoadError, MediaRef, Original, Thumbnail,
+    Fetcher, HttpFetcher, Limits, LoadError, MediaRef, Original,
     cache::{CacheLimits, Job, Lookup, PreviewCache},
     policy,
 };
@@ -386,18 +386,6 @@ impl Avatars {
     }
 }
 
-/// Wraps a thumbnail for GPUI; charged twice like previews (CPU copy and
-/// GPU atlas tile).
-fn to_image(thumbnail: Thumbnail) -> (Arc<RenderImage>, usize) {
-    let bytes = thumbnail.byte_len() * 2;
-    let buffer = image::RgbaImage::from_raw(thumbnail.width, thumbnail.height, thumbnail.bgra)
-        .expect("thumbnail buffer matches its size");
-    (
-        Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
-        bytes,
-    )
-}
-
 impl ChatWindow {
     /// Media loads in flight (avatars and previews).
     pub(crate) fn media_loads(&self) -> usize {
@@ -429,7 +417,7 @@ impl ChatWindow {
                     &cancel,
                     &original,
                 )
-                .map(to_image)
+                .map(crate::render_image::from_thumbnail)
             });
             cx.spawn(async move |this, cx| {
                 let result = work.await;
