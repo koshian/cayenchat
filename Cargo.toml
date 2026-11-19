@@ -25,7 +25,10 @@ cayenchat-app = { path = "crates/app" }
 cayenchat-irc-core = { path = "crates/irc-core" }
 cayenchat-upload = { path = "crates/upload" }
 cayenchat-media = { path = "crates/media" }
-gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }
+# GPUI Kit's GPUI (#1081): published as `gpui-pre`, imported as `gpui`. The
+# platform backends live in `gpui-pre-platform` (`gpui_platform`).
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false, features = ["runtime_shaders", "font-kit"] }
 irc = { version = "=1.1.0", default-features = false, features = ["tls-rust", "channel-lists", "body-charsets"] }
 # Legacy charsets: `irc`'s own `encoding` feature would pull in the
 # unmaintained `encoding` crate (it uses it only for mock connections), so the
@@ -43,8 +46,6 @@ base64 = "0.22"
 flate2 = "1.1"
 
 [patch.crates-io]
-# GPUI 0.2.2 predates upstream's Windows language-key/IME message handling fix.
-gpui = { path = "vendor/gpui" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit and decodes
@@ -53,10 +54,6 @@ irc-proto = { path = "vendor/irc-proto" }
 # The published client keeps a channel's user list after we are kicked, so a
 # rejoin appends to stale entries (#342); drop it like our own PART does.
 irc = { path = "vendor/irc" }
-# The published 0.5.7 reads Windows fonts and metrics at the system DPI, so
-# the settings window scaled them twice (#290); 0.6.1 fixed it but needs a
-# newer GPUI.
-native-theme = { path = "vendor/native-theme" }
 
 [profile.dev]
 debug = 1
