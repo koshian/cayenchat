@@ -1183,7 +1183,8 @@ body) is not requested on legacy-encoding connections, and the IRCv3 tab
 says so; `server-time` stays available because its values are ASCII.
 
 server-time: the `time` tag (`YYYY-MM-DDThh:mm:ss.sssZ`, UTC; any number of
-fraction digits accepted, leap second clamped) is parsed without new
+fraction digits accepted, leap second clamped; times after 9999-12-30T22:00Z,
+beyond `jiff::Timestamp`, are invalid) is parsed without new
 dependencies into a `SystemTime`. `app` converts it to the local time of
 day for display (`Message::time`, `TimeOfDay`, minutes as `u16`) and also
 retains the full instant (`Message::timestamp`, milliseconds; see Timeline

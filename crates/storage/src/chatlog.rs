@@ -214,40 +214,19 @@ pub(crate) fn is_bidi_control(ch: char) -> bool {
 
 /// The file `record` belongs to: the day is the record's date in `zone`.
 pub fn path_for(root: &Path, record: &Record, zone: &TimeZone) -> PathBuf {
-    let (date, _) = local(record.time, zone);
+    let date = zoned(record.time, zone);
     root.join(path_component(&record.network))
         .join(record.scope.directory())
         .join(path_component(&record.conversation))
         .join(format!("{}.log", date.strftime("%Y-%m-%d")))
 }
 
-/// `time` as a wall-clock date and time in `zone`, with its UTC offset.
-///
-/// `jiff::Timestamp` ends about a day before 9999-12-31, but a `server-time`
-/// tag can carry any instant up to the end of that year. Those last hours are
-/// converted by civil arithmetic with the offset `zone` has at the end of
-/// `Timestamp`'s range (UTC when that overflows the year). Beyond the
-/// calendar entirely (years ±9999, which no tag can name) the epoch stands in.
-fn local(time: SystemTime, zone: &TimeZone) -> (jiff::civil::DateTime, jiff::tz::Offset) {
-    if let Ok(instant) = Timestamp::try_from(time) {
-        let zoned = instant.to_zoned(zone.clone());
-        return (zoned.datetime(), zoned.offset());
-    }
-    let epoch = jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0);
-    let from_epoch = match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(after) => jiff::SignedDuration::try_from(after).ok(),
-        Err(before) => jiff::SignedDuration::try_from(before.duration())
-            .ok()
-            .map(|duration| -duration),
-    };
-    let Some(utc) = from_epoch.and_then(|offset| epoch.checked_add(offset).ok()) else {
-        return (epoch, jiff::tz::Offset::UTC);
-    };
-    let offset = zone.to_offset(Timestamp::MAX);
-    match utc.checked_add(jiff::SignedDuration::from_secs(i64::from(offset.seconds()))) {
-        Ok(shifted) => (shifted, offset),
-        Err(_) => (utc, jiff::tz::Offset::UTC),
-    }
+/// `time` in `zone`. An instant outside jiff's range (years ±9999) cannot
+/// come from a clock; it is logged as the epoch rather than panicking.
+fn zoned(time: SystemTime, zone: &TimeZone) -> jiff::Zoned {
+    Timestamp::try_from(time)
+        .unwrap_or(Timestamp::UNIX_EPOCH)
+        .to_zoned(zone.clone())
 }
 
 /// Replaces what would break the four columns. Tabs become spaces and other
@@ -268,13 +247,10 @@ fn cell(text: &str, spaces: bool) -> String {
 
 /// The line for `record` in `zone`, with its newline.
 pub fn line_for(record: &Record, zone: &TimeZone) -> String {
-    let (time, offset) = local(record.time, zone);
+    let time = zoned(record.time, zone);
     format!(
-        "{}{}{:02}:{:02}\t{}\t{}\t{}\n",
-        time.strftime("%Y-%m-%dT%H:%M:%S%.3f"),
-        if offset.seconds() < 0 { '-' } else { '+' },
-        offset.seconds().abs() / 3600,
-        offset.seconds().abs() % 3600 / 60,
+        "{}\t{}\t{}\t{}\n",
+        time.strftime("%Y-%m-%dT%H:%M:%S%.3f%:z"),
         record.kind.label(),
         cell(&record.nick, true),
         cell(&record.body, false),
@@ -849,22 +825,6 @@ mod tests {
         assert_eq!(columns[2], "al\u{FFFD}ice\u{FFFD}");
         assert_eq!(columns[3], "a b\u{FFFD}\u{FFFD}c\u{FFFD}d");
         assert_eq!(line.matches('\n').count(), 1);
-    }
-
-    #[test]
-    fn the_last_day_of_year_9999_is_logged_as_that_day() {
-        // Beyond jiff's `Timestamp` range, yet a `server-time` tag may name it.
-        let mut last = record(Kind::Msg, "alice", "hi");
-        last.time = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_214_400);
-        assert!(line_for(&last, &tokyo()).starts_with("9999-12-31T09:00:00.000+09:00\t"));
-        assert!(line_for(&last, &TimeZone::UTC).starts_with("9999-12-31T00:00:00.000+00:00\t"));
-        // Local time would be in year 10000: UTC stands in.
-        last.time = SystemTime::UNIX_EPOCH + Duration::from_millis(253_402_300_799_999);
-        assert!(line_for(&last, &tokyo()).starts_with("9999-12-31T23:59:59.999+00:00\t"));
-        assert_eq!(
-            path_for(Path::new("logs"), &last, &tokyo()),
-            Path::new("logs/Libera/channels/#rust/9999-12-31.log")
-        );
     }
 
     #[test]

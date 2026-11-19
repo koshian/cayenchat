@@ -124,20 +124,8 @@ pub fn has_tag(message: &IrcMessage, key: &str) -> bool {
 /// Formats an instant as server-time does (`YYYY-MM-DDThh:mm:ss.sssZ`,
 /// UTC, milliseconds), for CHATHISTORY `timestamp=` references.
 pub fn format_server_time(time: SystemTime) -> String {
-    // Civil arithmetic from the epoch rather than `jiff::Timestamp`, whose
-    // range ends about a day before 9999-12-31 while `parse_server_time`
-    // accepts every four-digit year: what was parsed must format back.
-    let epoch = jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0);
-    let offset = match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(after) => jiff::SignedDuration::try_from(after).ok(),
-        Err(before) => jiff::SignedDuration::try_from(before.duration())
-            .ok()
-            .map(|duration| -duration),
-    };
-    // Beyond the calendar (years ±9999) the epoch stands in.
-    offset
-        .and_then(|offset| epoch.checked_add(offset).ok())
-        .unwrap_or(epoch)
+    jiff::Timestamp::try_from(time)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
         .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
 }
@@ -221,7 +209,13 @@ pub fn parse_server_time(value: &str) -> Option<SystemTime> {
     }
     let days = days_from_civil(year, month, day);
     let seconds = days * 86_400 + u64::from(hour * 3600 + minute * 60 + second);
-    SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(seconds * 1000 + u64::from(millis)))
+    let time = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_millis(seconds * 1000 + u64::from(millis)))?;
+    // Beyond jiff's `Timestamp::MAX` (the last day of year 9999) no real
+    // server sends a time; it counts as invalid like any other bad value,
+    // so every accepted time converts and formats without a fallback.
+    jiff::Timestamp::try_from(time).ok()?;
+    Some(time)
 }
 
 fn is_leap(year: u32) -> bool {
@@ -440,14 +434,16 @@ mod tests {
             format_server_time(SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(1_999)),
             "1970-01-01T00:00:00.001Z"
         );
-        // Everything the parser accepts formats back, up to the last day of
-        // year 9999 (beyond jiff's `Timestamp` range).
+        // The parser accepts up to jiff's `Timestamp::MAX`
+        // (9999-12-30T22:00:00.999999999Z) and rejects anything later.
+        let last = "9999-12-30T22:00:00.999Z";
+        assert_eq!(format_server_time(parse_server_time(last).unwrap()), last);
         for text in [
             "9999-12-30T22:00:01.000Z",
             "9999-12-31T00:00:00.000Z",
             "9999-12-31T23:59:59.999Z",
         ] {
-            assert_eq!(format_server_time(parse_server_time(text).unwrap()), text);
+            assert_eq!(parse_server_time(text), None, "{text}");
         }
         // A value beyond the calendar (Unix seconds 253402300800 is
         // 10000-01-01, buildable on every platform) does not panic and
