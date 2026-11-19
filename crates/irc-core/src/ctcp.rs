@@ -48,9 +48,11 @@ use crate::{
 };
 use cayenchat_model::{display::shown_line, names::CaseMapping};
 
-const WINDOW: Duration = Duration::from_secs(10);
+/// The window of the overall reply limit, shared with the CTCP AVATAR replies
+/// in `peer_avatar` (each keeps its own count within it).
+pub(crate) const WINDOW: Duration = Duration::from_secs(10);
 /// Requests handled (answered or shown) per [`WINDOW`] in total and per user.
-const MAX_PER_WINDOW: usize = 5;
+pub(crate) const MAX_PER_WINDOW: usize = 5;
 const MAX_PER_USER: usize = 2;
 /// A PING argument longer than this is not echoed.
 const MAX_PING_BYTES: usize = 128;

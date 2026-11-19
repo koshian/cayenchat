@@ -97,6 +97,7 @@ use tokio::time::Instant;
 use crate::{
     Event, PeerAvatarCache,
     avatar_mask::AvatarMask,
+    ctcp::{MAX_PER_WINDOW, WINDOW},
     metadata::{Handled, MAX_AVATAR_USERS, MAX_PUBLISHED_AVATAR_BYTES, avatar_value, numeric},
     presence::PresenceIndex,
     text::{nickname_key, same_nickname},
@@ -117,10 +118,9 @@ const MAX_QUEUED_PROBES: usize = 32;
 const MAX_PROBES_IN_FLIGHT: usize = 4;
 /// Users asked about per connection until they leave.
 const MAX_PROBED_USERS: usize = MAX_AVATAR_USERS;
-/// Answers to CTCP AVATAR queries: at most this many per window in total,
-/// and one per user per [`REPLY_INTERVAL_PER_USER`].
-const MAX_REPLIES_PER_WINDOW: usize = 5;
-const REPLY_WINDOW: Duration = Duration::from_secs(10);
+/// Answers to CTCP AVATAR queries: at most [`MAX_PER_WINDOW`] per [`WINDOW`]
+/// in total (the limit of `ctcp`, counted separately), and one per user per
+/// [`REPLY_INTERVAL_PER_USER`].
 const REPLY_INTERVAL_PER_USER: Duration = Duration::from_secs(60);
 const MAX_REPLY_RECIPIENTS: usize = 256;
 /// Users who queried us and are told when what we share changes, and the
@@ -1104,14 +1104,14 @@ impl PeerAvatars {
         while self
             .replies
             .front()
-            .is_some_and(|sent| now.duration_since(*sent) >= REPLY_WINDOW)
+            .is_some_and(|sent| now.duration_since(*sent) >= WINDOW)
         {
             self.replies.pop_front();
         }
         self.replied
             .retain(|_, sent| now.duration_since(*sent) < REPLY_INTERVAL_PER_USER);
         let key = nickname_key(self.casemapping, sender);
-        if self.replies.len() >= MAX_REPLIES_PER_WINDOW
+        if self.replies.len() >= MAX_PER_WINDOW
             || self.replied.contains_key(&key)
             || self.replied.len() >= MAX_REPLY_RECIPIENTS
         {
@@ -1614,12 +1614,12 @@ mod tests {
                 observe(&mut peers, &text, later).unwrap().send.len()
             })
             .sum();
-        assert_eq!(sent, MAX_REPLIES_PER_WINDOW);
+        assert_eq!(sent, MAX_PER_WINDOW);
         // Stopping ends answers at once.
         peers.set_share(None);
         let text = ":dave!u@h PRIVMSG alice :\u{1}AVATAR\u{1}";
         assert!(
-            observe(&mut peers, text, later + REPLY_WINDOW)
+            observe(&mut peers, text, later + WINDOW)
                 .unwrap()
                 .send
                 .is_empty()
