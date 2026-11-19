@@ -25,9 +25,13 @@ pub(super) fn open_channel_window(
     channel: &str,
     cx: &mut VisualTestContext,
 ) -> (Entity<ChannelSettingsView>, &'static mut VisualTestContext) {
-    chat.update_in(cx, |chat, window, cx| {
-        let id = chat.saved.selected_profile().unwrap().id.clone();
-        chat.open_channel_settings_window(&id, channel, CaseMapping::default(), window, cx);
+    // `cx.update` always runs in the chat window; `update_in` follows the
+    // entity's current window, which moves to a settings window drawing it.
+    cx.update(|window, cx| {
+        chat.update(cx, |chat, cx| {
+            let id = chat.saved.selected_profile().unwrap().id.clone();
+            chat.open_channel_settings_window(&id, channel, CaseMapping::default(), window, cx);
+        })
     });
     let handle = chat.read_with(cx, |chat, _| {
         chat.channel_settings_windows.last().unwrap().handle
@@ -879,7 +883,6 @@ fn slider_row(cx: &mut VisualTestContext, selector: &'static str) -> (f32, f32, 
 const SLIDER_INSET: f32 = 10.;
 
 #[gpui::test]
-#[ignore = "#1081: the test reaches the wrong window through update_in; adapt the test"]
 fn inherited_sliders_show_the_standard_values_and_a_real_drag_makes_them_the_channels_own(
     cx: &mut TestAppContext,
 ) {

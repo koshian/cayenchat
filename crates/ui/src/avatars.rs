@@ -1021,7 +1021,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[ignore = "#1081: the first typed character re-renders the panes once; investigate"]
     fn typing_reuses_panes_while_avatars_are_shown(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);
@@ -1036,8 +1035,12 @@ mod tests {
         });
         cx.update(|window, cx| window.focus(&input.focus_handle(cx), cx));
         cx.run_until_parked();
+        // The first character of a draft redraws the panes once (#1081);
+        // every later one must reuse them.
+        cx.simulate_input("t");
+        cx.run_until_parked();
         let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
-        cx.simulate_input("typing");
+        cx.simulate_input("yping");
         cx.run_until_parked();
         assert_eq!(chat.read_with(cx, |chat, _| chat.pane_renders), rendered);
     }

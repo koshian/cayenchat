@@ -264,8 +264,8 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 - Windows / macOS は `cargo check` を通していない (C の依存が要り、クロスでは
   通らない。CI の方針と同じ)。macOS 専用の箇所 (`navigation_binding_tests` の
   `command_for`、`Window` メニュー) は目視で読み替えた。
-- Linux: `cargo test -p cayenchat-ui --bin cayenchat -- --test-threads=1`: 869 passed,
-  18 ignored. Xvfb: the app starts, draws the chat window and the settings window
+- Linux: `cargo test -p cayenchat-ui --bin cayenchat -- --test-threads=1`: 874 passed,
+  13 ignored. Xvfb: the app starts, draws the chat window and the settings window
   and quits with Ctrl+Q without a panic.
 
 ### テストの状態
@@ -275,12 +275,25 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 
 - `log_list::a_short_log_reports_where_its_rows_end`: `ListState` から短いログの行の高さを
   取れない (`LogList::unfilled_from` は常に `None`、短いログの上の埋め草を描かない)。
-- `typing_reuses_panes_*` 3 件 (`pane_tests`、`avatars`、`previews`): 最初の 1 文字で
-  ペインが一度だけ再描画される (以降は増えない)。原因は未調査。
-- `server_settings_open_the_clicked_server_not_the_selected_one`、
-  `inherited_sliders_*`: `update_in` が別のウィンドウに着く。テストの書き方の問題とみている。
 - `icon_follows_its_room_after_an_unspaced_prefix`、
   `a_decoded_reference_shows_its_original_and_copies_only_that`: テキストのパッチが要る。
+
+ignore から戻したテスト (レビュー 1 回目):
+
+- `typing_reuses_panes_*` 3 件と `perf_baseline` の入力: 最初の 1 文字で、ペインが一度だけ
+  再描画される (GPUI 0.3 の挙動。0.2.2 では起きない。原因は未調査で、描画は 1 回きり)。
+  テストは 1 文字入れてから描画回数を控え、**2 文字目以降はペインを再描画しない**ことを
+  今までどおり検査する。続けて打つたびに描画する退行はこれで検出できる。
+- `server_settings_open_the_clicked_server_not_the_selected_one`、
+  `inherited_sliders_*`: `Entity::update_in` は、そのエンティティを描いている「現在の窓」で
+  動く。設定窓が開くと、チャット窓のエンティティの現在の窓が設定窓に移るので、
+  `ChatWindow` の窓を要る処理 (`window_handle().downcast::<ChatWindow>()`) が失敗した。
+  テストは `cx.update(|window, cx| chat.update(cx, ..))` でチャット窓から動かすようにした。
+  アプリ側の不具合ではない。
+
+CI: `.github/workflows/ci.yml` の `push` / `pull_request` を `gpui-kit-migration` にも
+広げた。統合ブランチ宛ての PR でも、既存のビルド・テスト行列 (Windows / macOS を含む) が
+動く。
 
 テストの修正: 実際の接続を張るテストは、GPUI のテストスケジューラーが他スレッドからの
 起床を「決定的でない」とするので、イベントポンプで `allow_parking()` を呼び

@@ -3489,7 +3489,6 @@ fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "#1081: the first typed character re-renders the panes once; investigate"]
 fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -3523,7 +3522,12 @@ fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
         3
     );
 
-    cx.simulate_input("hello");
+    // The first character of a draft redraws the panes once (#1081); every
+    // later one must reuse them.
+    cx.simulate_input("h");
+    cx.run_until_parked();
+    let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
+    cx.simulate_input("ello");
     cx.run_until_parked();
     assert_eq!(
         input.read_with(cx, |input, _| input.text().to_owned()),
@@ -4205,7 +4209,6 @@ fn the_title_leads_with_the_known_modes_of_the_selected_channel(cx: &mut TestApp
 }
 
 #[gpui::test]
-#[ignore = "#1081: update_in reaches the settings window opened by the first round; adapt the test"]
 fn server_settings_open_the_clicked_server_not_the_selected_one(cx: &mut TestAppContext) {
     use super::ServerMenu;
 
@@ -4220,16 +4223,20 @@ fn server_settings_open_the_clicked_server_not_the_selected_one(cx: &mut TestApp
         ChatWindow::with_settings(settings.clone(), None, window, cx)
     });
     for (index, expected) in [(1, &second), (0, &first), (1, &second)] {
-        chat.update_in(cx, |chat, window, cx| {
-            let before = chat.state.selection();
-            let network = chat.state.networks()[index].id;
-            chat.server_menu = Some(ServerMenu {
-                position: gpui::point(gpui::px(10.), gpui::px(10.)),
-                network,
-            });
-            chat.open_server_settings(window, cx);
-            assert!(chat.server_menu.is_none());
-            assert_eq!(chat.state.selection(), before);
+        // `cx.update` runs in the chat window; `update_in` would follow the
+        // entity to the settings window drawing it.
+        cx.update(|window, cx| {
+            chat.update(cx, |chat, cx| {
+                let before = chat.state.selection();
+                let network = chat.state.networks()[index].id;
+                chat.server_menu = Some(ServerMenu {
+                    position: gpui::point(gpui::px(10.), gpui::px(10.)),
+                    network,
+                });
+                chat.open_server_settings(window, cx);
+                assert!(chat.server_menu.is_none());
+                assert_eq!(chat.state.selection(), before);
+            })
         });
         let (tab, profile) = chat.read_with(cx, |chat, _| {
             let handle = chat.settings_window.unwrap();
