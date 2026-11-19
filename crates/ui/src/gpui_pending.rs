@@ -8,13 +8,9 @@
 //! GPUI crates and remove the item here with it; see the list in
 //! `spec/gpui-kit-migration-2026-11-18.md`.
 
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
-use gpui::{AnyView, App, InteractiveText, Pixels, StyledText, Window};
-
-/// Phrase wrapping (`StyledText::with_wrap_joins`, #537, #550) needs the text
-/// patch. Off, the log wraps like stock GPUI and no joins are computed.
-pub(crate) const PHRASE_WRAP: bool = false;
+use gpui::{AnyView, App, InteractiveText, Pixels, Window};
 
 /// The link tooltip of the text patch: the tooltip a pointer can move onto
 /// (to click the copy button of a decoded character reference). Stock GPUI's
@@ -39,18 +35,6 @@ impl InteractiveTextPending for InteractiveText {
     }
 
     fn tooltip_bridge(self, _left: Pixels, _top: Pixels) -> Self {
-        self
-    }
-}
-
-/// Phrase wrapping of the text patch (#537, #550): GPUI's line wrapper does
-/// not break the text at these offsets. Without the patch nothing is joined.
-pub(crate) trait StyledTextPending: Sized {
-    fn with_wrap_joins(self, joins: Arc<[u32]>) -> Self;
-}
-
-impl StyledTextPending for StyledText {
-    fn with_wrap_joins(self, _joins: Arc<[u32]>) -> Self {
         self
     }
 }

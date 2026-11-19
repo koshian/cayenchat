@@ -196,6 +196,7 @@ impl LineLayout {
         text: &str,
         wrap_width: Pixels,
         max_lines: Option<usize>,
+        joins: Option<&[u32]>,
         scratch: &mut WrapScratch,
     ) -> SmallVec<[WrapBoundary; 1]> {
         let mut boundaries = SmallVec::new();
@@ -220,8 +221,28 @@ impl LineLayout {
                 .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.index)),
         );
         break_indices.clear();
-        break_indices
-            .extend(LineWrapper::break_indices(text).filter(|index| glyph_indices.contains(index)));
+        // CayenChat (#537): `joins` are offsets the caller wants no break
+        // before (phrase-aware wrapping). Dropping them merges the segments
+        // around them; a line with no other opportunity still breaks at the
+        // overflowing glyph.
+        break_indices.extend(LineWrapper::break_indices(text).filter(|index| {
+            glyph_indices.contains(index)
+                && !joins.is_some_and(|joins| joins.binary_search(&(*index as u32)).is_ok())
+        }));
+        // CayenChat (#550): the room kept before a link icon (U+00A0 then
+        // U+2007) is made of no-break spaces, so UAX #14 offers no break
+        // before it. It may follow any text, so a long unspaced prefix cannot
+        // force a break inside the room or at the URL's first letter.
+        let room_ixs_from = break_indices.len();
+        break_indices.extend(
+            text.match_indices("\u{a0}\u{2007}")
+                .map(|(index, _)| index)
+                .filter(|index| *index > 0 && glyph_indices.contains(index)),
+        );
+        if break_indices.len() > room_ixs_from {
+            break_indices.sort_unstable();
+            break_indices.dedup();
+        }
         let mut glyphs = self
             .runs
             .iter()
@@ -601,6 +622,7 @@ impl LineLayoutCache {
         runs: &[FontRun],
         wrap_width: Option<Pixels>,
         max_lines: Option<usize>,
+        joins: Option<&Arc<[u32]>>,
     ) -> Arc<WrappedLineLayout>
     where
         Text: AsRef<str>,
@@ -613,6 +635,7 @@ impl LineLayoutCache {
             runs,
             wrap_width,
             force_width: None,
+            joins: joins.map(|joins| &**joins),
         } as &dyn AsCacheKeyRef;
 
         let state = self.state.borrow();
@@ -639,6 +662,7 @@ impl LineLayoutCache {
                     text.as_ref(),
                     wrap_width,
                     max_lines,
+                    joins.map(|joins| &**joins),
                     &mut self.wrap_scratch.borrow_mut(),
                 )
             } else {
@@ -655,6 +679,7 @@ impl LineLayoutCache {
                 runs: SmallVec::from(runs),
                 wrap_width,
                 force_width: None,
+                joins: joins.cloned(),
             });
 
             let mut state = self.state.borrow_mut();
@@ -686,6 +711,7 @@ impl LineLayoutCache {
             runs,
             wrap_width: None,
             force_width,
+            joins: None,
         } as &dyn AsCacheKeyRef;
 
         let state = self.state.borrow();
@@ -719,6 +745,7 @@ impl LineLayoutCache {
                 runs: SmallVec::from(runs),
                 wrap_width: None,
                 force_width,
+                joins: None,
             });
             let layout = Arc::new(layout);
             current_frame.lines.insert(key.clone(), layout.clone());
@@ -794,6 +821,7 @@ struct CacheKey {
     runs: SmallVec<[FontRun; 1]>,
     wrap_width: Option<Pixels>,
     force_width: Option<Pixels>,
+    joins: Option<Arc<[u32]>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -803,6 +831,8 @@ struct CacheKeyRef<'a> {
     runs: &'a [FontRun],
     wrap_width: Option<Pixels>,
     force_width: Option<Pixels>,
+    /// CayenChat: offsets the wrapper does not break before (#537).
+    joins: Option<&'a [u32]>,
 }
 
 impl PartialEq for dyn AsCacheKeyRef + '_ {
@@ -827,6 +857,7 @@ impl AsCacheKeyRef for CacheKey {
             runs: self.runs.as_slice(),
             wrap_width: self.wrap_width,
             force_width: self.force_width,
+            joins: self.joins.as_deref(),
         }
     }
 }
@@ -903,7 +934,7 @@ mod tests {
         layout.len = "你好".len();
         assert_eq!(
             layout
-                .compute_wrap_boundaries("你好", px(15.), None, &mut WrapScratch::default())
+                .compute_wrap_boundaries("你好", px(15.), None, None, &mut WrapScratch::default())
                 .as_slice(),
             &[WrapBoundary {
                 run_ix: 0,
@@ -916,7 +947,7 @@ mod tests {
         layout.len = 1;
         assert!(
             layout
-                .compute_wrap_boundaries("a", px(10.), None, &mut WrapScratch::default())
+                .compute_wrap_boundaries("a", px(10.), None, None, &mut WrapScratch::default())
                 .is_empty()
         );
     }
@@ -937,7 +968,7 @@ mod tests {
             layout.width = px(indices.len() as f32 * 10.);
             layout.len = text.len();
             assert_eq!(
-                layout.compute_wrap_boundaries(text, px(40.), None, &mut WrapScratch::default()),
+                layout.compute_wrap_boundaries(text, px(40.), None, None, &mut WrapScratch::default()),
                 expected_boundaries
                     .into_iter()
                     .map(|glyph_ix| WrapBoundary {
@@ -963,7 +994,7 @@ mod tests {
         layout.len = text.len();
         assert_eq!(
             layout
-                .compute_wrap_boundaries(text, px(60.), None, &mut WrapScratch::default())
+                .compute_wrap_boundaries(text, px(60.), None, None, &mut WrapScratch::default())
                 .as_slice(),
             &[WrapBoundary {
                 run_ix: 0,
