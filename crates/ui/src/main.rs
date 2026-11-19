@@ -100,9 +100,7 @@ mod wallpaper_crop;
 mod whois;
 mod window_layout;
 
-use crate::gpui_pending::{
-    InteractiveTextPending as _, StyledTextPending as _, WindowPending as _,
-};
+use crate::gpui_pending::{InteractiveTextPending as _, StyledTextPending as _};
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, GroupId, HeadingMarks, Kind, LineKey, LineKind,
     MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,

@@ -21,7 +21,6 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 
-use crate::gpui_pending::WindowPending as _;
 use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
 /// What was typed for a server that is not shown: its unsaved passwords and
