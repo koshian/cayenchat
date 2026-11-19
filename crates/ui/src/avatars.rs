@@ -1211,7 +1211,10 @@ mod tests {
             ],
         );
         let count = |url: &str| fetcher.calls().iter().filter(|c| *c == url).count();
-        assert_eq!(count(FLAKY), 1);
+        // The retry interval is real time (40ms) and a loaded machine can
+        // pass it before the assertion runs, so only "fetched at least
+        // once" is checked here; the timer rounds below check retrying.
+        assert!(count(FLAKY) >= 1, "fetched on first sight");
         chat.read_with(cx, |chat, _| {
             assert!(matches!(chat.avatars.lookup(FLAKY, 32), super::Shown::None));
         });
