@@ -11058,6 +11058,7 @@ fn app_menus(
             name: app_menu_name.into(),
             items: app_items,
             disabled: false,
+            menu_type: None,
         },
         Menu {
             name: i18n.text("menu_connection").into(),
@@ -11067,6 +11068,7 @@ fn app_menus(
                 MenuItem::action(i18n.text("reconnect"), Reconnect),
             ],
             disabled: false,
+            menu_type: None,
         },
         Menu {
             name: i18n.text("menu_edit").into(),
@@ -11080,11 +11082,13 @@ fn app_menus(
                 MenuItem::action(i18n.text("menu_select_all"), input::SelectAll),
             ],
             disabled: false,
+            menu_type: None,
         },
         Menu {
             name: i18n.text("menu_view").into(),
             items: view_items,
             disabled: false,
+            menu_type: None,
         },
     ];
     #[cfg(not(target_os = "macos"))]
@@ -11092,6 +11096,7 @@ fn app_menus(
         name: i18n.text("menu_help").into(),
         items: vec![MenuItem::action(i18n.text("menu_about"), About)],
         disabled: false,
+        menu_type: None,
     });
     // Only macOS has a Window menu; AppKit adds the window list, full screen
     // and the like to it, so it holds just Minimize and Zoom.
@@ -11102,10 +11107,8 @@ fn app_menus(
             MenuItem::action(i18n.text("menu_minimize"), MinimizeWindow),
             MenuItem::action(i18n.text("menu_zoom"), ZoomWindow),
         ],
-        // TODO(#1081): `Menu::menu_type` (`SystemMenuType::Window`) returns with
-        // the window patch; until then AppKit adds the window list only to a
-        // menu named "Window".
         disabled: false,
+        menu_type: Some(SystemMenuType::Window),
     });
     menus
 }
@@ -11444,9 +11447,12 @@ fn main() {
             // About belongs to no window: the menu bar of any window, or the
             // macOS application menu, reaches it here.
             cx.on_action(|_: &About, cx| open_about(cx));
-            // TODO(#1081): `App::on_quit_request` (the quit confirmation for
-            // the macOS Dock "Quit") returns with the quit patch; until then
-            // that quit is not asked about.
+            // macOS Dock "Quit" is the user's request too; the system's own
+            // shutdown and `cx.quit()` never reach this handler.
+            cx.on_quit_request(|cx| {
+                request_quit_anywhere(cx);
+                false
+            });
             // Global actions run inside the active window's update, so updating
             // that window again here fails; do it once the dispatch has finished.
             cx.on_action(|_: &MinimizeWindow, cx| {

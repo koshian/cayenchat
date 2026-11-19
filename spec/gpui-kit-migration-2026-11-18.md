@@ -243,9 +243,9 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | --- | --- | --- |
 | `prefers_direct_input` (macOS `allowedInputSourceLocales` を含む) | **載せ直し済み** (IME とフォーカスの PR)。`vendor/gpui-pre{,-windows,-macos,-linux}` の `PATCHES.md` を参照。Windows と macOS は未確認 (最後の段階で実機) | — |
 | `discarding_ime_commit` (Windows) | **載せ直し済み** (同上)。実機の確認は最後の段階 | — |
-| `App::on_quit_request` | 登録しない。macOS の Dock の Quit は確認なしで終了する | 終了とウィンドウ |
-| `Menu::menu_type` (`SystemMenuType::Window`) | 外した。macOS の Window メニューは名前が `Window` のときだけ AppKit が窓の一覧を足す (日本語表示では足されない) | 終了とウィンドウ |
-| Windows の `IsWindow` 確認、`activate` の Alt 抑止 | 未適用 | 終了とウィンドウ |
+| `App::on_quit_request` | **載せ直し済み** (終了とウィンドウの PR)。`vendor/gpui-pre{,-macos}` の `PATCHES.md` を参照。macOS は未確認 (最後の段階で実機) | — |
+| `Menu::menu_type` (`SystemMenuType::Window`) | **載せ直し済み** (同上)。上流 0.3.12 には `SystemMenuType::Window` が無く、名前が `Window` のときだけ AppKit が窓の一覧を足すので、これも足した | — |
+| Windows の `IsWindow` 確認、`activate` の Alt 抑止 | **載せ直し済み** (同上)。`vendor/gpui-pre-windows/PATCHES.md`。Windows は `cargo check` のみで、実機は最後の段階 | — |
 | `PathPromptFilter` | ファイルダイアログの種類絞り込みなし。添付の検査が他の種類を断る | ファイル |
 | macOS のファイルプロミスの drop (`PromisedFiles`) | `keep_alive` は常に `None`。型 (`PromisedFiles`) だけ `gpui_pending` に置く | ファイル |
 | `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | 常に「合成あり」「ぼかし非対応」。背景ぼかしは使えない | 背景の透過とぼかし |
@@ -255,8 +255,8 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | 上流の `tooltip` に置き換え。ポインターを移してコピーボタンを押す操作はできない | テキスト |
 | §2 の「個別に確認していない」もの | 未適用 | 残りの細かいパッチ |
 
-テストは仮実装に合わせて、`image_file_filter` のテストと `Menu::menu_type` の検査を
-外した。
+テストは仮実装に合わせて、`image_file_filter` のテストを外した (`Menu::menu_type` の
+検査は終了とウィンドウの PR で戻した)。
 
 ### 確認したこと
 

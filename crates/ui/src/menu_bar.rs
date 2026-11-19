@@ -621,6 +621,7 @@ mod tests {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             disabled: false,
+                            menu_type: None,
                         }
                         .owned(),
                     ],
@@ -734,6 +735,7 @@ mod tests {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             disabled: false,
+                            menu_type: None,
                         }
                         .owned(),
                     ],
@@ -824,6 +826,7 @@ mod tests {
                             name: "View".into(),
                             items: vec![MenuItem::action("Toggle diagnostics", crate::ToggleDebug)],
                             disabled: false,
+                            menu_type: None,
                         }
                         .owned(),
                     ],
