@@ -2309,10 +2309,11 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                 drop(state);
                 // Honor a direct-input field's wish right away: waiting for the
                 // next frame would let composed text reach it (#1081).
-                match enter_ime_action(window.and_then(|window| window.query_ime_enabled())) {
-                    true => this.enable_ime(),
-                    false => this.disable_ime(),
-                }
+                handle_text_input_enter(
+                    || window.and_then(|window| window.query_ime_enabled()),
+                    || this.enable_ime(),
+                    || this.disable_ime(),
+                );
             }
             zwp_text_input_v3::Event::Leave { .. } => {
                 drop(state);
@@ -2377,11 +2378,19 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
     }
 }
 
-/// Whether a text-input `enter` should enable the IME, given the focused
-/// handler's wish. Without a handler the compositor default (enabled) stands
-/// until the next frame decides.
-fn enter_ime_action(handler_wish: Option<bool>) -> bool {
-    handler_wish.unwrap_or(true)
+/// Handles a text-input `enter`: asks the focused handler whether it wants the
+/// IME and enables or disables it accordingly. Without a handler the
+/// compositor default (enabled) stands until the next frame decides.
+fn handle_text_input_enter(
+    handler_wish: impl FnOnce() -> Option<bool>,
+    enable_ime: impl FnOnce(),
+    disable_ime: impl FnOnce(),
+) {
+    if handler_wish().unwrap_or(true) {
+        enable_ime();
+    } else {
+        disable_ime();
+    }
 }
 
 fn linux_button_to_gpui(button: u32) -> Option<MouseButton> {
@@ -3233,9 +3242,18 @@ mod tests {
 
     #[test]
     fn enter_keeps_the_ime_off_for_direct_input_fields() {
-        assert!(!enter_ime_action(Some(false)));
-        assert!(enter_ime_action(Some(true)));
-        assert!(enter_ime_action(None));
+        let run = |wish: Option<bool>| {
+            let (enabled, disabled) = (Cell::new(0), Cell::new(0));
+            handle_text_input_enter(
+                || wish,
+                || enabled.set(enabled.get() + 1),
+                || disabled.set(disabled.get() + 1),
+            );
+            (enabled.get(), disabled.get())
+        };
+        assert_eq!(run(Some(false)), (0, 1));
+        assert_eq!(run(Some(true)), (1, 0));
+        assert_eq!(run(None), (1, 0));
     }
 
     #[test]
