@@ -166,7 +166,7 @@ impl ChatWindow {
             wait.task.detach();
         }
         if let Some(handle) = self.quit_dialog.previous.take() {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
         crate::quit_app(cx);
@@ -178,7 +178,7 @@ impl ChatWindow {
         // Shown to the user now; a later quit is not held for it again.
         crate::secrets::acknowledge_failure(cx);
         if let Some(handle) = self.quit_dialog.previous.take() {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -203,7 +203,7 @@ impl ChatWindow {
         let trouble = self.quit_dialog.waiting.as_ref().is_some_and(|w| w.trouble);
         if self.quit_dialog.focus_pending {
             self.quit_dialog.focus_pending = false;
-            window.focus(&self.quit_dialog.cancel);
+            window.focus(&self.quit_dialog.cancel, cx);
         }
         let theme = theme::current(cx);
         let box_width = dialog::box_width(QUIT_BOX_MAX_WIDTH, window);
@@ -261,11 +261,14 @@ impl ChatWindow {
                     "tab" if slow || trouble => {
                         let (cancel, confirm) =
                             (&this.quit_dialog.cancel, &this.quit_dialog.confirm);
-                        window.focus(if cancel.is_focused(window) {
-                            confirm
-                        } else {
-                            cancel
-                        });
+                        window.focus(
+                            if cancel.is_focused(window) {
+                                confirm
+                            } else {
+                                cancel
+                            },
+                            cx,
+                        );
                     }
                     _ => {}
                 }
@@ -328,7 +331,7 @@ impl ChatWindow {
             // The focus to restore stays for the wait the quit may start.
             crate::quit_app(cx);
         } else if let Some(handle) = self.quit_dialog.previous.take() {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -346,7 +349,7 @@ impl ChatWindow {
         }
         if self.quit_dialog.focus_pending {
             self.quit_dialog.focus_pending = false;
-            window.focus(&self.quit_dialog.cancel);
+            window.focus(&self.quit_dialog.cancel, cx);
         }
         let theme = theme::current(cx);
         let connected = self.sessions.values().any(|session| session.irc.is_some());
@@ -404,7 +407,7 @@ impl ChatWindow {
                             } else {
                                 cancel
                             };
-                            window.focus(next);
+                            window.focus(next, cx);
                         }
                         _ => {}
                     }

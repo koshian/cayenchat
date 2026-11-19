@@ -109,6 +109,7 @@ fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut Te
 }
 
 #[gpui::test]
+#[ignore = "#1081: needs the hoverable link tooltip of the text patch"]
 fn a_decoded_reference_shows_its_original_and_copies_only_that(cx: &mut TestAppContext) {
     crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");

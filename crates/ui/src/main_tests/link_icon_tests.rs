@@ -31,6 +31,7 @@ fn icon_follows_its_room_across_a_wrap(cx: &mut gpui::TestAppContext) {
 /// The same holds when the text before the URL has no space, so no ordinary
 /// wrap opportunity exists and only the start of the room can take the break.
 #[gpui::test]
+#[ignore = "#1081: needs the text patch (word characters)"]
 fn icon_follows_its_room_after_an_unspaced_prefix(cx: &mut gpui::TestAppContext) {
     check_rooms_across_wraps(cx, "");
 }

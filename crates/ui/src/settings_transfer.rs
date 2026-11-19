@@ -135,7 +135,7 @@ impl ChatWindow {
     fn close_transfer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.transfer_dialog.step = None;
         if let Some(handle) = self.transfer_dialog.previous.take() {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -187,7 +187,6 @@ impl ChatWindow {
             directories: false,
             multiple: false,
             prompt: None,
-            filter: None,
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = chosen.await;
@@ -546,7 +545,7 @@ impl ChatWindow {
         let working = matches!(step, Step::Working);
         if self.transfer_dialog.focus_pending {
             self.transfer_dialog.focus_pending = false;
-            window.focus(&self.transfer_dialog.cancel);
+            window.focus(&self.transfer_dialog.cancel, cx);
         }
         let box_width = dialog::box_width(BOX_MAX_WIDTH, window);
         let cancel = dialog::cancel_button(
@@ -593,7 +592,7 @@ impl ChatWindow {
                             } else {
                                 cancel
                             };
-                            window.focus(next);
+                            window.focus(next, cx);
                         }
                         _ => {}
                     }

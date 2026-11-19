@@ -138,6 +138,7 @@ fn the_reason_is_typed_tabbed_and_sent_literally(cx: &mut TestAppContext) {
         cx.bind_keys(crate::shortcut_bindings(
             cayenchat_storage::ChannelNumberModifier::Ctrl,
             &Default::default(),
+            cx,
         ));
     });
     let settings = crate::settings_with_channels("#a");

@@ -71,7 +71,7 @@ pub fn install() -> Option<mpsc::UnboundedReceiver<()>> {
 pub fn quit_on_signal(mut receiver: mpsc::UnboundedReceiver<()>, cx: &mut App) {
     cx.spawn(async move |cx| {
         if receiver.next().await.is_some() {
-            let _ = cx.update(|cx| cx.quit());
+            cx.update(|cx| cx.quit());
         }
     })
     .detach();

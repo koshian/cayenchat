@@ -8,11 +8,15 @@ use std::{path::PathBuf, sync::Arc};
 use cayenchat_model::attachment::AttachmentSource;
 use gpui::{prelude::*, *};
 
+use crate::gpui_pending::PromisedFiles;
+
 use super::ChannelSettingsView;
 #[cfg(test)]
 use cayenchat_media::avatar_edit;
 
 /// File name extensions of the formats the range editor opens.
+// TODO(#1081): used again by the file dialog filter (`PathPromptFilter`).
+#[allow(dead_code)]
 const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"];
 
 impl ChannelSettingsView {
@@ -23,13 +27,8 @@ impl ChannelSettingsView {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("channel_look_wallpaper").into()),
-            filter: Some(PathPromptFilter {
-                name: self.i18n.text("upload_image_files").into(),
-                extensions: WALLPAPER_EXTENSIONS
-                    .iter()
-                    .map(|extension| SharedString::from(*extension))
-                    .collect(),
-            }),
+            // TODO(#1081): the dialog's file type filter (`PathPromptFilter`)
+            // returns with the file patch (PR 2-3).
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {
@@ -80,7 +79,7 @@ impl ChannelSettingsView {
     pub(super) fn on_wallpaper_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
         self.offer_wallpaper(
             paths.paths().to_vec(),
-            paths.keep_alive(),
+            crate::gpui_pending::keep_alive(paths),
             AttachmentSource::Drop,
             cx,
         );

@@ -291,7 +291,7 @@ impl ChatWindow {
             input,
             _blur: blur,
         });
-        window.focus(&handle);
+        window.focus(&handle, cx);
         self.group_edit_reveal = true;
         cx.notify();
     }
@@ -347,7 +347,7 @@ impl ChatWindow {
 
     fn focus_draft(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(input) = self.inputs.get(&self.state.selection()) {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
         }
     }
 

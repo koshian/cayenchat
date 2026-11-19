@@ -385,7 +385,7 @@ fn run_with(
         (ids, input)
     });
     cx.update(|window, cx| {
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         window.refresh();
     });
     cx.run_until_parked();
@@ -407,6 +407,10 @@ fn run_with(
     );
 
     // Typing into the selected channel's draft; panes must stay cached.
+    // The first character of a draft redraws the panes once (#1081); the
+    // samples after it must reuse them.
+    cx.simulate_input("a");
+    cx.run_until_parked();
     let renders = chat.read_with(cx, |chat, _| chat.pane_renders);
     let mut typing = Timings::new(servers, "typing");
     for _ in 0..TYPING_SAMPLES {

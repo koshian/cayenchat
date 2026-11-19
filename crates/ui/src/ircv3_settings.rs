@@ -22,6 +22,8 @@ use cayenchat_storage::{Ircv3Preferences, ServerProfile, Settings, TextEncoding}
 use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
+use crate::gpui_pending::PromisedFiles;
+
 use crate::os_text::WindowOsText;
 
 use crate::{
@@ -164,7 +166,7 @@ impl SettingsWindow {
         );
         if self.settings.ircv3_server_list_open {
             let mut menu = div()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
@@ -378,7 +380,12 @@ impl SettingsWindow {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                        this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
+                        this.drop_avatar_image(
+                            paths.paths(),
+                            crate::gpui_pending::keep_alive(paths),
+                            window,
+                            cx,
+                        )
                     }))
             })
             .child(
@@ -608,7 +615,7 @@ impl SettingsWindow {
         };
         let read = cx.read_from_clipboard_async();
         cx.spawn_in(window, async move |this, cx| {
-            let item = read.await;
+            let item = read.await.ok().flatten();
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.selected_profile_id().as_deref() == Some(&profile)
                     && let Some(item) = item
@@ -671,7 +678,6 @@ impl SettingsWindow {
             directories: false,
             multiple: false,
             prompt: Some(self.i18n.text("ircv3_avatar_choose_prompt").into()),
-            filter: Some(crate::image_upload::image_file_filter(&self.i18n)),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {

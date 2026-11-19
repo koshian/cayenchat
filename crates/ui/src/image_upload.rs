@@ -12,11 +12,13 @@ use std::{future::Future, path::PathBuf, sync::Arc};
 use cayenchat_app::Selection;
 use cayenchat_app::attachments::{Completion, Offer, UploadFailure, UploadJob, UploaderReadiness};
 use cayenchat_model::attachment::{
-    Attachment, AttachmentError, AttachmentSource, ImageFormat, MAX_ATTACHMENT_BYTES, format_size,
+    Attachment, AttachmentError, AttachmentSource, MAX_ATTACHMENT_BYTES, format_size,
 };
 use cayenchat_storage::SecretKey;
 use cayenchat_upload::{ExternalUploader, UploadError};
 use gpui::{prelude::*, *};
+
+use crate::gpui_pending::PromisedFiles;
 
 use crate::{
     ChatWindow, SettingsTab, input,
@@ -77,19 +79,6 @@ pub(crate) fn configured_uploader(
 
 /// What the upload service is ready for, and the uploader when it can be used.
 pub(crate) type ConfiguredUploader = (UploaderReadiness, Option<Arc<dyn ExternalUploader>>);
-
-/// What a file dialog offers when an image is wanted: the extensions of the
-/// formats the attachment check accepts. Where a dialog cannot filter, that
-/// check refuses the other files.
-pub(crate) fn image_file_filter(i18n: &Localizer) -> PathPromptFilter {
-    PathPromptFilter {
-        name: i18n.text("upload_image_files").into(),
-        extensions: ImageFormat::FILE_EXTENSIONS
-            .iter()
-            .map(|extension| SharedString::from(*extension))
-            .collect(),
-    }
-}
 
 /// An image from a paste or a single file, or the text explaining why not.
 pub(crate) fn clipboard_attachment(
@@ -401,7 +390,6 @@ impl ChatWindow {
             directories: false,
             multiple: false,
             prompt: None,
-            filter: Some(image_file_filter(&self.i18n)),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = chosen.await {
@@ -652,7 +640,7 @@ mod tests {
             chat.inputs[&Selection::Channel(channel)].clone()
         });
         cx.update(|window, cx| {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             window.refresh();
         });
         cx.run_until_parked();
@@ -955,7 +943,7 @@ mod tests {
         std::fs::create_dir(&promised).unwrap();
         let image = promised.join("shot.png");
         std::fs::write(&image, PNG).unwrap();
-        let keep = Arc::new(gpui::PromisedFiles::new(promised.clone()));
+        let keep = Arc::new(crate::gpui_pending::PromisedFiles::new(promised.clone()));
         let fake = Arc::new(FakeUploader::succeeding(URL));
         let (chat, _, _, cx) = open_chat(cx, Some(fake), None);
         chat.update_in(cx, |chat, window, cx| {
