@@ -10,3 +10,9 @@ patch) instead of `query_accepts_text_input()`. The text-input `enter` event
 (upstream: enables the IME unconditionally) asks the keyboard-focused window's
 handler first and leaves the IME off for a direct-input field; with no handler
 it still enables and the next frame decides. X11 has no per-field switch.
+
+## File dialog filter (#1081)
+
+`prompt_for_paths` passes `PathPromptOptions::filter` (gpui-pre's patch) to the
+XDG portal as a `FileFilter`. Portal globs are case-sensitive, so each
+extension is added in lower and upper case.

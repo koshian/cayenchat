@@ -28,3 +28,21 @@ Not compiled on Linux; check on macOS with the Japanese input sources.
 
 Not compiled on Linux; check on macOS: Dock "Quit" asks, cancelling keeps the
 app, the Japanese-titled Window menu lists the windows.
+
+## File dialog filter and file promises (#1081)
+
+- `prompt_for_paths` sets `allowedFileTypes` from `PathPromptOptions::filter`
+  (gpui-pre's patch). The property is deprecated but still honored, and needs
+  no UniformTypeIdentifiers symbols.
+- The native window also registers for the types `NSFilePromiseReceiver` reads
+  (`readableDraggedTypes`) next to `NSFilenamesPboardType`. A drag that carries
+  promises instead of paths enters with an empty `ExternalPaths`; on drop the
+  promised files are written to a new `0700` directory under
+  `$TMPDIR/gpui-file-promises/` (readers run on the main queue), and once all
+  have arrived the drop is replayed as Exited, Entered (with the paths),
+  Submit, Exited. `ExternalPaths::keep_alive` (gpui-pre's patch) holds the
+  directory until the last handle is dropped. Upstream refused these drags.
+
+Not compiled on Linux; check on macOS: the file chooser offers only the
+images, and dropping a photo from Photos or the screenshot thumbnail on a
+channel or an attachment field attaches it.

@@ -9348,7 +9348,7 @@ mod tests {
             })
             .into();
         let reentry_position = point(px(30.), px(30.));
-        let external_paths = || ExternalPaths([successful_path.clone()].into_iter().collect());
+        let external_paths = || ExternalPaths([successful_path.clone()].into_iter().collect(), None);
         let update_result = cx.update_window(first_destination, |_, window, cx| {
             window.draw(cx).clear(cx);
             window.dispatch_event(
@@ -9501,7 +9501,7 @@ mod tests {
             window.dispatch_event(
                 FileDropEvent::Entered {
                     position: reentry_position,
-                    paths: ExternalPaths([cancelled_path].into_iter().collect()),
+                    paths: ExternalPaths([cancelled_path].into_iter().collect(), None),
                 }
                 .to_platform_input(),
                 cx,

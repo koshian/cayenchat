@@ -30,3 +30,9 @@ on Windows.
 
 Check on Windows: no `0x80040102` in the log after closing a window, and no
 menu bar focus when the settings window opens at startup.
+
+## File dialog filter (#1081)
+
+`file_open_dialog` sets `PathPromptOptions::filter` (gpui-pre's patch) with
+`SetFileTypes` as one `*.ext;*.ext` entry named by the filter. Not compiled on
+Linux; check on Windows that the open dialog lists only the offered images.
