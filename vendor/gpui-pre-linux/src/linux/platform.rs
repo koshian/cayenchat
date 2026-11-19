@@ -849,9 +849,7 @@ impl Platform for LinuxPlatform {
                     let mut portal_filter =
                         ashpd::desktop::file_chooser::FileFilter::new(&filter.name);
                     for extension in &filter.extensions {
-                        portal_filter = portal_filter
-                            .glob(&format!("*.{}", extension.to_lowercase()))
-                            .glob(&format!("*.{}", extension.to_uppercase()));
+                        portal_filter = portal_filter.glob(&case_insensitive_glob(extension));
                     }
                     request = request.filter(portal_filter);
                 }
@@ -1293,6 +1291,22 @@ pub(super) fn is_within_click_distance(a: Point<Pixels>, b: Point<Pixels>) -> bo
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn new_xkb_context() -> anyhow::Result<xkb::Context> {
     validate_xkb_context(xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES))
+}
+
+/// Portal globs are case-sensitive, so each letter of the extension matches
+/// both cases (`png` -> `*.[pP][nN][gG]`), including mixed-case names.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+fn case_insensitive_glob(extension: &str) -> String {
+    let mut glob = String::from("*.");
+    for c in extension.chars() {
+        let (lower, upper) = (c.to_lowercase().collect::<String>(), c.to_uppercase().collect::<String>());
+        if lower == upper {
+            glob.push(c);
+        } else {
+            glob.push_str(&format!("[{lower}{upper}]"));
+        }
+    }
+    glob
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1765,6 +1779,13 @@ async fn await_idle_sleep_prevention(
 mod tests {
     use super::*;
     use gpui::{Point, px};
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn portal_glob_matches_every_case_mix() {
+        assert_eq!(case_insensitive_glob("png"), "*.[pP][nN][gG]");
+        assert_eq!(case_insensitive_glob("7z"), "*.7[zZ]");
+    }
 
     #[test]
     fn power_mode_callbacks_can_reenter_and_replace_themselves() -> anyhow::Result<()> {
