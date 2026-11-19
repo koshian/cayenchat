@@ -46,6 +46,9 @@ base64 = "0.22"
 flate2 = "1.1"
 
 [patch.crates-io]
+# gpui-pre 0.3.12 compiles its queue and Wayland layer-shell modules on Linux
+# only, which breaks the FreeBSD build (#1081); see vendor/gpui-pre/PATCHES.md.
+gpui-pre = { path = "vendor/gpui-pre" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit and decodes
