@@ -100,7 +100,7 @@ mod wallpaper_crop;
 mod whois;
 mod window_layout;
 
-use crate::gpui_pending::{InteractiveTextPending as _, StyledTextPending as _};
+use crate::gpui_pending::InteractiveTextPending as _;
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, GroupId, HeadingMarks, Kind, LineKey, LineKind,
     MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
@@ -10110,19 +10110,14 @@ impl ChatWindow {
             .chain(chips.iter().cloned())
             .chain(highlights.iter().cloned())
             .collect();
-        // TODO(#1081): needs `StyledText::with_wrap_joins` of the text patch.
-        let styled = if crate::gpui_pending::PHRASE_WRAP {
-            match self.phrase_joins.borrow_mut().joins(
-                self.auto_phrase && !message.activity,
-                prefix_len,
-                compact.text(),
-                &protected,
-            ) {
-                Some(joins) => styled.with_wrap_joins(joins),
-                None => styled,
-            }
-        } else {
-            styled
+        let styled = match self.phrase_joins.borrow_mut().joins(
+            self.auto_phrase && !message.activity,
+            prefix_len,
+            compact.text(),
+            &protected,
+        ) {
+            Some(joins) => styled.with_wrap_joins(joins),
+            None => styled,
         };
         let layout = styled.layout().clone();
         // While a search jump to this line is unfinished, report where its

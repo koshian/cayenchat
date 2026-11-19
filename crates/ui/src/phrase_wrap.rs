@@ -169,9 +169,7 @@ mod tests {
     }
 }
 
-// TODO(#1081): these shape text with `shape_text_joined` of the text patch;
-// they run again when the patch is re-applied.
-#[cfg(any())]
+#[cfg(test)]
 mod layout_tests {
     use super::*;
     use gpui::{Font, FontFeatures, FontStyle, FontWeight, SharedString, TestAppContext, TextRun};

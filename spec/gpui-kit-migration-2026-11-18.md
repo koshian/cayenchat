@@ -250,9 +250,9 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | macOS のファイルプロミスの drop (`PromisedFiles`) | **載せ直し済み** (同上)。`ExternalPaths` の 2 番目のフィールドと `keep_alive()`。`gpui_pending` の仮の型は消した。macOS はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | **載せ直し済み** (背景の透過とぼかしの PR)。`vendor/gpui-pre{,-linux,-macos}` の `PATCHES.md` を参照。X11 は合成マネージャーの有無、Wayland は ext-background-effect か KDE blur、macOS は `CGSSetWindowBackgroundBlurRadius` (半径は設定どおり)。`UnderWindowBackground` のマテリアルと Metal レイヤーの opaque フラグは上流 0.3.12 に入っている。Windows は上流の `Blurred` のまま。macOS はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | クリップボードの上限 (Wayland、Windows)、`read_from_clipboard_async` | **載せ直し済み** (クリップボードの PR)。上流 0.3.12 に `read_from_clipboard_async` があったので、Wayland だけを上書きして背景で読む。パイプは 32 MiB まで (同期の読み取りとドロップのファイル一覧も)、Windows の文字列は 16 MiB まで。Wayland の背景読み取りは 5 秒の全体締め切りと、全形式で共通の 32 MiB で、待つ間はワーカーを手放し、タスクを破棄すると読み取りとパイプが閉じる (`read_fd_async`)。`vendor/gpui-pre-{linux,windows}/PATCHES.md` を参照。Wayland と Windows は未確認 (最後の段階で実機) | — |
-| フレーズ単位の折り返し (`with_wrap_joins`、`shape_text_joined`) | `PHRASE_WRAP = false` で折り返しは標準のまま。`phrase_wrap` の描画テストは `cfg(any())` で外した | テキスト |
-| `shape-run-cache` | 未適用 | テキスト |
-| `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | 上流の `tooltip` に置き換え。ポインターを移してコピーボタンを押す操作はできない | テキスト |
+| フレーズ単位の折り返し (`with_wrap_joins`、`shape_text_joined`) | **載せ直し済み** (テキストの PR)。`vendor/gpui-pre/PATCHES.md` を参照。上流 0.3.12 は UAX #14 の折り返し候補を使うので、`joins` の位置の候補を外す形にした。NBSP + 図形空白 (リンクアイコンの余白) の直前は、GL で折れないため候補を足した。`is_word_char` の NBSP のパッチは上流が GL として扱うので不要。`phrase_wrap` の描画テストと `icon_follows_its_room_after_an_unspaced_prefix` を戻した | — |
+| `shape-run-cache` | **載せ直し済み** (同上)。テキストシステムは `gpui-pre-wgpu` にあるので、これだけ新しく vendor した (`vendor/gpui-pre-wgpu/PATCHES.md`)。sweep の間隔と寿命は 0.2.2 と同じ。性能の比較は最後の段階 | — |
+| `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | 上流の `tooltip` に置き換え。ポインターを移してコピーボタンを押す操作はできない | 残りの細かいパッチ (`div.rs` の `TooltipRetarget` と一緒に) |
 | §2 の「個別に確認していない」もの | 未適用 | 残りの細かいパッチ |
 
 テストは仮実装に合わせて、`image_file_filter` のテストを外した (ファイルの PR で戻した。`Menu::menu_type` の

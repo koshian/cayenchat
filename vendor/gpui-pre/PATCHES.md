@@ -71,3 +71,27 @@ Candidate for an upstream proposal.
 platform crates answer them (`gpui-pre-linux`, `gpui-pre-macos`). Upstream
 0.3.12 has none of them, so an app cannot tell that a transparent window is
 drawn over black (X11 without a compositor) or that no blur is available.
+
+## Phrase-aware wrapping (#1081, CayenChat #537, #550)
+
+`StyledText::with_wrap_joins(Arc<[u32]>)` takes sorted byte offsets of the
+text. They travel through the new `TextSystem::shape_text_joined`
+(`shape_text` is unchanged and passes none; a later line of a multi-line text
+gets its own copy shifted by the line start) and
+`LineLayoutCache::layout_wrapped_line` into `LineLayout::compute_wrap_boundaries`,
+which drops the UAX #14 break opportunities at those offsets. A line with no
+other opportunity still breaks at the overflowing glyph. The offsets are part
+of the wrapped-line cache key (`CacheKey::joins`), so the same text with
+other joins is laid out again.
+
+`compute_wrap_boundaries` also adds a break opportunity before a no-break
+space (U+00A0) followed by a figure space (U+2007), the room CayenChat keeps
+before a link icon (#550). Both are "GL" in UAX #14, which forbids a break
+before them, so after a long unspaced prefix the icon could cover the first
+letters of the URL; the opportunity lets the room start a row.
+
+Upstream 0.3.12 already treats the no-break spaces as glue (the 0.2.2
+patch to `LineWrapper::is_word_char` is dropped with the word-character
+wrapper). The unit tests of the 0.2.2 copy do not run in this stripped crate;
+`crates/ui/src/phrase_wrap.rs` (`layout_tests`) and
+`crates/ui/src/main_tests/link_icon_tests.rs` exercise both changes.
