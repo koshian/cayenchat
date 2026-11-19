@@ -41,9 +41,15 @@ grew memory without bound.
   `display_connection.rs`, `wayland/client.rs`). Wayland runs
   `Clipboard::read_async` (`wayland/clipboard.rs`), which does the existing
   text-then-image read on the background executor; X11 and headless keep the
-  synchronous read. Dropping the task stops waiting; a read already running
-  ends at its 4 second idle timeout. There is no overall deadline or per-read
-  total (the previous patch had 5 seconds and one 32 MiB budget for all
-  formats); the idle timeout and per-format limit are upstream's shape.
+  synchronous read. The pipe is read by `read_fd_async` (`linux/platform.rs`),
+  which awaits a short timer while no data is ready, so it never holds a worker
+  while waiting. It ends at one 5 second deadline for the whole paste
+  (`CLIPBOARD_READ_DEADLINE`) however steadily the owner sends, and all formats
+  of one paste share one 32 MiB budget. Dropping the task drops the future,
+  which ends the read and closes the pipe. Tests run the real function on a
+  real Linux dispatcher: a steady trickle hits the deadline, more waiting reads
+  than workers leave an unrelated task running, and cancelling closes the pipes.
+  (The synchronous read keeps its 4 second idle timeout; it blocks the caller
+  anyway.)
 Check on Wayland: pasting text and an image still works, and the UI stays
 responsive while a selection owner stalls.
