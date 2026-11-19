@@ -11,7 +11,7 @@ use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
 use crate::linux::platform::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+use gpui::{BackgroundExecutor, ClipboardEntry, ClipboardItem, Image, ImageFormat, Task, hash};
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -206,6 +206,28 @@ impl Clipboard {
 
         self.cached_read = Some(item.clone());
         Some(item)
+    }
+
+    /// Like [`Self::read`], but the pipe is read on the background executor so
+    /// a slow selection owner cannot stall the UI thread. Dropping the task
+    /// stops waiting for it (a read already in progress ends at its timeout).
+    pub fn read_async(&mut self, executor: &BackgroundExecutor) -> Task<Option<ClipboardItem>> {
+        let Some(offer) = self.current_offer.clone() else {
+            return Task::ready(None);
+        };
+        if let Some(cached) = self.cached_read.clone() {
+            return Task::ready(Some(cached));
+        }
+        if offer.has_mime_type(&self.self_mime) {
+            return Task::ready(self.contents.clone());
+        }
+
+        let connection = self.connection.clone();
+        executor.spawn(async move {
+            offer
+                .read_text(&connection)
+                .or_else(|| offer.read_image(&connection))
+        })
     }
 
     pub fn read_primary(&mut self) -> Option<ClipboardItem> {

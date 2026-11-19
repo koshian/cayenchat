@@ -1180,6 +1180,19 @@ impl Platform for LinuxPlatform {
         self.connection.borrow().read_from_clipboard()
     }
 
+    // Wayland reads the selection's pipe on the background executor, so a slow
+    // or huge selection cannot freeze the UI (CayenChat #684).
+    fn read_from_clipboard_async(
+        &self,
+    ) -> Task<Result<Option<ClipboardItem>, gpui::ClipboardReadError>> {
+        let executor = self.background_executor();
+        let read = self.connection.borrow().read_from_clipboard_async(&executor);
+        match read {
+            Some(read) => executor.spawn(async move { Ok(read.await) }),
+            None => Task::ready(Ok(self.read_from_clipboard())),
+        }
+    }
+
     fn add_recent_document(&self, _path: &Path) {}
 }
 
@@ -1343,10 +1356,24 @@ pub(super) fn get_xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::S
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) const PIPE_READ_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// The most `read_fd_with_timeout` accepts from one pipe. The other end is a
+/// client of the compositor and can send without end (CayenChat #684).
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) const PIPE_READ_MAX_BYTES: usize = 32 * 1024 * 1024;
+
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn read_fd_with_timeout(
+    fd: filedescriptor::FileDescriptor,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    read_fd_bounded(fd, timeout, PIPE_READ_MAX_BYTES)
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+fn read_fd_bounded(
     mut fd: filedescriptor::FileDescriptor,
     timeout: Duration,
+    max_bytes: usize,
 ) -> Result<Vec<u8>> {
     fd.set_non_blocking(true)?;
     let mut buffer = Vec::new();
@@ -1371,7 +1398,13 @@ pub(super) fn read_fd_with_timeout(
         }
         match fd.read(&mut chunk) {
             Ok(0) => return Ok(buffer),
-            Ok(len) => buffer.extend_from_slice(&chunk[..len]),
+            Ok(len) => {
+                anyhow::ensure!(
+                    buffer.len() + len <= max_bytes,
+                    "pipe data exceeds the {max_bytes} byte limit"
+                );
+                buffer.extend_from_slice(&chunk[..len]);
+            }
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock
                     || err.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1953,7 +1986,7 @@ mod tests {
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     mod read_fd_with_timeout {
-        use super::super::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
+        use super::super::{PIPE_READ_TIMEOUT, read_fd_bounded, read_fd_with_timeout};
         use std::io::Write as _;
         use std::time::{Duration, Instant};
 
@@ -2028,6 +2061,29 @@ mod tests {
             let bytes = read_fd_with_timeout(pipe.read, timeout).unwrap();
             writer.join().unwrap();
             assert_eq!(bytes, vec![b'x'; 1000 * chunks]);
+        }
+
+        #[test]
+        fn rejects_data_over_the_limit() {
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            let _open_writer = pipe.write;
+
+            let err = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 99).unwrap_err();
+            assert!(
+                err.to_string().contains("limit"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn accepts_data_at_the_limit() {
+            let mut pipe = filedescriptor::Pipe::new().unwrap();
+            pipe.write.write_all(&[b'x'; 100]).unwrap();
+            drop(pipe.write);
+
+            let bytes = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 100).unwrap();
+            assert_eq!(bytes.len(), 100);
         }
 
         #[test]

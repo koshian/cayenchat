@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 
 mod clipboard;
+mod clipboard_data;
 mod destination_list;
 mod dialog;
 mod direct_manipulation;

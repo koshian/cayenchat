@@ -1,5 +1,7 @@
 use std::{borrow::Cow, sync::LazyLock};
 
+use crate::clipboard_data::decode_clipboard_utf16;
+
 use anyhow::Result;
 use collections::FxHashMap;
 use itertools::Itertools;
@@ -163,14 +165,9 @@ fn set_clipboard_bytes<T>(data: &[T], format: u32) -> Result<()> {
 
 fn get_clipboard_string(format: u32) -> Option<String> {
     let locked = get_clipboard_data(format)?;
-    let bytes = locked.as_bytes();
-    let words_len = bytes.len() / std::mem::size_of::<u16>();
-    if words_len == 0 {
-        return Some(String::new());
-    }
-    let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u16, words_len) };
-    let actual_len = slice.iter().position(|&c| c == 0).unwrap_or(words_len);
-    Some(String::from_utf16_lossy(&slice[..actual_len]))
+    // Bounded by the allocation's `GlobalSize`, so an owner that sends no NUL
+    // or an enormous string is refused (CayenChat #684).
+    decode_clipboard_utf16(locked.as_bytes())
 }
 
 fn is_image_format(format: u32) -> bool {
