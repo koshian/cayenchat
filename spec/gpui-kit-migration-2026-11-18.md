@@ -245,7 +245,7 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | `discarding_ime_commit` (Windows) | **載せ直し済み** (同上)。実機の確認は最後の段階 | — |
 | `App::on_quit_request` | **載せ直し済み** (終了とウィンドウの PR)。`vendor/gpui-pre{,-macos}` の `PATCHES.md` を参照。macOS は未確認 (最後の段階で実機) | — |
 | `Menu::menu_type` (`SystemMenuType::Window`) | **載せ直し済み** (同上)。上流 0.3.12 には `SystemMenuType::Window` が無く、名前が `Window` のときだけ AppKit が窓の一覧を足すので、これも足した | — |
-| Windows の `IsWindow` 確認、`activate` の Alt 抑止 | **載せ直し済み** (同上)。`vendor/gpui-pre-windows/PATCHES.md`。Windows は `cargo check` のみで、実機は最後の段階 | — |
+| Windows の `IsWindow` 確認、`activate` の Alt 抑止 | **載せ直し済み** (同上)。`vendor/gpui-pre-windows/PATCHES.md`。Windows はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | `PathPromptFilter` | ファイルダイアログの種類絞り込みなし。添付の検査が他の種類を断る | ファイル |
 | macOS のファイルプロミスの drop (`PromisedFiles`) | `keep_alive` は常に `None`。型 (`PromisedFiles`) だけ `gpui_pending` に置く | ファイル |
 | `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | 常に「合成あり」「ぼかし非対応」。背景ぼかしは使えない | 背景の透過とぼかし |

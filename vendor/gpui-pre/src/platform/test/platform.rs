@@ -59,6 +59,7 @@ pub(crate) struct TestPlatform {
     menus: RefCell<Vec<OwnedMenu>>,
     pub(crate) app_lifecycle_callback: RefCell<Option<Box<dyn FnMut(AppLifecyclePhase)>>>,
     pub(crate) memory_warning_callback: RefCell<Option<Box<dyn FnMut()>>>,
+    pub(crate) quit_request_callback: RefCell<Option<Box<dyn FnMut() -> bool>>>,
 }
 
 #[derive(Clone)]
@@ -268,6 +269,7 @@ impl TestPlatform {
             menus: Default::default(),
             app_lifecycle_callback: Default::default(),
             memory_warning_callback: Default::default(),
+            quit_request_callback: Default::default(),
         })
     }
 
@@ -706,6 +708,10 @@ impl Platform for TestPlatform {
 
     fn on_app_lifecycle(&self, callback: Box<dyn FnMut(AppLifecyclePhase)>) {
         *self.app_lifecycle_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_quit_request(&self, callback: Box<dyn FnMut() -> bool>) {
+        *self.quit_request_callback.borrow_mut() = Some(callback);
     }
 
     fn on_memory_warning(&self, callback: Box<dyn FnMut()>) {

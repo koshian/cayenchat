@@ -1362,6 +1362,28 @@ mod tests {
     }
 
     #[gpui::test]
+    fn quit_request_from_the_platform_flushes_deferred_work(cx: &mut TestAppContext) {
+        let ran = Rc::new(std::cell::Cell::new(false));
+        cx.update(|cx| {
+            let ran = ran.clone();
+            cx.on_quit_request(move |cx| {
+                let ran = ran.clone();
+                cx.defer(move |_| ran.set(true));
+                false
+            });
+        });
+        let mut callback = cx
+            .test_platform
+            .quit_request_callback
+            .borrow_mut()
+            .take()
+            .expect("App registers the platform quit request callback");
+        // Called from outside any `App::update`, like a Dock Quit on an idle app.
+        assert!(!callback());
+        assert!(ran.get(), "deferred work runs without another update");
+    }
+
+    #[gpui::test]
     async fn test_system_notifications_require_identity_and_replace_matching_tags(
         cx: &mut TestAppContext,
     ) {

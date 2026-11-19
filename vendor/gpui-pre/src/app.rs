@@ -1237,7 +1237,10 @@ impl App {
                 let Some(mut handler) = cx.quit_request.take() else {
                     return true;
                 };
-                let allowed = handler(&mut cx);
+                // Run inside an update cycle so that work the handler defers
+                // is flushed now: the platform may be idle (no frames, no
+                // input) when the request arrives from outside the app.
+                let allowed = cx.update(|cx| handler(cx));
                 cx.quit_request.get_or_insert(handler);
                 allowed
             }
