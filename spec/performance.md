@@ -1549,19 +1549,20 @@ Windows run; no GUI frame-rate measurement.
 
 ## GPUI 0.3 migration, PR 1 (2026-11-19, #1081)
 
-Release build, headless `perf_baseline_short_urls` (one run each, same Linux
-container, 20,000 retained messages, medians in µs), parent `293aa8e` (GPUI
-0.2.2) against the migration branch (`gpui-pre` 0.3.12). The ignored
-`perf_baseline` tests complete again: all 10 pass.
+Release build, headless `perf_baseline_short_urls` (`cargo test --release
+--locked -p cayenchat-ui perf_baseline_short_urls -- --ignored --nocapture
+--test-threads=1`), same Linux container, 20,000 retained messages. Parent
+`293aa8e` (GPUI 0.2.2, built in a separate worktree) and the migration branch
+(`gpui-pre` 0.3.12) alternate, three runs each. Median of the three runs'
+medians in µs, with the range of those medians. The ignored `perf_baseline`
+tests complete again: all 10 pass.
 
 | Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after | Roster 2,000 | Resize |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Parent | 357 | 2,119 | 1,730 | 2,367 | 374 | 1,924 | 3,107 |
-| This branch | 209 | 1,991 | 2,164 | 2,733 | 215 | 1,715 | 2,453 |
+| Parent | 354 (347–354) | 2,250 (2,126–2,278) | 1,662 (1,633–1,669) | 2,291 (2,262–2,313) | 365 (362–385) | 1,853 (1,806–1,997) | 2,709 (2,523–2,823) |
+| This branch | 197 (195–200) | 1,763 (1,733–1,801) | 1,410 (1,388–1,424) | 2,165 (2,130–2,180) | 201 (200–235) | 1,553 (1,531–1,556) | 2,160 (2,141–2,472) |
 
-Scroll 20 rows and the 256-event batch vary between runs of this branch
-(1,366–2,164 and 1,852–2,733 across the three `perf_baseline_*` variants), so
-the difference to the parent is within run-to-run noise; no per-message or
+The branch is at or below the parent in every step; no per-message or
 per-frame path was changed beyond the API port. One difference is known: the
 first character typed into an empty draft redraws the four panes once (GPUI
 0.3; cause not investigated), and every later character reuses them. The
