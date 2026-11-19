@@ -462,6 +462,21 @@ impl TestAppContext {
             .simulate_system_notification_response(response);
     }
 
+    /// Simulates a quit request that comes from outside the app (a macOS
+    /// Dock Quit), called outside any `App::update`. Returns whether the
+    /// quit may go on.
+    pub fn simulate_platform_quit_request(&self) -> bool {
+        let mut callback = self
+            .test_platform
+            .quit_request_callback
+            .borrow_mut()
+            .take()
+            .expect("App registers the platform quit request callback");
+        let allowed = callback();
+        *self.test_platform.quit_request_callback.borrow_mut() = Some(callback);
+        allowed
+    }
+
     /// Simulates the user resizing the window to the new size.
     pub fn simulate_window_resize(&self, window_handle: AnyWindowHandle, size: Size<Pixels>) {
         self.test_window(window_handle).simulate_resize(size);
@@ -1359,28 +1374,6 @@ mod tests {
         drop(subscription);
         callback();
         assert_eq!(warnings.get(), 2);
-    }
-
-    #[gpui::test]
-    fn quit_request_from_the_platform_flushes_deferred_work(cx: &mut TestAppContext) {
-        let ran = Rc::new(std::cell::Cell::new(false));
-        cx.update(|cx| {
-            let ran = ran.clone();
-            cx.on_quit_request(move |cx| {
-                let ran = ran.clone();
-                cx.defer(move |_| ran.set(true));
-                false
-            });
-        });
-        let mut callback = cx
-            .test_platform
-            .quit_request_callback
-            .borrow_mut()
-            .take()
-            .expect("App registers the platform quit request callback");
-        // Called from outside any `App::update`, like a Dock Quit on an idle app.
-        assert!(!callback());
-        assert!(ran.get(), "deferred work runs without another update");
     }
 
     #[gpui::test]

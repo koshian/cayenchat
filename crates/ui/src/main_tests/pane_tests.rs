@@ -4466,3 +4466,21 @@ fn nicknames_are_compared_under_the_networks_casemapping(cx: &mut TestAppContext
         );
     });
 }
+
+#[gpui::test]
+fn quit_request_from_the_platform_flushes_deferred_work(cx: &mut TestAppContext) {
+    // A Dock Quit reaches the app from outside any update, possibly while the
+    // platform is idle: work the handler defers must run without another
+    // update, or the confirmation would never appear.
+    let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+    cx.update(|cx| {
+        let ran = ran.clone();
+        cx.on_quit_request(move |cx| {
+            let ran = ran.clone();
+            cx.defer(move |_| ran.set(true));
+            false
+        });
+    });
+    assert!(!cx.simulate_platform_quit_request());
+    assert!(ran.get(), "deferred work runs without another update");
+}
