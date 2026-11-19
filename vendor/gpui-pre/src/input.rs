@@ -128,6 +128,11 @@ pub trait EntityInputHandler: 'static + Sized {
         true
     }
 
+    /// See [`InputHandler::prefers_direct_input`] for details
+    fn prefers_direct_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        false
+    }
+
     /// See [`InputHandler::text_input_configuration`] for details
     fn text_input_configuration(
         &mut self,
@@ -292,6 +297,11 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
     fn accepts_text_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.view
             .update(cx, |view, cx| view.accepts_text_input(window, cx))
+    }
+
+    fn prefers_direct_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.view
+            .update(cx, |view, cx| view.prefers_direct_input(window, cx))
     }
 
     fn prefers_ime_for_printable_keys(&mut self, window: &mut Window, cx: &mut App) -> bool {

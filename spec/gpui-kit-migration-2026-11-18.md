@@ -241,8 +241,8 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 
 | 機能 | この PR の状態 | 外す PR |
 | --- | --- | --- |
-| `prefers_direct_input` (macOS `allowedInputSourceLocales` を含む) | `TextInput` の固有メソッドにして、プラットフォームには伝えない。ASCII 向けの欄でも IME は切れない | IME とフォーカス |
-| `discarding_ime_commit` (Windows) | **保護なし。** 未確定文字がある状態でフォーカスを移すと、`CPS_COMPLETE` の確定文字が新しい欄に入りうる | IME とフォーカス |
+| `prefers_direct_input` (macOS `allowedInputSourceLocales` を含む) | **載せ直し済み** (IME とフォーカスの PR)。`vendor/gpui-pre{,-windows,-macos,-linux}` の `PATCHES.md` を参照。Windows と macOS は未確認 (最後の段階で実機) | — |
+| `discarding_ime_commit` (Windows) | **載せ直し済み** (同上)。実機の確認は最後の段階 | — |
 | `App::on_quit_request` | 登録しない。macOS の Dock の Quit は確認なしで終了する | 終了とウィンドウ |
 | `Menu::menu_type` (`SystemMenuType::Window`) | 外した。macOS の Window メニューは名前が `Window` のときだけ AppKit が窓の一覧を足す (日本語表示では足されない) | 終了とウィンドウ |
 | Windows の `IsWindow` 確認、`activate` の Alt 抑止 | 未適用 | 終了とウィンドウ |

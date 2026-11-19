@@ -3724,6 +3724,7 @@ impl Window {
             .find_map(|h| h.take())
         {
             let accepts_text_input = input_handler.accepts_text_input(self, cx);
+            input_handler.refresh_prefers_direct_input(self, cx);
             self.platform_window.set_input_handler(input_handler);
             self.focus.filter(|_| accepts_text_input)
         } else {

@@ -6529,6 +6529,7 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn only_ascii_oriented_fields_prefer_direct_input(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler;
         let form = form(configured_a(), cx);
         let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
         let direct = |field: &Entity<TextInput>, cx: &mut gpui::VisualTestContext| {

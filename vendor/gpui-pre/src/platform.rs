@@ -2038,6 +2038,11 @@ pub struct PlatformInputHandler {
     cx: AsyncWindowContext,
     handler: Box<dyn InputHandler>,
     focus_id: Option<crate::FocusId>,
+    /// `InputHandler::prefers_direct_input` as of the frame that registered
+    /// this handler (`Window::draw`); platforms cannot ask it later because
+    /// the window is not reachable from their callbacks without a re-entrant
+    /// update.
+    prefers_direct_input: bool,
 }
 
 #[expect(missing_docs)]
@@ -2054,7 +2059,24 @@ impl PlatformInputHandler {
             cx,
             handler,
             focus_id: None,
+            prefers_direct_input: false,
         }
+    }
+
+    /// CayenChat patch (#1081): re-reads `InputHandler::prefers_direct_input`.
+    pub(crate) fn refresh_prefers_direct_input(&mut self, window: &mut Window, cx: &mut App) {
+        self.prefers_direct_input = self.handler.prefers_direct_input(window, cx);
+    }
+
+    /// CayenChat patch (#1081): the value read when this handler was registered.
+    pub fn prefers_direct_input(&self) -> bool {
+        self.prefers_direct_input
+    }
+
+    /// CayenChat patch (#1081): whether the platform IME should be attached:
+    /// the handler takes text and does not prefer direct input.
+    pub fn query_ime_enabled(&mut self) -> bool {
+        !self.prefers_direct_input && self.query_accepts_text_input()
     }
 
     pub(crate) fn with_focus(mut self, focus_id: crate::FocusId) -> Self {
@@ -2486,6 +2508,15 @@ pub trait InputHandler: 'static {
     /// Returns whether this handler is accepting text input to be inserted.
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         true
+    }
+
+    /// CayenChat patch (#1081). Returns whether the platform IME should be
+    /// detached while this handler has focus, so keys arrive as plain
+    /// characters (nicknames, hosts, passwords). Unlike
+    /// [`InputHandler::accepts_text_input`] the handler still takes text, and
+    /// key bindings do not win over characters. Defaults to `false`.
+    fn prefers_direct_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        false
     }
 
     /// The contiguous range of text, in UTF-16 code units, that platform text
