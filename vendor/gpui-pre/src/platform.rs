@@ -1303,6 +1303,27 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn background_appearance(&self) -> WindowBackgroundAppearance;
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    /// Whether a transparent window shows what lies behind it. Local patch;
+    /// see `PATCHES.md`. False on X11 without a compositor, where the X
+    /// server composes see-through pixels over black.
+    fn is_compositing(&self) -> bool {
+        true
+    }
+    /// Whether `WindowBackgroundAppearance::Blurred` blurs what lies behind
+    /// the window. Local patch. X11 has no such request, and Wayland needs
+    /// a blur protocol from the compositor.
+    fn supports_background_blur(&self) -> bool {
+        true
+    }
+    /// Whether the strength of the `Blurred` appearance can be chosen with
+    /// [`Self::set_background_blur_radius`]. Local patch. Only macOS can.
+    fn supports_background_blur_radius(&self) -> bool {
+        false
+    }
+    /// Sets the blur radius used while the appearance is `Blurred`; it
+    /// applies at once when the window is blurred now. No-op where
+    /// [`Self::supports_background_blur_radius`] is false. Local patch.
+    fn set_background_blur_radius(&self, _radius: u32) {}
     fn minimize(&self);
     fn zoom(&self);
     fn toggle_fullscreen(&self);

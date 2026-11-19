@@ -92,6 +92,28 @@ const NSNormalWindowLevel: NSInteger = 0;
 const NSFloatingWindowLevel: NSInteger = 3;
 #[allow(non_upper_case_globals)]
 const NSPopUpWindowLevel: NSInteger = 101;
+/// CayenChat #1081 (#1018): blur with `CGSSetWindowBackgroundBlurRadius` on every
+/// macOS instead of `BlurredView`, so the app can choose the strength. Set to
+/// `false` to return to `BlurredView`.
+const CGS_BLUR_ON_ALL_MACOS: bool = true;
+/// The radius until the app sets one.
+const CGS_DEFAULT_BLUR_RADIUS: i32 = 20;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    // Widely used private APIs; Apple uses them for their Terminal.app.
+    fn CGSMainConnectionID() -> i32;
+    fn CGSSetWindowBackgroundBlurRadius(connection_id: i32, window_id: i32, radius: i32) -> i32;
+}
+
+/// Sets the WindowServer blur behind `native_window`; 0 removes it.
+unsafe fn set_cgs_blur_radius(native_window: *mut AnyObject, radius: i32) {
+    unsafe {
+        let window_number: NSInteger = msg_send![native_window, windowNumber];
+        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number as i32, radius);
+    }
+}
+
 #[derive(PartialEq)]
 pub enum UserTabbingPreference {
     Never,
@@ -655,6 +677,9 @@ struct MacWindowState {
     native_window: *mut AnyObject,
     native_view: NonNull<AnyObject>,
     blurred_view: Option<*mut AnyObject>,
+    /// CayenChat #1081: whether the window is `Blurred` now, and the CGS blur radius.
+    background_blurred: bool,
+    blur_radius: i32,
     background_appearance: WindowBackgroundAppearance,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
@@ -1125,6 +1150,8 @@ impl MacWindow {
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
+                background_blurred: false,
+                blur_radius: CGS_DEFAULT_BLUR_RADIUS,
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
@@ -1920,6 +1947,21 @@ impl PlatformWindow for MacWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
+    fn supports_background_blur_radius(&self) -> bool {
+        CGS_BLUR_ON_ALL_MACOS
+    }
+
+    fn set_background_blur_radius(&self, radius: u32) {
+        if !CGS_BLUR_ON_ALL_MACOS {
+            return;
+        }
+        let mut this = self.0.as_ref().lock();
+        this.blur_radius = radius.min(i32::MAX as u32) as i32;
+        if this.background_blurred {
+            unsafe { set_cgs_blur_radius(this.native_window, this.blur_radius) };
+        }
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
         this.background_appearance = background_appearance;
@@ -1937,7 +1979,21 @@ impl PlatformWindow for MacWindow {
             };
             let _: () = msg_send![this.native_window, setBackgroundColor: &*background_color];
 
-            if background_appearance != WindowBackgroundAppearance::Blurred {
+            if CGS_BLUR_ON_ALL_MACOS {
+                // CayenChat #1081: blur with the WindowServer, at the radius the
+                // app chose, instead of the `BlurredView` below.
+                this.background_blurred =
+                    background_appearance == WindowBackgroundAppearance::Blurred;
+                let radius = if this.background_blurred {
+                    this.blur_radius
+                } else {
+                    0
+                };
+                if let Some(blur_view) = this.blurred_view.take() {
+                    let _: () = msg_send![blur_view, removeFromSuperview];
+                }
+                set_cgs_blur_radius(this.native_window, radius);
+            } else if background_appearance != WindowBackgroundAppearance::Blurred {
                 if let Some(blur_view) = this.blurred_view {
                     let _: () = msg_send![blur_view, removeFromSuperview];
                     this.blurred_view = None;

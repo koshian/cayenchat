@@ -62,3 +62,12 @@ Candidate for an upstream proposal.
   of a macOS file promise (Photos, Mail, the screenshot thumbnail) and removes
   it with the last handle, so a handler that reads the files after it has
   returned keeps one. Other platforms construct `ExternalPaths(paths, None)`.
+
+## Window transparency and background blur (#1081)
+
+`PlatformWindow` and `Window` gain `is_compositing` (default `true`),
+`supports_background_blur` (default `true`), `supports_background_blur_radius`
+(default `false`) and `set_background_blur_radius(u32)` (default no-op). The
+platform crates answer them (`gpui-pre-linux`, `gpui-pre-macos`). Upstream
+0.3.12 has none of them, so an app cannot tell that a transparent window is
+drawn over black (X11 without a compositor) or that no blur is available.

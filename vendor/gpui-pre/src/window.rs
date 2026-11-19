@@ -3297,6 +3297,31 @@ impl Window {
             .set_background_appearance(background_appearance);
     }
 
+    /// Returns whether a transparent window shows what lies behind it. Local
+    /// patch; see `PATCHES.md`.
+    pub fn is_compositing(&self) -> bool {
+        self.platform_window.is_compositing()
+    }
+
+    /// Returns whether `WindowBackgroundAppearance::Blurred` blurs what lies
+    /// behind the window. Local patch.
+    pub fn supports_background_blur(&self) -> bool {
+        self.platform_window.supports_background_blur()
+    }
+
+    /// Returns whether the blur strength can be set with
+    /// [`Self::set_background_blur_radius`]. Local patch.
+    pub fn supports_background_blur_radius(&self) -> bool {
+        self.platform_window.supports_background_blur_radius()
+    }
+
+    /// Sets the blur radius of the `Blurred` appearance, applied at once
+    /// while blurred; a no-op where [`Self::supports_background_blur_radius`]
+    /// is false. Local patch.
+    pub fn set_background_blur_radius(&self, radius: u32) {
+        self.platform_window.set_background_blur_radius(radius);
+    }
+
     /// Mark the window as dirty at the platform level.
     pub fn set_window_edited(&mut self, edited: bool) {
         self.platform_window.set_edited(edited);

@@ -248,7 +248,7 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | Windows の `IsWindow` 確認、`activate` の Alt 抑止 | **載せ直し済み** (同上)。`vendor/gpui-pre-windows/PATCHES.md`。Windows はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | `PathPromptFilter` | **載せ直し済み** (ファイルの PR)。`vendor/gpui-pre{,-linux,-macos,-windows}` の `PATCHES.md` を参照。Linux はポータルの `FileFilter`、Windows は `SetFileTypes`、macOS は `allowedFileTypes`。Windows と macOS は未確認 (最後の段階で実機) | — |
 | macOS のファイルプロミスの drop (`PromisedFiles`) | **載せ直し済み** (同上)。`ExternalPaths` の 2 番目のフィールドと `keep_alive()`。`gpui_pending` の仮の型は消した。macOS はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
-| `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | 常に「合成あり」「ぼかし非対応」。背景ぼかしは使えない | 背景の透過とぼかし |
+| `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | **載せ直し済み** (背景の透過とぼかしの PR)。`vendor/gpui-pre{,-linux,-macos}` の `PATCHES.md` を参照。X11 は合成マネージャーの有無、Wayland は ext-background-effect か KDE blur、macOS は `CGSSetWindowBackgroundBlurRadius` (半径は設定どおり)。`UnderWindowBackground` のマテリアルと Metal レイヤーの opaque フラグは上流 0.3.12 に入っている。Windows は上流の `Blurred` のまま。macOS はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | クリップボードの上限 (Wayland、Windows)、`read_from_clipboard_async` | 上限なし。読み取りの失敗は空として扱う | クリップボード |
 | フレーズ単位の折り返し (`with_wrap_joins`、`shape_text_joined`) | `PHRASE_WRAP = false` で折り返しは標準のまま。`phrase_wrap` の描画テストは `cfg(any())` で外した | テキスト |
 | `shape-run-cache` | 未適用 | テキスト |
@@ -282,7 +282,9 @@ CI の GUI 検査 (`.github/workflows/ci.yml`): 統合ブランチ (`gpui-kit-mi
 それ宛ての PR では、仮実装に依存する 3 本 (`url_bubble_gui.py`: リンクのホバーとクリック、
 `log_colors_gui.py`: 行の背景色、`opacity_gui.py`: 背景の透過) をステップ単位で外す。
 `history_gui.py` は外さず、起動・描画・履歴の操作は引き続き検査する。
-この 3 本は、対応する載せ直しの PR (ツールチップ・背景ぼかし) で戻し、master では常に動く。
+背景ぼかしの PR で分かったこと: `opacity_gui.py` が失敗する原因はぼかしの API ではなく、
+短いログの上の埋め草を描かないこと (`LogList::unfilled_from` が常に `None`)。
+この 3 本は、ツールチップと埋め草を戻す PR で戻し、master では常に動く。
 
 ignore から戻したテスト (レビュー 1 回目):
 

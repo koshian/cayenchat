@@ -1930,6 +1930,12 @@ impl PlatformWindow for WaylandWindow {
         self.borrow().background_appearance
     }
 
+    fn supports_background_blur(&self) -> bool {
+        let state = self.borrow();
+        state.globals.background_effects_manager.is_some()
+            || state.globals.kde_blur_manager.is_some()
+    }
+
     fn is_subpixel_rendering_supported(&self) -> bool {
         let client = self.borrow().client.get_client();
         let state = client.borrow();

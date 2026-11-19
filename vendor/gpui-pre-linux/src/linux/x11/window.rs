@@ -1632,6 +1632,15 @@ impl PlatformWindow for X11Window {
         self.0.state.borrow().background_appearance
     }
 
+    fn is_compositing(&self) -> bool {
+        let root = self.0.state.borrow().x_root_window;
+        super::client::compositor_selection_owned(&self.0.xcb, root)
+    }
+
+    fn supports_background_blur(&self) -> bool {
+        false
+    }
+
     fn is_subpixel_rendering_supported(&self) -> bool {
         self.0
             .state

@@ -46,3 +46,19 @@ app, the Japanese-titled Window menu lists the windows.
 Not compiled on Linux; check on macOS: the file chooser offers only the
 images, and dropping a photo from Photos or the screenshot thumbnail on a
 channel or an attachment field attaches it.
+
+## Blur radius (#1081)
+
+Answers gpui-pre's `supports_background_blur_radius` /
+`set_background_blur_radius` patch. `set_background_appearance` blurs with the
+private `CGSSetWindowBackgroundBlurRadius` (as Terminal.app does) on every
+macOS and removes any `BlurredView`; `Blurred` uses the radius kept in
+`blur_radius` (initially 20), anything else passes 0, and
+`set_background_blur_radius` re-applies at once while blurred. The
+`NSVisualEffectView` blur was too strong and cannot be tuned (#1018).
+`CGS_BLUR_ON_ALL_MACOS = false` returns to `BlurredView` (upstream's
+`UnderWindowBackground` material, kept). The Metal layer's opaque flag already
+follows the appearance upstream (`update_transparency`).
+
+Not compiled on Linux; check on macOS: the blur strength slider changes the
+blur, and an opaque or transparent window shows none.
