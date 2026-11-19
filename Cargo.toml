@@ -49,6 +49,11 @@ flate2 = "1.1"
 # gpui-pre 0.3.12 compiles its queue and Wayland layer-shell modules on Linux
 # only, which breaks the FreeBSD build (#1081); see vendor/gpui-pre/PATCHES.md.
 gpui-pre = { path = "vendor/gpui-pre" }
+# The platform backends carry the IME patches (#1081); see
+# vendor/gpui-pre-*/PATCHES.md.
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit and decodes

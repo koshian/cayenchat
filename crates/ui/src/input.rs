@@ -1191,22 +1191,13 @@ fn nickname_matches(prefix: &str, members: &[String]) -> Vec<String> {
         .collect()
 }
 
-impl TextInput {
-    /// Whether the platform IME is to be detached while this input has focus.
-    // TODO(#1081): `EntityInputHandler::prefers_direct_input` is a GPUI patch
-    // that is not re-applied yet (the IME and focus patch); until then the
-    // platform is not told, and these fields keep the IME on.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn prefers_direct_input(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> bool {
+impl EntityInputHandler for TextInput {
+    /// The platform IME is detached while this input has focus (vendored
+    /// GPUI patch, `vendor/gpui-pre/PATCHES.md`).
+    fn prefers_direct_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
         self.prefers_direct_input
     }
-}
 
-impl EntityInputHandler for TextInput {
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,

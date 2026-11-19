@@ -2341,17 +2341,24 @@ OS-wide settings stay untouched.
   GPUI attaches the IME only when `accepts_text_input && !prefers_direct_input`.
   `accepts_text_input` has upstream's meaning ("is a text field"), so
   `prefers_direct_input` is CayenChat's own and the only difference from
-  upstream. `Window::draw` asks after each frame and calls
-  `PlatformWindow::update_ime_enabled` only when the answer changes.
+  upstream. On the `gpui-kit-migration` branch (GPUI 0.3.12, #1081)
+  `Window::draw` reads the answer when it registers the focused handler and
+  keeps it in the `PlatformInputHandler`; the platform windows read it with
+  `query_ime_enabled()` (`accepts_text_input && !prefers_direct_input`) in
+  the per-window IME switch upstream already has (Windows after the frame,
+  Wayland), and macOS acts when the handler is registered.
 - Windows: `ImmAssociateContextEx(hwnd, NULL, 0)` after completing a
   composition; `IACE_DEFAULT` to attach again. It runs after the frame, because
   completing the composition needs the window. Wayland: text-input
-  disable/enable, applied only while that window has the keyboard focus (the
-  text-input is shared by the seat; another window only records its wish, and
-  `enable` on focus enter honors it). macOS: `allowedInputSourceLocales` of the
-  window's own view limited to Roman input sources, as for a password field;
-  applied at once, and a missing input context is not cached as done, so the
-  next frame asks again. X11/XIM: no per-field switch; typing works as before.
+  disable/enable, applied only while that window is active. 0.3.12's
+  text-input `enter` enables the IME unconditionally; the patch makes it ask
+  the focused window's handler first and leave the IME off for a direct-input
+  field (without a handler it still enables, and the next frame decides).
+  macOS: `allowedInputSourceLocales`
+  of the window's own view limited to Roman input sources, as for a password
+  field; a missing input context is not cached as done, so the next handler
+  registration asks again. X11/XIM: no per-field switch; typing works as
+  before.
 - A composition still open when focus moves to such a field (Windows) is ended
   without delivering the commit: the handler registered by then belongs to the
   new field, and a password composition must never land there. The old field
