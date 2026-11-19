@@ -10,6 +10,10 @@ pub struct Menu {
 
     /// Whether this menu is disabled
     pub disabled: bool,
+
+    /// Marks a top-level menu the system manages, whatever its (translated)
+    /// name is
+    pub menu_type: Option<SystemMenuType>,
 }
 
 impl Menu {
@@ -19,6 +23,7 @@ impl Menu {
             name: name.into(),
             items: vec![],
             disabled: false,
+            menu_type: None,
         }
     }
 
@@ -40,6 +45,7 @@ impl Menu {
             name: self.name.to_string().into(),
             items: self.items.into_iter().map(|item| item.owned()).collect(),
             disabled: self.disabled,
+            menu_type: self.menu_type,
         }
     }
 }
@@ -70,6 +76,9 @@ impl OsMenu {
 pub enum SystemMenuType {
     /// The 'Services' menu in the Application menu on macOS
     Services,
+
+    /// The 'Window' menu on macOS, to which AppKit adds the window list
+    Window,
 }
 
 /// The different kinds of items that can be in a menu
@@ -244,6 +253,10 @@ pub struct OwnedMenu {
 
     /// Whether this menu is disabled
     pub disabled: bool,
+
+    /// Marks a top-level menu the system manages, whatever its (translated)
+    /// name is
+    pub menu_type: Option<SystemMenuType>,
 }
 
 /// The different kinds of items that can be in a menu
@@ -412,6 +425,7 @@ mod tests {
             name: "Submenu".into(),
             items: vec![],
             disabled: true,
+            menu_type: None,
         });
         assert_eq!(
             match &submenu {

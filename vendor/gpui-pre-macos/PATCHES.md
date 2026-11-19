@@ -13,3 +13,18 @@ user's input source. It acts on the window's own view, never on
 context is not recorded as done, so the next registration asks again.
 
 Not compiled on Linux; check on macOS with the Japanese input sources.
+
+## Quit request and Window menu (#1081)
+
+- The application delegate implements `applicationShouldTerminate:` and asks
+  the `on_quit_request` callback (gpui-pre's patch) for a Dock "Quit".
+  `Platform::quit` sets `APP_INITIATED_QUIT` first, and a quit Apple event
+  with a reason other than the plain "quit" (shutdown, restart, log out) is
+  recognised through `NSAppleEventManager`; neither is asked.
+- `create_menu_bar` hands a top-level menu whose `menu_type` is
+  `SystemMenuType::Window` to `setWindowsMenu:` (upstream compares the name
+  with `"Window"`), and a nested `os_submenu` of that type is registered the
+  same way.
+
+Not compiled on Linux; check on macOS: Dock "Quit" asks, cancelling keeps the
+app, the Japanese-titled Window menu lists the windows.

@@ -462,6 +462,21 @@ impl TestAppContext {
             .simulate_system_notification_response(response);
     }
 
+    /// Simulates a quit request that comes from outside the app (a macOS
+    /// Dock Quit), called outside any `App::update`. Returns whether the
+    /// quit may go on.
+    pub fn simulate_platform_quit_request(&self) -> bool {
+        let mut callback = self
+            .test_platform
+            .quit_request_callback
+            .borrow_mut()
+            .take()
+            .expect("App registers the platform quit request callback");
+        let allowed = callback();
+        *self.test_platform.quit_request_callback.borrow_mut() = Some(callback);
+        allowed
+    }
+
     /// Simulates the user resizing the window to the new size.
     pub fn simulate_window_resize(&self, window_handle: AnyWindowHandle, size: Size<Pixels>) {
         self.test_window(window_handle).simulate_resize(size);

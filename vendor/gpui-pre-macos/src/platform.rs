@@ -37,7 +37,7 @@ use objc2_app_kit::{
     NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::{
-    NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSProcessInfo, NSString, NSURL,
+    NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSProcessInfo, NSUInteger, NSString, NSURL,
     NSUTF8StringEncoding,
 };
 use parking_lot::Mutex;
@@ -55,6 +55,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+/// Set by `Platform::quit`: the application itself asked to terminate, so
+/// `applicationShouldTerminate:` must not ask the quit-request callback again.
+static APP_INITIATED_QUIT: AtomicBool = AtomicBool::new(false);
 
 const MAC_PLATFORM_IVAR: &CStr = c"platform";
 static mut APP_CLASS: *const AnyClass = ptr::null();
@@ -86,6 +90,10 @@ unsafe fn build_classes() {
             decl.add_method(
                 sel!(applicationShouldHandleReopen:hasVisibleWindows:),
                 should_handle_reopen as extern "C-unwind" fn(_, Sel, *mut AnyObject, Bool) -> Bool,
+            );
+            decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C-unwind" fn(_, Sel, *mut AnyObject) -> NSUInteger,
             );
             decl.add_method(
                 sel!(applicationWillTerminate:),
@@ -182,6 +190,7 @@ pub(crate) struct MacPlatformState {
     on_system_wake: Option<Box<dyn FnMut()>>,
     system_power_observers_registered: bool,
     quit: Option<Box<dyn FnMut() -> bool>>,
+    quit_request: Option<Box<dyn FnMut() -> bool>>,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
@@ -245,6 +254,7 @@ impl MacPlatform {
             find_pasteboard: Pasteboard::find(),
             reopen: None,
             quit: None,
+            quit_request: None,
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
@@ -293,7 +303,7 @@ impl MacPlatform {
                 menu_item.setSubmenu(Some(&menu));
                 application_menu.addItem(&menu_item);
 
-                if menu_config.name == "Window" {
+                if menu_config.menu_type == Some(SystemMenuType::Window) {
                     let app: *mut AnyObject = msg_send![APP_CLASS, sharedApplication];
                     let _: () = msg_send![app, setWindowsMenu: &*menu];
                 }
@@ -440,6 +450,7 @@ impl MacPlatform {
                     name,
                     items,
                     disabled,
+                    ..
                 }) => {
                     let item = NSMenuItem::new(self.1);
                     let submenu = NSMenu::new(self.1);
@@ -463,6 +474,10 @@ impl MacPlatform {
                         SystemMenuType::Services => {
                             let app: *mut AnyObject = msg_send![APP_CLASS, sharedApplication];
                             let _: () = msg_send![app, setServicesMenu: &*item];
+                        }
+                        SystemMenuType::Window => {
+                            let app: *mut AnyObject = msg_send![APP_CLASS, sharedApplication];
+                            let _: () = msg_send![app, setWindowsMenu: &*submenu];
                         }
                     }
 
@@ -583,6 +598,7 @@ impl Platform for MacPlatform {
         // this, we make quitting the application asynchronous so that we aren't holding borrows to
         // the app state on the stack when we actually terminate the app.
 
+        APP_INITIATED_QUIT.store(true, Ordering::SeqCst);
         unsafe {
             DispatchQueue::main().exec_async_f(ptr::null_mut(), quit);
         }
@@ -1041,6 +1057,10 @@ impl Platform for MacPlatform {
         self.0.lock().quit = Some(callback);
     }
 
+    fn on_quit_request(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.lock().quit_request = Some(callback);
+    }
+
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().reopen = Some(callback);
     }
@@ -1386,6 +1406,54 @@ extern "C-unwind" fn should_handle_reopen(
         }
     }
     Bool::YES
+}
+
+/// Whether the pending terminate request comes from the system: a shutdown,
+/// restart or log out arrives as a quit Apple event carrying a reason other
+/// than the plain "quit". A Dock "Quit" carries none (or the plain one).
+unsafe fn terminate_is_from_system() -> bool {
+    unsafe {
+        let manager: *mut AnyObject = msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+        if manager.is_null() {
+            return false;
+        }
+        let event: *mut AnyObject = msg_send![manager, currentAppleEvent];
+        if event.is_null() {
+            return false;
+        }
+        // `kAEQuitReason` is 'why?'.
+        let reason: *mut AnyObject = msg_send![event, attributeDescriptorForKeyword: 0x7768_793fu32];
+        if reason.is_null() {
+            return false;
+        }
+        let code: u32 = msg_send![reason, enumCodeValue];
+        // 'quit' is kAEQuitAll; 0 is no reason.
+        code != 0 && code != 0x7175_6974
+    }
+}
+
+/// `applicationShouldTerminate:`. A Dock "Quit" is a user request and may be
+/// cancelled by the quit-request callback; quits started by the application
+/// itself and by the system are never held back.
+extern "C-unwind" fn should_terminate(this: &AnyObject, _: Sel, _: *mut AnyObject) -> NSUInteger {
+    const TERMINATE_CANCEL: NSUInteger = 0;
+    const TERMINATE_NOW: NSUInteger = 1;
+    if APP_INITIATED_QUIT.load(Ordering::SeqCst) || unsafe { terminate_is_from_system() } {
+        return TERMINATE_NOW;
+    }
+    let platform = unsafe { get_mac_platform(this) };
+    let mut lock = platform.0.lock();
+    let Some(mut callback) = lock.quit_request.take() else {
+        return TERMINATE_NOW;
+    };
+    drop(lock);
+    let allowed = callback();
+    platform.0.lock().quit_request.get_or_insert(callback);
+    if allowed {
+        TERMINATE_NOW
+    } else {
+        TERMINATE_CANCEL
+    }
 }
 
 extern "C-unwind" fn will_terminate(this: &AnyObject, _: Sel, _: *mut AnyObject) {
