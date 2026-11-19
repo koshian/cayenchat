@@ -515,6 +515,14 @@ fn sasl_mechanism(
     }
 }
 
+/// Makes `config` register with a nickname the user typed. A rejection of it
+/// asks again instead of changing it; the kept configuration still holds the
+/// policy for later reconnects.
+fn with_typed_nickname(config: &mut ConnectionConfig, nickname: String) {
+    config.nickname = nickname;
+    config.nick_collision = cayenchat_irc_core::NickCollision::Dialog;
+}
+
 fn nick_collision(choice: cayenchat_storage::NickCollision) -> cayenchat_irc_core::NickCollision {
     use cayenchat_irc_core::NickCollision as Core;
     use cayenchat_storage::NickCollision as Saved;
@@ -2673,7 +2681,10 @@ impl ChatWindow {
         // the same network (D058).
         if let Some(previous) = &session.active_config {
             config.peer_avatar_cache = previous.peer_avatar_cache.clone();
-            config.nicklen = previous.nicklen.clone();
+            // Only a server that announced it: another one starts unknown.
+            if connect_auth::same_server(previous, &config) {
+                config.nicklen = previous.nicklen.clone();
+            }
         }
         // The copy reconnects start from never holds a password: the saved
         // ones are read from the store again, and an unsaved one is asked
@@ -4602,7 +4613,7 @@ impl ChatWindow {
             // Only this attempt registers with the chosen nickname; the kept
             // configuration still holds the wanted one for later reconnects.
             if let Some(mut config) = self.reconnect_config(network) {
-                config.nickname = nickname;
+                with_typed_nickname(&mut config, nickname);
                 self.reconnect_with_stored_secrets(network, config, None, true, cx);
             }
         }

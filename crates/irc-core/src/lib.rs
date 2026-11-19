@@ -751,7 +751,7 @@ impl NickLenCache {
         Some(self.0.load(Ordering::Relaxed)).filter(|len| *len > 0)
     }
 
-    fn set(&self, len: usize) {
+    pub fn set(&self, len: usize) {
         self.0.store(len, Ordering::Relaxed);
     }
 }
