@@ -131,6 +131,7 @@ pub(crate) fn rebuild_config(
 ) -> Result<ConnectionConfig, String> {
     let mut config = crate::connection_config_without_secrets(profile, language)?;
     config.peer_avatar_cache = opened.peer_avatar_cache.clone();
+    config.nicklen = opened.nicklen.clone();
     if matches_profile(profile, opened) {
         config.resume_history.clone_from(&opened.resume_history);
         config.history_targets_since = opened.history_targets_since;

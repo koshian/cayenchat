@@ -484,6 +484,7 @@ fn connection_config_without_secrets(
     config.verify_tls_certificates = profile.verify_tls_certificates;
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.regain_ops = profile.regain_ops;
+    config.nick_collision = nick_collision(profile.nick_collision);
     config.encoding = profile.encoding.label().into();
     config.char_refs = char_ref_mode(profile.char_refs);
     config.channel_encodings = channel_encodings(profile);
@@ -511,6 +512,17 @@ fn sasl_mechanism(
         Saved::ScramSha256 => Wire::ScramSha256,
         Saved::ScramSha512 => Wire::ScramSha512,
         Saved::EcdsaNist256pChallenge => Wire::EcdsaNist256pChallenge,
+    }
+}
+
+fn nick_collision(choice: cayenchat_storage::NickCollision) -> cayenchat_irc_core::NickCollision {
+    use cayenchat_irc_core::NickCollision as Core;
+    use cayenchat_storage::NickCollision as Saved;
+    match choice {
+        Saved::Underscore => Core::Underscore,
+        Saved::Underscores => Core::Underscores,
+        Saved::Digits => Core::Digits,
+        Saved::Dialog => Core::Dialog,
     }
 }
 
@@ -2464,6 +2476,7 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
+                    config.nick_collision = nick_collision(profile.nick_collision);
                     config.char_refs = char_ref_mode(profile.char_refs);
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
@@ -2660,6 +2673,7 @@ impl ChatWindow {
         // the same network (D058).
         if let Some(previous) = &session.active_config {
             config.peer_avatar_cache = previous.peer_avatar_cache.clone();
+            config.nicklen = previous.nicklen.clone();
         }
         // The copy reconnects start from never holds a password: the saved
         // ones are read from the store again, and an unsaved one is asked

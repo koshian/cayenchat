@@ -598,7 +598,15 @@ because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
 alternate nicknames are configured; the stream stays usable afterwards. Before
 registration the core turns it into `NicknameRejected`, pauses its registration
-timeout and keeps the link open. The UI adds a row for that server to the
+timeout and keeps the link open. First, though, the per-server
+`ServerProfile::nick_collision` policy (#1072; `Underscore` by default: the
+nickname plus one `_`, once; also `Underscores` and `Digits` for up to five
+tries, or `Dialog` for none) may send another NICK on the same connection,
+when the candidate fits the server's `NICKLEN`. `NICKLEN` comes from 005,
+after registration, so the core keeps it in a `NickLenCache` the UI carries
+from a network's connection to the next (memory only); the first connection to
+a server therefore still asks. A nickname the user typed is never followed by
+another automatic try. Otherwise the UI adds a row for that server to the
 nickname dialog, prefilled with the rejected nick plus `_` (see Servers and
 sessions); submitting sends NICK (or reconnects if the server
 closed the link, which the core reports as `Refused` so it is not retried with

@@ -267,6 +267,12 @@ pub struct ConnectionConfig {
     /// Rejoin a channel that leaves us alone without operator status, to
     /// become its operator (#444, #478). Off unless the caller enables it.
     pub regain_ops: bool,
+    /// What to try when the registration nickname is rejected (#1072).
+    pub nick_collision: NickCollision,
+    /// The server's `NICKLEN`, kept across a network's connections so the
+    /// automatic nickname try also works on reconnects (005 arrives only
+    /// after registration). Memory only.
+    pub nicklen: NickLenCache,
     /// Write the characters ISO-2022-JP cannot hold in the text of a message
     /// as decimal HTML numeric character references (`&#128512;`) instead of
     /// refusing it (#522). `Auto` does so only when the text is sent in
@@ -304,6 +310,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
             .field("regain_ops", &self.regain_ops)
+            .field("nick_collision", &self.nick_collision)
             .field("char_refs", &self.char_refs)
             .finish()
     }
@@ -337,6 +344,8 @@ impl ConnectionConfig {
             history_targets_since: None,
             channel_encodings: Vec::new(),
             regain_ops: false,
+            nick_collision: NickCollision::default(),
+            nicklen: NickLenCache::default(),
             char_refs: CharRefMode::Auto,
         }
     }
@@ -678,6 +687,96 @@ fn validate_tagged_wire<'w>(
         encode_strict(&message.to_string(), encoding)?;
     }
     Ok(())
+}
+
+/// What to try when the registration nickname is rejected (432/433) (#1072).
+/// A candidate that does not fit the server's `NICKLEN` is never sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NickCollision {
+    /// The nickname plus one `_`, once.
+    #[default]
+    Underscore,
+    /// Keep appending `_`, up to [`NickCollision::MAX_TRIES`] tries.
+    Underscores,
+    /// The nickname plus 1, 2, 3 ..., up to [`NickCollision::MAX_TRIES`].
+    Digits,
+    /// No automatic try.
+    Dialog,
+}
+
+impl NickCollision {
+    /// The most automatic tries of the repeating choices.
+    pub const MAX_TRIES: u32 = 5;
+
+    /// The nickname for automatic try number `attempt` (0 for the first) after
+    /// `base` was rejected, or `None` when the user must be asked: no more
+    /// tries, `NICKLEN` unknown, or the candidate longer than `NICKLEN`
+    /// (counted in bytes, the stricter reading).
+    pub fn candidate(self, base: &str, attempt: u32, nicklen: Option<usize>) -> Option<String> {
+        let tries = match self {
+            Self::Underscore => 1,
+            Self::Underscores | Self::Digits => Self::MAX_TRIES,
+            Self::Dialog => 0,
+        };
+        if attempt >= tries {
+            return None;
+        }
+        let mut candidate = base.to_owned();
+        if self == Self::Digits {
+            candidate.push_str(&(attempt + 1).to_string());
+        } else {
+            candidate.extend(std::iter::repeat_n('_', attempt as usize + 1));
+        }
+        (candidate.len() <= nicklen?).then_some(candidate)
+    }
+}
+
+/// The `NICKLEN` a network last announced (0 while unknown), shared between
+/// the application (which keeps it across connections) and the worker. Like
+/// the avatar cache it is state, not a setting: it never makes two
+/// configurations differ.
+#[derive(Clone, Debug, Default)]
+pub struct NickLenCache(Arc<AtomicUsize>);
+
+impl PartialEq for NickLenCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for NickLenCache {}
+
+impl NickLenCache {
+    pub fn get(&self) -> Option<usize> {
+        Some(self.0.load(Ordering::Relaxed)).filter(|len| *len > 0)
+    }
+
+    fn set(&self, len: usize) {
+        self.0.store(len, Ordering::Relaxed);
+    }
+}
+
+/// The `NICKLEN` a RPL_ISUPPORT line announces; `-NICKLEN` withdraws it
+/// (`Some(0)`). An unparsable value is ignored.
+fn advertised_nicklen(message: &IrcMessage) -> Option<usize> {
+    let IrcCommand::Response(Response::RPL_ISUPPORT, args) = &message.command else {
+        return None;
+    };
+    // The first argument is our nickname, the last the trailing text.
+    args.iter()
+        .skip(1)
+        .flat_map(|arg| arg.split_whitespace())
+        .filter_map(|token| {
+            if token.eq_ignore_ascii_case("-NICKLEN") {
+                Some(0)
+            } else {
+                let (name, value) = token.split_once('=')?;
+                name.eq_ignore_ascii_case("NICKLEN")
+                    .then(|| value.parse().ok())
+                    .flatten()
+            }
+        })
+        .next_back()
 }
 
 /// The channel-name comparison a RPL_ISUPPORT line sets: `CASEMAPPING=<name>`,
@@ -2939,6 +3038,10 @@ async fn run_cancellable(
         // Registration is paused while the UI asks for another nickname.
         awaiting_nick: false,
         refusal: None,
+        nick_base: registration_nick.clone(),
+        nick_tries: 0,
+        nick_collision: config.nick_collision,
+        nicklen: config.nicklen.clone(),
         current_nick: registration_nick,
         roster: RosterTracker::default(),
         whois: WhoisCollector::default(),
@@ -3128,6 +3231,12 @@ struct Worker {
     awaiting_nick: bool,
     refusal: Option<String>,
     current_nick: String,
+    /// The configured nickname automatic tries build on, how many were made,
+    /// and the policy (#1072). A nickname the user typed ends them.
+    nick_base: String,
+    nick_tries: u32,
+    nick_collision: NickCollision,
+    nicklen: NickLenCache,
     roster: RosterTracker,
     whois: WhoisCollector,
     replay: replay::ReplayTracker,
@@ -3558,6 +3667,9 @@ impl Worker {
                     self.regain.leaving(channel);
                 }
                 if let Some(nickname) = retry_nick {
+                    // A typed nickname that is rejected goes back to the
+                    // user, never to another automatic try.
+                    self.nick_tries = u32::MAX;
                     self.current_nick = nickname;
                     self.publish_relay_prefix();
                     self.awaiting_nick = false;
@@ -3813,6 +3925,29 @@ impl Worker {
             // irc consumes 432/433 and reports NoUsableNick because no
             // alternate nicknames are configured; the link stays usable.
             Some(Err(irc::error::Error::NoUsableNick)) if !self.registered => {
+                // The configured policy tries another nickname on this
+                // connection first, when NICKLEN says it fits (#1072).
+                if let Some(candidate) = self.nick_collision.candidate(
+                    &self.nick_base,
+                    self.nick_tries,
+                    self.nicklen.get(),
+                ) {
+                    let tries = self.nick_tries + 1;
+                    self.note(format!(
+                        "Server rejected nickname {}; trying {candidate}.",
+                        self.current_nick
+                    ))
+                    .await;
+                    let flow = self
+                        .send_raw(IrcMessage::from(IrcCommand::NICK(candidate.clone())))
+                        .await;
+                    // send_raw ends automatic tries as for a typed nickname.
+                    self.nick_tries = tries;
+                    if self.current_nick == candidate || flow.is_break() {
+                        return flow;
+                    }
+                    self.nick_tries = u32::MAX;
+                }
                 self.note(format!(
                     "Server rejected nickname {} (432/433); waiting for another nickname.",
                     self.current_nick
@@ -4000,6 +4135,9 @@ impl Worker {
         let history_started = !self.history_enabled && self.negotiation.enabled(cap::CHATHISTORY);
         self.history_enabled = self.negotiation.enabled(cap::CHATHISTORY);
         self.history.isupport(message);
+        if let Some(len) = advertised_nicklen(message) {
+            self.nicklen.set(len);
+        }
         modes::observe(message, &self.modes_per_line);
         self.channel_modes.isupport(message);
         self.accounts.isupport(message);
