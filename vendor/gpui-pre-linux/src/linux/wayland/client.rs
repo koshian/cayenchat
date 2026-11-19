@@ -3003,7 +3003,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                                 data_offer,
                                 drag_window,
                                 position,
-                                gpui::ExternalPaths(paths),
+                                gpui::ExternalPaths(paths, None),
                             );
 
                             drop(state);
@@ -3348,7 +3348,7 @@ mod tests {
             data_offer,
             window,
             Point::default(),
-            gpui::ExternalPaths(SmallVec::from_vec(vec![PathBuf::from("/tmp/file")])),
+            gpui::ExternalPaths(SmallVec::from_vec(vec![PathBuf::from("/tmp/file")]), None),
         )
     }
 

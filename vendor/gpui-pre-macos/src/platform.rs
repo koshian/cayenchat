@@ -928,6 +928,19 @@ impl Platform for MacPlatform {
                     panel.setPrompt(Some(&NSString::from_str(prompt.as_str())));
                 }
 
+                // `allowedFileTypes` takes extensions; it is deprecated but still
+                // honored by current macOS, and needs no UniformTypeIdentifiers
+                // symbols. The panel ignores the case of an extension.
+                if let Some(filter) = &options.filter {
+                    let extensions: Vec<Retained<NSString>> = filter
+                        .extensions
+                        .iter()
+                        .map(|extension| NSString::from_str(extension.as_str()))
+                        .collect();
+                    let types = NSArray::from_retained_slice(&extensions);
+                    let _: () = unsafe { msg_send![&*panel, setAllowedFileTypes: &*types] };
+                }
+
                 panel.beginWithCompletionHandler(&handler);
             })
             .detach();

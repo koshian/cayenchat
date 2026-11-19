@@ -1224,7 +1224,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                         cursor_position.y as f32,
                         scale_factor,
                     ),
-                    paths: ExternalPaths(paths),
+                    paths: ExternalPaths(paths, None),
                 });
                 self.handle_drag_drop(input);
             } else {

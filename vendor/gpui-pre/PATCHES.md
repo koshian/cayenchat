@@ -50,3 +50,15 @@ Candidate for an upstream proposal.
   `SystemMenuType::Window` is new; macOS gives the marked menu to AppKit as
   the Window menu (and a nested `os_submenu` of that type the same way).
   Upstream decides by the name `"Window"` only. Other platforms ignore it.
+
+## File dialogs and file promises (#1081)
+
+- `PathPromptOptions::filter: Option<PathPromptFilter>` (new type: a name and
+  extensions without the dot). A dialog shows only those files where the
+  platform can filter (`gpui-pre-{linux,macos,windows}`); the caller still
+  checks what it gets. Candidate for an upstream proposal.
+- `ExternalPaths` has a second field, `Option<Arc<PromisedFiles>>`, and
+  `ExternalPaths::keep_alive()`. `PromisedFiles` owns the temporary directory
+  of a macOS file promise (Photos, Mail, the screenshot thumbnail) and removes
+  it with the last handle, so a handler that reads the files after it has
+  returned keeps one. Other platforms construct `ExternalPaths(paths, None)`.

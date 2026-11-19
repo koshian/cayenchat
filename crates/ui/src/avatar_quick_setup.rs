@@ -339,12 +339,7 @@ impl SettingsWindow {
                 .on_action(cx.listener(Self::paste_avatar_image_action))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                    this.drop_avatar_image(
-                        paths.paths(),
-                        crate::gpui_pending::keep_alive(paths),
-                        window,
-                        cx,
-                    )
+                    this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
                 }))
                 .child(
                     right()

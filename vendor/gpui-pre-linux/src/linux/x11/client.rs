@@ -1026,7 +1026,7 @@ impl X11Client {
                         .collect();
                     let input = PlatformInput::FileDrop(FileDropEvent::Entered {
                         position: state.xdnd_state.position,
-                        paths: gpui::ExternalPaths(paths),
+                        paths: gpui::ExternalPaths(paths, None),
                     });
                     drop(state);
                     window.handle_input(input);

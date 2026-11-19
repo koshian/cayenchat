@@ -246,8 +246,8 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | `App::on_quit_request` | **載せ直し済み** (終了とウィンドウの PR)。`vendor/gpui-pre{,-macos}` の `PATCHES.md` を参照。macOS は未確認 (最後の段階で実機) | — |
 | `Menu::menu_type` (`SystemMenuType::Window`) | **載せ直し済み** (同上)。上流 0.3.12 には `SystemMenuType::Window` が無く、名前が `Window` のときだけ AppKit が窓の一覧を足すので、これも足した | — |
 | Windows の `IsWindow` 確認、`activate` の Alt 抑止 | **載せ直し済み** (同上)。`vendor/gpui-pre-windows/PATCHES.md`。Windows はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
-| `PathPromptFilter` | ファイルダイアログの種類絞り込みなし。添付の検査が他の種類を断る | ファイル |
-| macOS のファイルプロミスの drop (`PromisedFiles`) | `keep_alive` は常に `None`。型 (`PromisedFiles`) だけ `gpui_pending` に置く | ファイル |
+| `PathPromptFilter` | **載せ直し済み** (ファイルの PR)。`vendor/gpui-pre{,-linux,-macos,-windows}` の `PATCHES.md` を参照。Linux はポータルの `FileFilter`、Windows は `SetFileTypes`、macOS は `allowedFileTypes`。Windows と macOS は未確認 (最後の段階で実機) | — |
+| macOS のファイルプロミスの drop (`PromisedFiles`) | **載せ直し済み** (同上)。`ExternalPaths` の 2 番目のフィールドと `keep_alive()`。`gpui_pending` の仮の型は消した。macOS はローカルでコンパイルしておらず (CI の結果のみ)、実機は最後の段階 | — |
 | `is_compositing`、`supports_background_blur(_radius)`、`set_background_blur_radius`、マテリアル | 常に「合成あり」「ぼかし非対応」。背景ぼかしは使えない | 背景の透過とぼかし |
 | クリップボードの上限 (Wayland、Windows)、`read_from_clipboard_async` | 上限なし。読み取りの失敗は空として扱う | クリップボード |
 | フレーズ単位の折り返し (`with_wrap_joins`、`shape_text_joined`) | `PHRASE_WRAP = false` で折り返しは標準のまま。`phrase_wrap` の描画テストは `cfg(any())` で外した | テキスト |
@@ -255,7 +255,7 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | 上流の `tooltip` に置き換え。ポインターを移してコピーボタンを押す操作はできない | テキスト |
 | §2 の「個別に確認していない」もの | 未適用 | 残りの細かいパッチ |
 
-テストは仮実装に合わせて、`image_file_filter` のテストを外した (`Menu::menu_type` の
+テストは仮実装に合わせて、`image_file_filter` のテストを外した (ファイルの PR で戻した。`Menu::menu_type` の
 検査は終了とウィンドウの PR で戻した)。
 
 ### 確認したこと

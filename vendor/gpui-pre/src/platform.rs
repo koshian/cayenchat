@@ -2975,6 +2975,18 @@ pub struct PathPromptOptions {
     pub multiple: bool,
     /// The prompt to show to a user when selecting a path
     pub prompt: Option<SharedString>,
+    /// Only files with these extensions can be picked. Local patch; see
+    /// `PATCHES.md`. Platforms that cannot filter show every file.
+    pub filter: Option<PathPromptFilter>,
+}
+
+/// A named set of file extensions for a file dialog prompt.
+#[derive(Clone, Debug)]
+pub struct PathPromptFilter {
+    /// What the dialog calls the set, e.g. "Images".
+    pub name: SharedString,
+    /// Extensions without the dot, e.g. `png`. Matching ignores case.
+    pub extensions: Vec<SharedString>,
 }
 
 /// What kind of prompt styling to show

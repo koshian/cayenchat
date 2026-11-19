@@ -271,6 +271,7 @@ fn read_files() -> Option<ClipboardEntry> {
     with_file_names(hdrop, |name| filenames.push(std::path::PathBuf::from(name)));
     Some(ClipboardEntry::ExternalPaths(ExternalPaths(
         filenames.into(),
+        None,
     )))
 }
 
