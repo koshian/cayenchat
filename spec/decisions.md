@@ -568,6 +568,12 @@ so its "logical" sizes included the display scale and GPUI scaled them again
 them at 96 DPI, as 0.6.1 does; 0.6.1 itself needs the `gpui-pre` connector.
 Switch back when the GPUI question in #265 allows native-theme 0.6.1 or later.
 
+2026-11-18 (#1025): the versions a GPUI Kit migration would pin, the state of
+each `vendor/gpui` patch against `gpui-pre` 0.3.12, the build errors seen and
+the `gpui-component::setting` API are recorded in
+`spec/gpui-kit-migration-2026-11-18.md`. Nothing is migrated yet; this decision
+stays in force until a migration PR replaces it.
+
 `ui::settings_theme` calls `SystemTheme::from_system()` and converts both
 variants with `native_theme_gpui::to_theme()`. The connector supplies settings
 palette colors; raw `ResolvedTheme` supplies the per-widget geometry, fonts,
