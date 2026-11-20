@@ -1216,7 +1216,12 @@ mod tests {
         // once" is checked here; the timer rounds below check retrying.
         assert!(count(FLAKY) >= 1, "fetched on first sight");
         chat.read_with(cx, |chat, _| {
-            assert!(matches!(chat.avatars.lookup(FLAKY, 32), super::Shown::None));
+            // `None` after the failure, or `Pending` when the 40ms retry
+            // has already started on a loaded machine; never an image.
+            assert!(matches!(
+                chat.avatars.lookup(FLAKY, 32),
+                super::Shown::None | super::Shown::Pending
+            ));
         });
         // Failures with no redraw or input in between: the timer alone
         // brings the shown row back, with no attempt limit. (The test
