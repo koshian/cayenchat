@@ -252,7 +252,7 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 | クリップボードの上限 (Wayland、Windows)、`read_from_clipboard_async` | **載せ直し済み** (クリップボードの PR)。上流 0.3.12 に `read_from_clipboard_async` があったので、Wayland だけを上書きして背景で読む。パイプは 32 MiB まで (同期の読み取りとドロップのファイル一覧も)、Windows の文字列は 16 MiB まで。Wayland の背景読み取りは 5 秒の全体締め切りと、全形式で共通の 32 MiB で、待つ間はワーカーを手放し、タスクを破棄すると読み取りとパイプが閉じる (`read_fd_async`)。`vendor/gpui-pre-{linux,windows}/PATCHES.md` を参照。Wayland と Windows は未確認 (最後の段階で実機) | — |
 | フレーズ単位の折り返し (`with_wrap_joins`、`shape_text_joined`) | **載せ直し済み** (テキストの PR)。`vendor/gpui-pre/PATCHES.md` を参照。上流 0.3.12 は UAX #14 の折り返し候補を使うので、`joins` の位置の候補を外す形にした。NBSP + 図形空白 (リンクアイコンの余白) の直前は、GL で折れないため候補を足した。`is_word_char` の NBSP のパッチは上流が GL として扱うので不要。`phrase_wrap` の描画テストと `icon_follows_its_room_after_an_unspaced_prefix` を戻した | — |
 | `shape-run-cache` | **載せ直さない (受け入れる制限)**。cosmic-text 0.19 の `shape_run_cached` はシェーピングに文字方向 (`span_rtl`) を使うが、`ShapeRunKey` に含めない。有効にすると、RTL の行の後に `x < x` を処理すると `<` と `>` の字形が逆になる (実バックエンドで確認)。cosmic-text を vendor してキーを直さない限り使えないので、キャッシュは無効のまま (上流の既定)。チャンネル切り替え時に新しく見える行を毎回シェーピングし直す (0.2.2 の測定では 1 行 0.1–0.3 ms)。最後の段階の性能比較 (`spec/performance.md`) で問題なら、cosmic-text を vendor して方向をキーに入れ、実バックエンドの回帰テストを付けて再導入する | 最後の段階の性能比較の結果次第 |
-| `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | 上流の `tooltip` に置き換え。ポインターを移してコピーボタンを押す操作はできない | 残りの細かいパッチ (`div.rs` の `TooltipRetarget` と一緒に) |
+| `InteractiveText::hoverable_tooltip` / `tooltip_bridge` | **載せ直し済み** (ツールチップの PR)。`vendor/gpui-pre/PATCHES.md` を参照。上流 0.3.12 の `Interactivity::hoverable_tooltip` は要素用で、テキストは常に非ホバー。`div.rs` に `TooltipRetarget` を足し、別のリンクへ移ったときに即座に差し替える。`url_bubble_gui.py` と `a_decoded_reference_shows_its_original_and_copies_only_that` を戻した。仮実装 (`gpui_pending.rs`) は削除 | — |
 | §2 の「個別に確認していない」もの | 未適用 | 残りの細かいパッチ |
 
 テストは仮実装に合わせて、`image_file_filter` のテストを外した (ファイルの PR で戻した。`Menu::menu_type` の
@@ -275,16 +275,14 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 
 - `log_list::a_short_log_reports_where_its_rows_end`: `ListState` から短いログの行の高さを
   取れない (`LogList::unfilled_from` は常に `None`、短いログの上の埋め草を描かない)。
-- `icon_follows_its_room_after_an_unspaced_prefix`、
-  `a_decoded_reference_shows_its_original_and_copies_only_that`: テキストのパッチが要る。
 
 CI の GUI 検査 (`.github/workflows/ci.yml`): 統合ブランチ (`gpui-kit-migration`) と、
-それ宛ての PR では、仮実装に依存する 3 本 (`url_bubble_gui.py`: リンクのホバーとクリック、
+それ宛ての PR では、埋め草の仮実装に依存する 2 本 (`url_bubble_gui.py` はツールチップの PR で戻した。
 `log_colors_gui.py`: 行の背景色、`opacity_gui.py`: 背景の透過) をステップ単位で外す。
 `history_gui.py` は外さず、起動・描画・履歴の操作は引き続き検査する。
 背景ぼかしの PR で分かったこと: `opacity_gui.py` が失敗する原因はぼかしの API ではなく、
 短いログの上の埋め草を描かないこと (`LogList::unfilled_from` が常に `None`)。
-この 3 本は、ツールチップと埋め草を戻す PR で戻し、master では常に動く。
+この 2 本は、埋め草を戻す PR で戻し、master では常に動く。
 
 ignore から戻したテスト (レビュー 1 回目):
 

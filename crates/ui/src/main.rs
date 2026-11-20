@@ -45,7 +45,6 @@ mod disconnect_dialog;
 mod double_enter;
 mod experimental_settings;
 mod focus_reveal;
-mod gpui_pending;
 mod help_command;
 mod image_upload;
 mod input;
@@ -100,7 +99,6 @@ mod wallpaper_crop;
 mod whois;
 mod window_layout;
 
-use crate::gpui_pending::InteractiveTextPending as _;
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, GroupId, HeadingMarks, Kind, LineKey, LineKind,
     MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
