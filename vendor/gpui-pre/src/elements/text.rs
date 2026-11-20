@@ -1317,17 +1317,22 @@ impl Element for InteractiveText {
                     // the pointer on other text no longer keeps it.
                     let in_anchor = Rc::new({
                         let anchored = self.tooltip_anchor.is_some();
-                        let active_tooltip = active_tooltip.clone();
+                        // Weak: a shown tooltip owns this closure, so a strong
+                        // reference would be a cycle that outlives the window.
+                        let active_tooltip = Rc::downgrade(&active_tooltip);
                         let tooltip_range = tooltip_range.clone();
                         move |index: usize| {
-                            !anchored
-                                || !matches!(
-                                    active_tooltip.borrow().as_ref(),
+                            let shown = active_tooltip.upgrade().is_some_and(|active| {
+                                matches!(
+                                    active.borrow().as_ref(),
                                     Some(
                                         ActiveTooltip::Visible { .. }
                                             | ActiveTooltip::WaitingForHide { .. }
                                     )
                                 )
+                            });
+                            !anchored
+                                || !shown
                                 || tooltip_range
                                     .borrow()
                                     .as_ref()
