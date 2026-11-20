@@ -4,8 +4,8 @@ use futures::channel::oneshot;
 
 use crate::{
     AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, PromptButton, PromptLevel, Render,
-    StatefulInteractiveElement, Styled, div, opaque_grey, white,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PromptButton, PromptLevel,
+    Render, StatefulInteractiveElement, Styled, div, opaque_grey, white,
 };
 
 use super::Window;
@@ -104,7 +104,14 @@ impl Render for FallbackPromptRenderer {
         let prompt = div()
             .cursor_default()
             .track_focus(&self.focus)
-            .w_72()
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape"
+                    && let Some(ix) = this.actions.iter().position(PromptButton::is_cancel)
+                {
+                    cx.emit(PromptResponse(ix));
+                }
+            }))
+            .w_96()
             .bg(white())
             .rounded_lg()
             .overflow_hidden()
@@ -125,7 +132,7 @@ impl Render for FallbackPromptRenderer {
                     .justify_around()
                     .text_sm()
                     .mb_2()
-                    .child(div().child(detail))
+                    .child(div().w_full().text_center().child(detail))
             }))
             .children(self.actions.iter().enumerate().map(|(ix, action)| {
                 div()
@@ -148,6 +155,7 @@ impl Render for FallbackPromptRenderer {
 
         div()
             .size_full()
+            .occlude()
             .child(
                 div()
                     .size_full()
