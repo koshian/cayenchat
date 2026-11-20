@@ -395,17 +395,31 @@ pub enum NickCollision {
     Underscores,
     /// Try the nickname plus 1, 2, 3 ..., up to five tries.
     Digits,
+    /// Try the nicknames of `ServerProfile::alt_nicks`, in order.
+    Alternates,
     /// Always open the nickname dialog.
     Dialog,
 }
 
 impl NickCollision {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Underscore,
         Self::Underscores,
         Self::Digits,
+        Self::Alternates,
         Self::Dialog,
     ];
+}
+
+/// The most alternate nicknames a profile uses.
+pub const MAX_ALT_NICKS: usize = 10;
+
+/// Reads the space-separated list kept in `ServerProfile::alt_nicks`.
+pub fn parse_alt_nicks(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .take(MAX_ALT_NICKS)
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1570,6 +1584,10 @@ pub struct ServerProfile {
     /// What to do when the nickname is in use at registration (#1072).
     #[serde(default)]
     pub nick_collision: NickCollision,
+    /// Space-separated nicknames for `NickCollision::Alternates`. Added
+    /// without a version change; files without it read as empty.
+    #[serde(default)]
+    pub alt_nicks: String,
     /// Opt-in IRCv3 features for this server (version 15), off by default.
     #[serde(default)]
     pub ircv3: Ircv3Preferences,
@@ -1648,6 +1666,7 @@ impl ServerProfile {
             user_avatars: false,
             regain_ops: true,
             nick_collision: NickCollision::default(),
+            alt_nicks: String::new(),
             ircv3: Ircv3Preferences::default(),
             avatar_url: String::new(),
             peer_avatar_url: String::new(),
@@ -4749,6 +4768,26 @@ mod tests {
                 .iter()
                 .all(|s| s.nick_collision == NickCollision::Underscore)
         );
+    }
+
+    #[test]
+    fn alt_nicks_round_trip_and_split_on_spaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        assert!(settings.servers[0].alt_nicks.is_empty());
+        settings.servers[0].nick_collision = NickCollision::Alternates;
+        settings.servers[0].alt_nicks = "bob  carol\tdave".into();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.servers[0].nick_collision, NickCollision::Alternates);
+        assert_eq!(
+            parse_alt_nicks(&loaded.servers[0].alt_nicks),
+            ["bob", "carol", "dave"]
+        );
+        let many = vec!["n"; MAX_ALT_NICKS + 3].join(" ");
+        assert_eq!(parse_alt_nicks(&many).len(), MAX_ALT_NICKS);
     }
 
     #[test]

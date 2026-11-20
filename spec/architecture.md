@@ -601,7 +601,8 @@ registration the core turns it into `NicknameRejected`, pauses its registration
 timeout and keeps the link open. First, though, the per-server
 `ServerProfile::nick_collision` policy (#1072; `Underscore` by default: the
 nickname plus one `_`, once; also `Underscores` and `Digits` for up to five
-tries, or `Dialog` for none) may send another NICK on the same connection,
+tries, `Alternates` for the space-separated `ServerProfile::alt_nicks` (up to
+10) in order, one per try, or `Dialog` for none) may send another NICK on the same connection,
 when the candidate fits the server's `NICKLEN`, if known. `NICKLEN` comes from 005,
 after registration, so the core keeps it in a `NickLenCache` the UI carries
 from a network's connection to the next (memory only); while it is unknown (the

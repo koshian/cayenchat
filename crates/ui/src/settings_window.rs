@@ -63,6 +63,7 @@ pub(crate) struct SettingsForm {
     quit_message: Entity<TextInput>,
     sleep_quit_message: Entity<TextInput>,
     part_message: Entity<TextInput>,
+    alt_nicks: Entity<TextInput>,
     display_name: Entity<TextInput>,
     pub(crate) channels: Entity<TextInput>,
     /// Password fields start empty and are shown while the password is not
@@ -184,6 +185,12 @@ impl SettingsForm {
             part_message: field(
                 &i18n.text("part_message_placeholder"),
                 &profile.part_message,
+                false,
+                cx,
+            ),
+            alt_nicks: field(
+                &i18n.text("alt_nicks_placeholder"),
+                &profile.alt_nicks,
                 false,
                 cx,
             ),
@@ -619,6 +626,7 @@ impl SettingsForm {
             profile.quit_message = value(&self.quit_message);
             profile.sleep_quit_message = value(&self.sleep_quit_message);
             profile.part_message = value(&self.part_message);
+            profile.alt_nicks = value(&self.alt_nicks);
             profile.display_name = value(&self.display_name);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
@@ -653,7 +661,7 @@ impl SettingsForm {
 
     /// The text fields of a server profile. Edits to them are committed when
     /// the field loses focus, not while typing.
-    fn server_text_fields(&self) -> [&Entity<TextInput>; 12] {
+    fn server_text_fields(&self) -> [&Entity<TextInput>; 13] {
         [
             &self.custom_host,
             &self.port,
@@ -663,6 +671,7 @@ impl SettingsForm {
             &self.quit_message,
             &self.sleep_quit_message,
             &self.part_message,
+            &self.alt_nicks,
             &self.display_name,
             &self.channels,
             &self.sasl_username,
@@ -720,7 +729,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 56] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
         [
             &self.custom_host,
             &self.port,
@@ -730,6 +739,7 @@ impl SettingsForm {
             &self.quit_message,
             &self.sleep_quit_message,
             &self.part_message,
+            &self.alt_nicks,
             &self.display_name,
             &self.channels,
             &self.server_password,
@@ -842,6 +852,7 @@ impl SettingsForm {
             (&self.quit_message, &profile.quit_message),
             (&self.sleep_quit_message, &profile.sleep_quit_message),
             (&self.part_message, &profile.part_message),
+            (&self.alt_nicks, &profile.alt_nicks),
             (&self.display_name, &profile.display_name),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
@@ -1514,6 +1525,7 @@ impl SettingsWindow {
                 "sleep_quit_message_placeholder",
             ),
             (&self.settings.part_message, "part_message_placeholder"),
+            (&self.settings.alt_nicks, "alt_nicks_placeholder"),
             (&self.settings.display_name, "display_name_placeholder"),
             (
                 &self.settings.server_password,
@@ -4752,6 +4764,7 @@ impl SettingsWindow {
                         NickCollision::Underscore => "nick_collision_underscore",
                         NickCollision::Underscores => "nick_collision_underscores",
                         NickCollision::Digits => "nick_collision_digits",
+                        NickCollision::Alternates => "nick_collision_alternates",
                         NickCollision::Dialog => "nick_collision_dialog",
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -4761,6 +4774,10 @@ impl SettingsWindow {
                         cx.notify();
                     }))
             }))
+            .child(div().ml(settings_theme::LABEL_INDENT).child(settings_field(
+                &self.i18n.text("alt_nicks"),
+                self.settings.alt_nicks.clone(),
+            )))
             .child(
                 div()
                     .ml(settings_theme::LABEL_INDENT)
