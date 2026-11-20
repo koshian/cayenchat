@@ -95,3 +95,28 @@ patch to `LineWrapper::is_word_char` is dropped with the word-character
 wrapper). The unit tests of the 0.2.2 copy do not run in this stripped crate;
 `crates/ui/src/phrase_wrap.rs` (`layout_tests`) and
 `crates/ui/src/main_tests/link_icon_tests.rs` exercise both changes.
+
+## Hoverable link tooltips (#1081, CayenChat #232)
+
+`InteractiveText::hoverable_tooltip(anchor, builder)` is `tooltip` whose bubble
+stays while the pointer moves onto it, so a click on it is handled (the
+shortened URL opens from its full-URL bubble; a decoded character reference
+has a copy button). Upstream 0.3.12 has `Interactivity::hoverable_tooltip` for
+elements but hard-codes text tooltips as not hoverable.
+
+- The tooltip belongs to the text range `anchor` returns for the hovered byte
+  (`InteractiveTextState::tooltip_range`). While it is shown, the pointer on
+  other text no longer keeps it, so it is replaced instead of opening a stale
+  target.
+- `InteractiveText::tooltip_bridge(left, top)` declares the tooltip view's
+  transparent margin that only bridges the gap to the pointer.
+- `TooltipRetarget` (`src/elements/div.rs`) is passed to
+  `register_tooltip_mouse_handlers`, `show_tooltip` and
+  `handle_tooltip_check_visible_and_update` (`None` for ordinary elements).
+  A pointer on another range with a tooltip of its own, outside the visible
+  part of the shown tooltip, clears it and schedules the next one at once
+  (`schedule_tooltip_show`, the former inline code of the mouse-move handler,
+  with the default show delay), without another mouse move.
+
+`scripts/e2e/url_bubble_gui.py` (real binary under Xvfb) and
+`a_decoded_reference_shows_its_original_and_copies_only_that` exercise it.
