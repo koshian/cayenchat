@@ -1096,16 +1096,34 @@ impl MacWindow {
                 .as_ref()
                 .map_or_default(|screen| screen.frame());
 
-            let window_rect = NSRect::new(
+            // `bounds` is the whole window frame, title bar included, which is
+            // also what `MacWindowState::bounds` reports; saved bounds come
+            // back through here. Taking it as the content rect made the window
+            // taller by the title bar on every restart.
+            let frame_rect = NSRect::new(
                 NSPoint::new(
                     screen_frame.origin.x + bounds.origin.x.as_f32() as f64,
                     screen_frame.origin.y
-                        + (display.bounds().size.height - bounds.origin.y).as_f32() as f64,
+                        + (display.bounds().size.height - bounds.origin.y).as_f32() as f64
+                        - bounds.size.height.as_f32() as f64,
                 ),
                 NSSize::new(
                     bounds.size.width.as_f32() as f64,
                     bounds.size.height.as_f32() as f64,
                 ),
+            );
+            let content_rect: NSRect = msg_send![
+                class!(NSWindow),
+                contentRectForFrameRect: frame_rect,
+                styleMask: style_mask
+            ];
+            // The top-left point of the frame, with the content size.
+            let window_rect = NSRect::new(
+                NSPoint::new(
+                    frame_rect.origin.x,
+                    frame_rect.origin.y + frame_rect.size.height,
+                ),
+                content_rect.size,
             );
 
             let native_window: *mut AnyObject = msg_send![

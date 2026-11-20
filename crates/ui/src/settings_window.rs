@@ -16,8 +16,8 @@ use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, FontSet,
-    Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile,
-    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Language, NickCollision, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
+    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 
@@ -4730,6 +4730,43 @@ impl SettingsWindow {
                     .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("regain_ops_hint")),
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .child(self.i18n.text("nick_collision")),
+            )
+            .children(NickCollision::ALL.into_iter().map(|choice| {
+                div()
+                    .id(("nick-collision", choice as usize))
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        profile.nick_collision == choice,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text(match choice {
+                        NickCollision::Underscore => "nick_collision_underscore",
+                        NickCollision::Underscores => "nick_collision_underscores",
+                        NickCollision::Digits => "nick_collision_digits",
+                        NickCollision::Dialog => "nick_collision_dialog",
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(profile) = this.settings.values.selected_profile_mut() {
+                            profile.nick_collision = choice;
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("nick_collision_hint")),
             )
     }
 

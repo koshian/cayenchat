@@ -62,3 +62,15 @@ follows the appearance upstream (`update_transparency`).
 
 Not compiled on Linux; check on macOS: the blur strength slider changes the
 blur, and an opaque or transparent window shows none.
+
+## Window frame from saved bounds (#1081, CayenChat #795)
+
+In `src/window.rs`, `MacWindow::open` takes `WindowParams::bounds` as the window
+frame (title bar included), the same rectangle `MacWindowState::bounds` reports,
+and derives the content size with `contentRectForFrameRect:styleMask:`. Upstream
+0.3.12 still takes it as the content rect, so a window reopened with its saved
+bounds was taller by the title bar each time and its bottom went below the
+display.
+
+Not compiled on Linux; check on macOS: close and reopen the window several
+times and the size stays the same.

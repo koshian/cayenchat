@@ -572,6 +572,22 @@ mod disconnect_tests {
         assert_eq!(kept.as_deref(), Some("me"));
     }
 
+    #[test]
+    fn a_typed_nickname_is_never_changed_automatically() {
+        let mut config =
+            cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
+        assert_ne!(
+            config.nick_collision,
+            cayenchat_irc_core::NickCollision::Dialog
+        );
+        crate::with_typed_nickname(&mut config, "bob".into());
+        assert_eq!(config.nickname, "bob");
+        assert_eq!(
+            config.nick_collision,
+            cayenchat_irc_core::NickCollision::Dialog
+        );
+    }
+
     #[gpui::test]
     fn a_refused_connection_still_raises_a_notice(cx: &mut TestAppContext) {
         assert_eq!(notices_after(Event::Refused("SASL failed".into()), cx), 1);
