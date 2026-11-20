@@ -602,10 +602,10 @@ timeout and keeps the link open. First, though, the per-server
 `ServerProfile::nick_collision` policy (#1072; `Underscore` by default: the
 nickname plus one `_`, once; also `Underscores` and `Digits` for up to five
 tries, or `Dialog` for none) may send another NICK on the same connection,
-when the candidate fits the server's `NICKLEN`. `NICKLEN` comes from 005,
+when the candidate fits the server's `NICKLEN`, if known. `NICKLEN` comes from 005,
 after registration, so the core keeps it in a `NickLenCache` the UI carries
-from a network's connection to the next (memory only); the first connection to
-a server therefore still asks. A nickname the user typed is never followed by
+from a network's connection to the next (memory only); while it is unknown (the
+first connection, another process) the candidate is tried anyway and a server that rejects it too opens the dialog. A nickname the user typed is never followed by
 another automatic try. Otherwise the UI adds a row for that server to the
 nickname dialog, prefilled with the rejected nick plus `_` (see Servers and
 sessions); submitting sends NICK (or reconnects if the server

@@ -710,7 +710,7 @@ impl NickCollision {
 
     /// The nickname for automatic try number `attempt` (0 for the first) after
     /// `base` was rejected, or `None` when the user must be asked: no more
-    /// tries, `NICKLEN` unknown, or the candidate longer than `NICKLEN`
+    /// tries, or the candidate longer than a known `NICKLEN`
     /// (counted in bytes, the stricter reading).
     pub fn candidate(self, base: &str, attempt: u32, nicklen: Option<usize>) -> Option<String> {
         let tries = match self {
@@ -727,7 +727,11 @@ impl NickCollision {
         } else {
             candidate.extend(std::iter::repeat_n('_', attempt as usize + 1));
         }
-        (candidate.len() <= nicklen?).then_some(candidate)
+        // Unknown NICKLEN (005 comes after registration): try anyway. A server
+        // that rejects it (432/433) uses up the try and the dialog opens.
+        nicklen
+            .is_none_or(|max| candidate.len() <= max)
+            .then_some(candidate)
     }
 }
 

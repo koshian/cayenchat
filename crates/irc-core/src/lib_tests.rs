@@ -3476,6 +3476,7 @@ fn nickname_in_use_waits_for_another_nickname() {
     config.port = port;
     config.use_tls = false; // The private worker is tested without a certificate.
     let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    config.nick_collision = NickCollision::Dialog;
     let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
     let worker = thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -3576,7 +3577,10 @@ fn nick_collision_candidates_follow_the_policy_and_nicklen() {
         Some("alice_")
     );
     assert_eq!(Underscore.candidate("alice", 1, Some(9)), None);
-    assert_eq!(Underscore.candidate("alice", 0, None), None);
+    assert_eq!(
+        Underscore.candidate("alice", 0, None).as_deref(),
+        Some("alice_")
+    );
     assert_eq!(Underscore.candidate("alice", 0, Some(5)), None);
     assert_eq!(
         Underscores.candidate("alice", 2, Some(9)).as_deref(),

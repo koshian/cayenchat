@@ -170,7 +170,7 @@
   "nick_collision_underscores": "Keep adding _ (up to 5 tries), then ask",
   "nick_collision_digits": "Try the nickname plus 1, 2, 3 ... (up to 5 tries), then ask",
   "nick_collision_dialog": "Always ask",
-  "nick_collision_hint": "Automatic tries happen on the same connection and only when the server's NICKLEN is known (from an earlier connection) and the nickname fits it; otherwise CayenChat asks. The nickname tried is not saved: the next connection starts with the configured nickname.",
+  "nick_collision_hint": "Automatic tries happen on the same connection. When the server's NICKLEN is known (from an earlier connection) the nickname must fit it; if the server rejects the tried nickname too, CayenChat asks. The nickname tried is not saved: the next connection starts with the configured nickname.",
   "regain_ops_hint": "If you are the only one in a channel you joined and have no operator status, CayenChat leaves and joins that channel once per connection. The channel is then created anew: its topic and plain modes (m, i, n, p, s, t) are set again, but the key, limit and ban lists are lost.",
   "sasl_account": "SASL account",
   "sasl_password": "SASL password",
