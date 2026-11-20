@@ -3,6 +3,8 @@
 //! has now. A key is changed by pressing the new combination (#114); a change
 //! can be undone for one action or for all of them.
 
+use gpui::App;
+
 use crate::{
     SettingsWindow,
     key_recorder::{self, Recorded, Rejection},
@@ -29,9 +31,9 @@ impl SettingsWindow {
 
     /// Warnings for the keys `action` has now: keys shared with another action
     /// or a fixed shortcut, and combinations better avoided.
-    pub(crate) fn shortcut_warnings(&self, action: &ShortcutAction) -> Vec<String> {
+    pub(crate) fn shortcut_warnings(&self, action: &ShortcutAction, cx: &App) -> Vec<String> {
         let overrides = &self.settings.values.keybindings;
-        let fixed = crate::fixed_bindings(self.settings.values.channel_number_modifier);
+        let fixed = crate::fixed_bindings(self.settings.values.channel_number_modifier, cx);
         let mut warnings: Vec<String> = Vec::new();
         for conflict in shortcuts::conflicts(overrides, &fixed) {
             if !conflict.owners.contains(&Owner::Action(action.id)) {
@@ -113,7 +115,7 @@ impl SettingsWindow {
                     .find(|candidate| candidate.id == action)
                     .filter(|candidate| candidate.defaults.len() == 1)
                     .and_then(|candidate| shortcuts::usable_key(candidate.defaults[0]))
-                    .map(|keystroke| keystroke.unparse());
+                    .map(|keystroke| keystroke.unparse(crate::shortcuts::HOST_OS));
                 if default.as_deref() == Some(key.as_str()) {
                     self.settings.values.keybindings.remove(action);
                 } else {
@@ -154,7 +156,7 @@ impl SettingsWindow {
             .shortcut_recording
             .as_ref()
             .filter(|recording| recording.action == action.id);
-        let warnings = self.shortcut_warnings(action);
+        let warnings = self.shortcut_warnings(action, cx);
         let id = action.id;
         div()
             .flex()
@@ -263,7 +265,9 @@ mod tests {
         let overrides = |form: &Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
             form.read_with(cx, |form, _| form.settings.values.keybindings.clone())
         };
-        let key = Keystroke::parse("cmd-ctrl-j").unwrap().unparse();
+        let key = Keystroke::parse("cmd-ctrl-j")
+            .unwrap()
+            .unparse(crate::shortcuts::HOST_OS);
 
         // Press the key after choosing Change: it is kept for that action.
         form.update(cx, |form, cx| {
@@ -287,9 +291,9 @@ mod tests {
             form.shortcut_recorded("previous_channel", Recorded::Key(key.clone()), cx)
         });
         let warned = |form: &Entity<SettingsWindow>, id: &str, cx: &mut gpui::VisualTestContext| {
-            form.read_with(cx, |form, _| {
+            form.read_with(cx, |form, cx| {
                 let action = shortcuts::ACTIONS.iter().find(|a| a.id == id).unwrap();
-                !form.shortcut_warnings(action).is_empty()
+                !form.shortcut_warnings(action, cx).is_empty()
             })
         };
         assert!(warned(&form, "next_channel", cx));

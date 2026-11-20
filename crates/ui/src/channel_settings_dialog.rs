@@ -621,7 +621,7 @@ impl ChannelSettingsView {
                 // A task, not `defer`: a deferred call still runs before the
                 // platform's event handler returns.
                 cx.spawn(async move |cx| {
-                    let _ = cx.update(|cx| {
+                    cx.update(|cx| {
                         if !matches!(job.run(cx), Ok(Ok(()))) {
                             let _ = job
                                 .owner
@@ -1013,7 +1013,7 @@ impl ChannelSettingsView {
         let (handle, scroll_to) = &order[at.map_or(0, |at| (at + step) % len)];
         // An open list belongs to its selector.
         self.open_list = None;
-        window.focus(handle);
+        window.focus(handle, cx);
         if let Some(child) = *scroll_to {
             self.body_scroll.scroll_to_item(child);
         }
@@ -1093,7 +1093,7 @@ impl ChannelSettingsView {
                 .id("channel-encoding-list")
                 .debug_selector(|| "channel-encoding-list".into())
                 .track_scroll(&self.menu_scroll)
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .max_h(MENU_HEIGHT)
                 .overflow_y_scroll()
                 .bg(palette.surface)
@@ -1125,7 +1125,7 @@ impl Render for ChannelSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.focus_pending {
             self.focus_pending = false;
-            window.focus(&self.controls.auto_join);
+            window.focus(&self.controls.auto_join, cx);
         }
         let palette = settings_theme::palette(cx);
         let ring = settings_theme::current(cx).map_or(palette.text, |native| {

@@ -36,6 +36,7 @@ fn open_chat_with_keys(
             ChannelNumberModifier::Ctrl,
             &Default::default(),
             emacs,
+            cx,
         ));
     });
     let settings = crate::settings_with_channels("#a,#b");

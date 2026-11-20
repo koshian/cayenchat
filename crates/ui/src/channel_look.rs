@@ -266,7 +266,7 @@ fn paint_picture(
         for gap in gaps(bounds, placed) {
             window.paint_quad(fill(gap, color));
         }
-        let _ = window.paint_image(placed, Corners::default(), image, 0, false);
+        let _ = window.paint_image(placed, placed, Corners::default(), image, 0, false);
     });
 }
 

@@ -1,5 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
+/// The "secondary" modifier of a static key (Cmd on macOS, Ctrl elsewhere).
+/// `KeyBinding::new` of GPUI 0.3 accepts explicit modifiers only; GPUI 0.2.2
+/// read `secondary-` itself.
+#[cfg(target_os = "macos")]
+macro_rules! secondary {
+    ($key:literal) => {
+        concat!("cmd-", $key)
+    };
+}
+#[cfg(not(target_os = "macos"))]
+macro_rules! secondary {
+    ($key:literal) => {
+        concat!("ctrl-", $key)
+    };
+}
+
 mod about;
 mod account_settings;
 mod application_settings;
@@ -1638,7 +1655,7 @@ impl ChatWindow {
         {
             inputs.insert(key, Self::new_draft_input(&placeholder, cx));
         }
-        window.focus(&inputs[&state.selection()].focus_handle(cx));
+        window.focus(&inputs[&state.selection()].focus_handle(cx), cx);
         // The conversation log thread wakes the window when it fails or finds
         // its directory locked, so the user hears of it without waiting for
         // an IRC event.
@@ -2219,6 +2236,11 @@ impl ChatWindow {
             return;
         };
         let generation = session.generation;
+        // The worker thread wakes this task. GPUI's test scheduler reports a
+        // wake from another thread as a test that is not deterministic unless
+        // parking is allowed.
+        #[cfg(test)]
+        cx.background_executor().allow_parking();
         cx.spawn(async move |this, cx| {
             loop {
                 let first = events.recv().await;
@@ -2271,7 +2293,9 @@ impl ChatWindow {
                 else {
                     return;
                 };
-                Timer::after(after.saturating_sub(started.elapsed())).await;
+                cx.background_executor()
+                    .timer(after.saturating_sub(started.elapsed()))
+                    .await;
                 let waiting = this
                     .update(cx, |this, cx| {
                         let connecting =
@@ -2751,7 +2775,7 @@ impl ChatWindow {
                 }
                 self.prompt_feedback = None;
                 self.spawn_event_pump(network, cx);
-                window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+                window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx);
                 Ok(())
             }
             Err(error) => {
@@ -3250,7 +3274,7 @@ impl ChatWindow {
                 .format("event_retry_scheduled", &[("seconds", &seconds)]),
         );
         cx.spawn(async move |this, cx| {
-            Timer::after(delay).await;
+            cx.background_executor().timer(delay).await;
             let _ = this.update(cx, |this, cx| {
                 let due = this.sessions.get(&network).is_some_and(|session| {
                     session.retry_token == token
@@ -3788,7 +3812,7 @@ impl ChatWindow {
             LogMenuChoice::Paste if !self.can_paste_into_input(cx) => cx.notify(),
             LogMenuChoice::Paste => {
                 if let Some(input) = self.inputs.get(&self.state.selection()).cloned() {
-                    window.focus(&input.focus_handle(cx));
+                    window.focus(&input.focus_handle(cx), cx);
                     // The shortcut's path, so an image-only clipboard reaches
                     // the attachment flow too.
                     window.dispatch_action(Box::new(input::Paste), cx);
@@ -4539,7 +4563,7 @@ impl ChatWindow {
             input: input.clone(),
             focus_pending: false,
         });
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -4680,8 +4704,8 @@ impl ChatWindow {
     ) {
         self.nick_prompts.retain(|prompt| prompt.network != network);
         match self.nick_prompts.first() {
-            Some(next) => window.focus(&next.input.focus_handle(cx)),
-            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx)),
+            Some(next) => window.focus(&next.input.focus_handle(cx), cx),
+            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx),
         }
     }
 
@@ -4696,7 +4720,7 @@ impl ChatWindow {
     fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.member_prompt = None;
         self.prompt_feedback = None;
-        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -4769,7 +4793,7 @@ impl ChatWindow {
                     self.note_join_request(prompt.network, &format!("/join {}", value.trim()));
                 }
                 self.prompt_feedback = None;
-                window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+                window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx);
             }
             // The prompt stays open and shows the error itself.
             Err(error) => self.prompt_feedback = Some(error),
@@ -5087,7 +5111,7 @@ impl ChatWindow {
         });
         self.log_unit = None;
         self.log_dragging = true;
-        window.focus(&self.log_focus);
+        window.focus(&self.log_focus, cx);
         cx.notify();
     }
 
@@ -5504,7 +5528,7 @@ impl ChatWindow {
 
     fn dispatch(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         self.dispatch_keeping_focus(command, window, cx);
-        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx);
     }
 
     /// [`Self::dispatch`] without moving focus to the draft, for the lists
@@ -5564,7 +5588,7 @@ impl ChatWindow {
         // Repaint only while the emphasis fades; a later jump replaces
         // `started`, which ends this task without touching the new one.
         cx.spawn(async move |this, cx| {
-            Timer::after(REVEAL_HOLD).await;
+            cx.background_executor().timer(REVEAL_HOLD).await;
             loop {
                 let Ok(more) = this.update(cx, |this, cx| {
                     if !matches!(this.reveal_flash, Some((_, _, s)) if s == started) {
@@ -5588,7 +5612,7 @@ impl ChatWindow {
                 if !more {
                     return;
                 }
-                Timer::after(REVEAL_FRAME).await;
+                cx.background_executor().timer(REVEAL_FRAME).await;
             }
         })
         .detach();
@@ -7171,6 +7195,7 @@ fn link_icons(layout: TextLayout, starts: Vec<usize>, color: Rgba) -> Canvas<()>
                     let _ = window.paint_svg(
                         bounds,
                         "icons/ui/link.svg".into(),
+                        None,
                         TransformationMatrix::unit(),
                         color.into(),
                         cx,
@@ -7417,7 +7442,7 @@ impl EntityInputHandler for ChatWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some(input) = self.draft_for_log_input() {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(range, text, window, cx)
             });
@@ -7433,7 +7458,7 @@ impl EntityInputHandler for ChatWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some(input) = self.draft_for_log_input() {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             input.update(cx, |input, cx| {
                 input.replace_and_mark_text_in_range(range, text, selected, window, cx)
             });
@@ -8173,7 +8198,7 @@ impl ChatWindow {
                             member_count,
                             cx.processor(Self::render_member_rows),
                         )
-                        .track_scroll(self.members_scroll.clone())
+                        .track_scroll(&self.members_scroll)
                         .size_full(),
                     )
                     .child(scrollbar::scrollbar(
@@ -8423,7 +8448,7 @@ impl ChatWindow {
             .on_key_down(cx.listener(Self::members_key_down))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, _| window.focus(&this.members_focus)),
+                cx.listener(|this, _, window, cx| window.focus(&this.members_focus, cx)),
             )
             .relative()
             .overflow_hidden()
@@ -8645,7 +8670,7 @@ impl ChatWindow {
                     .on_key_down(cx.listener(Self::tree_key_down))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, window, _| window.focus(&this.tree_focus)),
+                        cx.listener(|this, _, window, cx| window.focus(&this.tree_focus, cx)),
                     )
                     .relative()
                     .overflow_hidden()
@@ -9189,7 +9214,7 @@ impl ChatWindow {
             && prompt.focus_pending
         {
             prompt.focus_pending = false;
-            window.focus(&prompt.input.focus_handle(cx));
+            window.focus(&prompt.input.focus_handle(cx), cx);
         }
         let viewport = window.viewport_size();
         let member_prompt = self.member_prompt.as_ref().map(|prompt| {
@@ -9421,7 +9446,7 @@ impl ChatWindow {
         if let Some(index) = pending
             && !typing
         {
-            window.focus(&self.nick_prompts[index].input.focus_handle(cx));
+            window.focus(&self.nick_prompts[index].input.focus_handle(cx), cx);
         }
         let theme = theme::current(cx);
         let border = theme.border;
@@ -10763,8 +10788,8 @@ impl ChatWindow {
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             // The row blocks the pane's own handler below it.
-                            window.focus(&this.members_focus);
-                            let click = if event.modifiers.secondary() {
+                            window.focus(&this.members_focus, cx);
+                            let click = if event.modifiers.secondary(cx) {
                                 member_selection::Click::Toggle
                             } else if event.modifiers.shift {
                                 member_selection::Click::Range
@@ -10851,8 +10876,8 @@ fn exclusive_row<E: InteractiveElement>(row: E) -> E {
     row.block_mouse_except_scroll()
 }
 
-fn navigation_binding(key: &str, command: Command) -> KeyBinding {
-    KeyBinding::new(key, Navigate { command }, Some("ChatWindow"))
+fn navigation_binding(key: &str, command: Command, cx: &App) -> Option<KeyBinding> {
+    shortcuts::chat_window_binding(key, Navigate { command }, cx)
 }
 
 /// The user's quit request from any window (the settings window has no
@@ -11043,6 +11068,7 @@ fn app_menus(
         Menu {
             name: app_menu_name.into(),
             items: app_items,
+            disabled: false,
             menu_type: None,
         },
         Menu {
@@ -11052,6 +11078,7 @@ fn app_menus(
                 MenuItem::action(i18n.text("disconnect"), Disconnect),
                 MenuItem::action(i18n.text("reconnect"), Reconnect),
             ],
+            disabled: false,
             menu_type: None,
         },
         Menu {
@@ -11065,11 +11092,13 @@ fn app_menus(
                 MenuItem::action(i18n.text("menu_paste"), input::Paste),
                 MenuItem::action(i18n.text("menu_select_all"), input::SelectAll),
             ],
+            disabled: false,
             menu_type: None,
         },
         Menu {
             name: i18n.text("menu_view").into(),
             items: view_items,
+            disabled: false,
             menu_type: None,
         },
     ];
@@ -11077,6 +11106,7 @@ fn app_menus(
     menus.push(Menu {
         name: i18n.text("menu_help").into(),
         items: vec![MenuItem::action(i18n.text("menu_about"), About)],
+        disabled: false,
         menu_type: None,
     });
     // Only macOS has a Window menu; AppKit adds the window list, full screen
@@ -11088,6 +11118,7 @@ fn app_menus(
             MenuItem::action(i18n.text("menu_minimize"), MinimizeWindow),
             MenuItem::action(i18n.text("menu_zoom"), ZoomWindow),
         ],
+        disabled: false,
         menu_type: Some(SystemMenuType::Window),
     });
     menus
@@ -11129,7 +11160,7 @@ fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
     // shortcut (a hand-edited settings file, or before the shortcuts tab can
     // warn). Both bindings are kept, as before, and the clash is reported.
     if !prefs.overrides.is_empty() {
-        let fixed = fixed_bindings(prefs.channel_modifier);
+        let fixed = fixed_bindings(prefs.channel_modifier, cx);
         for conflict in shortcuts::conflicts(&prefs.overrides, &fixed) {
             eprintln!(
                 "CayenChat: the shortcut {} is taken by more than one action: {:?}",
@@ -11153,6 +11184,7 @@ fn rebind_shortcuts(cx: &mut App) {
         prefs.channel_modifier,
         &prefs.overrides,
         emacs,
+        cx,
     ));
     // Bound last, so it wins over Ctrl+Enter's own binding in the draft.
     let notice = match prefs.notice_key {
@@ -11198,8 +11230,9 @@ fn themed_bindings(
     channel_modifier: ChannelNumberModifier,
     overrides: &shortcuts::Overrides,
     emacs: bool,
+    cx: &App,
 ) -> Vec<KeyBinding> {
-    let mut bindings = shortcut_bindings(channel_modifier, overrides);
+    let mut bindings = shortcut_bindings(channel_modifier, overrides, cx);
     if cfg!(unix_desktop) && emacs {
         // Ctrl+F is "cursor right" in the Emacs key theme. A binding without
         // a context outranks the input's, so search opens with F3 instead.
@@ -11215,8 +11248,8 @@ fn themed_bindings(
 #[cfg(test)]
 fn field_traversal<E: InteractiveElement>(element: E) -> E {
     element
-        .on_action(|_: &FocusNextField, window, _| window.focus_next())
-        .on_action(|_: &FocusPreviousField, window, _| window.focus_prev())
+        .on_action(|_: &FocusNextField, window, cx| window.focus_next(cx))
+        .on_action(|_: &FocusPreviousField, window, cx| window.focus_prev(cx))
 }
 
 /// Every application shortcut: the fixed ones and the navigation actions with
@@ -11224,16 +11257,17 @@ fn field_traversal<E: InteractiveElement>(element: E) -> E {
 fn shortcut_bindings(
     channel_modifier: ChannelNumberModifier,
     overrides: &shortcuts::Overrides,
+    cx: &App,
 ) -> Vec<KeyBinding> {
-    let mut bindings = fixed_bindings(channel_modifier);
-    bindings.extend(shortcuts::bindings(overrides));
+    let mut bindings = fixed_bindings(channel_modifier, cx);
+    bindings.extend(shortcuts::bindings(overrides, cx));
     bindings
 }
 
 /// The shortcuts that cannot be changed: sending, completion, settings, the
 /// numbered channels and servers.
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
-fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
+fn fixed_bindings(channel_modifier: ChannelNumberModifier, cx: &App) -> Vec<KeyBinding> {
     let mut bindings = vec![
         // Chat-only: settings fields keep the platform's Tab traversal and
         // are never captured by chat commands.
@@ -11277,30 +11311,32 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
             FocusPreviousField,
             Some("PasteDialog > TextInput"),
         ),
-        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new(secondary!(","), OpenSettings, None),
         // Replaced by F3 under the Emacs key theme on Linux (see
         // `rebind_shortcuts`).
-        KeyBinding::new("secondary-f", FindInLog, None),
+        KeyBinding::new(secondary!("f"), FindInLog, None),
         KeyBinding::new("escape", CloseSearch, Some("LogSearch")),
         KeyBinding::new("shift-enter", SearchPrevious, Some("LogSearch")),
-        KeyBinding::new("secondary-shift-d", ToggleDebug, None),
-        KeyBinding::new("secondary-c", CopyLogSelection, Some("ChannelLog")),
-        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new(secondary!("shift-d"), ToggleDebug, None),
+        KeyBinding::new(secondary!("c"), CopyLogSelection, Some("ChannelLog")),
+        KeyBinding::new(secondary!("q"), Quit, None),
     ];
     #[cfg(target_os = "macos")]
-    bindings.push(KeyBinding::new("secondary-m", MinimizeWindow, None));
+    bindings.push(KeyBinding::new(secondary!("m"), MinimizeWindow, None));
 
     for index in 0..10 {
         let digit = (index + 1) % 10;
         #[cfg(target_os = "macos")]
         {
-            bindings.push(navigation_binding(
+            bindings.extend(navigation_binding(
                 &format!("cmd-{digit}"),
                 Command::SelectChannelAt(index),
+                cx,
             ));
-            bindings.push(navigation_binding(
+            bindings.extend(navigation_binding(
                 &format!("cmd-ctrl-{digit}"),
                 Command::SelectServerAt(index),
+                cx,
             ));
         }
         #[cfg(any(target_os = "windows", unix_desktop))]
@@ -11310,13 +11346,15 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
                 ChannelNumberModifier::Alt => "alt",
                 ChannelNumberModifier::Super => "super",
             };
-            bindings.push(navigation_binding(
+            bindings.extend(navigation_binding(
                 &format!("{modifier}-{digit}"),
                 Command::SelectChannelAt(index),
+                cx,
             ));
-            bindings.push(navigation_binding(
+            bindings.extend(navigation_binding(
                 &format!("ctrl-alt-{digit}"),
                 Command::SelectServerAt(index),
+                cx,
             ));
         }
     }
@@ -11397,7 +11435,7 @@ fn main() {
     select_linux_display(saved.linux_display);
     #[cfg(unix_desktop)]
     let signal_quit = signals::install();
-    Application::new()
+    gpui_platform::application()
         .with_assets(toolbar::Icons)
         .run(move |cx: &mut App| {
             #[cfg(unix_desktop)]
@@ -11442,7 +11480,7 @@ fn main() {
                     }
                 });
             });
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     quit_app(cx);
                 }
@@ -11539,7 +11577,7 @@ fn main() {
                     log::info!(
                         "wake notice ({first:?}) received by the UI, checking in {WAKE_GRACE:?}"
                     );
-                    Timer::after(WAKE_GRACE).await;
+                    cx.background_executor().timer(WAKE_GRACE).await;
                     // Notices that arrived meanwhile belong to this check; an
                     // OS notice among them is the one reported.
                     let mut source = first;
@@ -11867,7 +11905,7 @@ mod unread_log_position_tests;
 mod send_key_tests;
 
 #[cfg(test)]
-#[path = "../../../vendor/gpui/src/platform/clipboard_data.rs"]
+#[path = "../../../vendor/gpui-pre-windows/src/clipboard_data.rs"]
 mod clipboard_data_regression_tests;
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ fn open_chat(
             ChannelNumberModifier::Ctrl,
             &Default::default(),
             false,
+            cx,
         ));
     });
     let settings = crate::settings_with_channels("#a,#b");

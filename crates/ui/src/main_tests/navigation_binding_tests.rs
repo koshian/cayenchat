@@ -8,8 +8,9 @@ use cayenchat_storage::ChannelNumberModifier;
 /// navigation binding takes the same keys.
 #[cfg(target_os = "macos")]
 fn command_for(keys: &str) -> Option<Command> {
-    let typed = gpui::Keystroke::parse(keys).unwrap();
-    let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
+    let typed = gpui::Keystroke::parse_with_os(keys, crate::shortcuts::HOST_OS).unwrap();
+    let bindings = gpui::TestAppContext::single()
+        .update(|cx| shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default(), cx));
     let matching: Vec<_> = bindings
         .iter()
         .filter(|binding| binding.match_keystrokes(std::slice::from_ref(&typed)) == Some(false))
@@ -58,7 +59,9 @@ fn no_two_navigation_bindings_share_keys() {
         ChannelNumberModifier::Super,
     ] {
         let mut seen = std::collections::HashSet::new();
-        for binding in shortcut_bindings(modifier, &Default::default()) {
+        let made = gpui::TestAppContext::single()
+            .update(|cx| shortcut_bindings(modifier, &Default::default(), cx));
+        for binding in made {
             if binding
                 .action()
                 .as_any()

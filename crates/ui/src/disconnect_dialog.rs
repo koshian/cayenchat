@@ -106,7 +106,7 @@ impl ChatWindow {
         if let Some(prompt) = self.disconnect_prompt.take()
             && let Some(handle) = prompt.previous
         {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -141,14 +141,14 @@ impl ChatWindow {
     }
 
     /// Tab / Shift+Tab: only the two buttons and the checkbox are reachable.
-    fn step_disconnect_focus(&mut self, forward: bool, window: &mut Window) {
+    fn step_disconnect_focus(&mut self, forward: bool, window: &mut Window, cx: &mut App) {
         let Some(prompt) = self.disconnect_prompt.as_ref() else {
             return;
         };
         let order = [&prompt.cancel, &prompt.confirm, &prompt.dont_ask_box];
         let step = if forward { 1 } else { order.len() - 1 };
         let at = order.iter().position(|handle| handle.is_focused(window));
-        window.focus(order[at.map_or(0, |at| (at + step) % order.len())]);
+        window.focus(order[at.map_or(0, |at| (at + step) % order.len())], cx);
     }
 
     pub(crate) fn render_disconnect_prompt(
@@ -159,7 +159,7 @@ impl ChatWindow {
         let prompt = self.disconnect_prompt.as_mut()?;
         if prompt.focus_pending {
             prompt.focus_pending = false;
-            window.focus(&prompt.cancel);
+            window.focus(&prompt.cancel, cx);
         }
         let theme = theme::current(cx);
         let prompt = self.disconnect_prompt.as_ref()?;
@@ -199,7 +199,7 @@ impl ChatWindow {
                     match event.keystroke.key.as_str() {
                         "escape" => this.close_disconnect_prompt(window, cx),
                         "tab" => {
-                            this.step_disconnect_focus(!event.keystroke.modifiers.shift, window)
+                            this.step_disconnect_focus(!event.keystroke.modifiers.shift, window, cx)
                         }
                         _ => {}
                     }

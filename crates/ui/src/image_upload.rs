@@ -652,7 +652,7 @@ mod tests {
             chat.inputs[&Selection::Channel(channel)].clone()
         });
         cx.update(|window, cx| {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             window.refresh();
         });
         cx.run_until_parked();
