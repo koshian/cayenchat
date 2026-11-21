@@ -58,3 +58,7 @@ the executable import `icuuc.dll` for nothing.
 pixel offset against the data length with checked arithmetic and returns `None`
 for a malformed header, instead of overflowing on clipboard data from another
 application.
+
+Channel masks are added after the header only for the 40-byte
+BITMAPINFOHEADER (`BI_BITFIELDS` 12 bytes, `BI_ALPHABITFIELDS` 16); the V4 and
+V5 headers contain them, so a well-formed V4/V5 DIB is accepted.

@@ -290,8 +290,8 @@ fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    let color_table_size = if bit_count <= 8 {
-        let colors_used = u32::from_le_bytes(dib[32..36].try_into().ok()?);
+    let colors_used = u32::from_le_bytes(dib[32..36].try_into().ok()?);
+    let palette_size = if bit_count <= 8 {
         let colors = if colors_used == 0 {
             1u32 << bit_count
         } else {
@@ -302,17 +302,24 @@ fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
             return None;
         }
         colors.checked_mul(4)?
-    } else if compression == 3 {
-        12 // BI_BITFIELDS
     } else {
-        0
+        // Deeper bitmaps have an optional palette only when stated.
+        colors_used.checked_mul(4)?
+    };
+    // Only the 40-byte BITMAPINFOHEADER keeps its channel masks after the
+    // header; the V2 and later headers contain them as members.
+    let mask_size = match (header_size, compression) {
+        (INFO_HEADER_SIZE, 3) => 12, // BI_BITFIELDS
+        (INFO_HEADER_SIZE, 6) => 16, // BI_ALPHABITFIELDS
+        _ => 0,
     };
 
     let dib_len = u32::try_from(dib.len()).ok()?;
     let file_size = FILE_HEADER_SIZE.checked_add(dib_len)?;
     let pixel_offset = FILE_HEADER_SIZE
         .checked_add(header_size)?
-        .checked_add(color_table_size)?;
+        .checked_add(mask_size)?
+        .checked_add(palette_size)?;
     if pixel_offset > file_size {
         return None;
     }
@@ -350,7 +357,10 @@ mod tests {
     #[test]
     fn counts_the_palette_in_the_pixel_offset() {
         let bmp = convert_dib_to_bmp(&dib(40, 8, 0, 40 + 1024 + 4)).unwrap();
-        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 14 + 40 + 1024);
+        assert_eq!(
+            u32::from_le_bytes(bmp[10..14].try_into().unwrap()),
+            14 + 40 + 1024
+        );
     }
 
     #[test]
@@ -364,6 +374,29 @@ mod tests {
         assert!(convert_dib_to_bmp(&dib(40, 8, u32::MAX, 40)).is_none());
         assert!(convert_dib_to_bmp(&dib(40, 4, 17, 200)).is_none());
         assert!(convert_dib_to_bmp(&dib(40, 8, 0, 40)).is_none());
+    }
+
+    fn bitfields(header_size: u32, compression: u32, total: usize) -> Vec<u8> {
+        let mut dib = dib(header_size, 32, 0, total);
+        dib[16..20].copy_from_slice(&compression.to_le_bytes());
+        dib
+    }
+
+    fn pixel_offset(bmp: &[u8]) -> u32 {
+        u32::from_le_bytes(bmp[10..14].try_into().unwrap())
+    }
+
+    #[test]
+    fn counts_masks_outside_only_the_v3_header() {
+        // BITMAPINFOHEADER: three masks follow the header.
+        let bmp = convert_dib_to_bmp(&bitfields(40, 3, 40 + 12 + 4)).unwrap();
+        assert_eq!(pixel_offset(&bmp), 14 + 40 + 12);
+        assert!(convert_dib_to_bmp(&bitfields(40, 3, 40 + 4)).is_none());
+        // BITMAPV4HEADER and BITMAPV5HEADER hold the masks themselves.
+        let bmp = convert_dib_to_bmp(&bitfields(108, 3, 108 + 4)).unwrap();
+        assert_eq!(pixel_offset(&bmp), 14 + 108);
+        let bmp = convert_dib_to_bmp(&bitfields(124, 3, 124 + 4)).unwrap();
+        assert_eq!(pixel_offset(&bmp), 14 + 124);
     }
 }
 
