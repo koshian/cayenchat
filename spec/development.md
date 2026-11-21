@@ -1141,7 +1141,7 @@ the HTTP loader against a local fixture server (headers sent, non-image and
 SVG responses, error statuses, declared and streamed size limits, redirect
 limit and re-checked targets, the production policy never contacting
 127.0.0.1 or `localhost`, timeout and cancellation); decoding of small and
-large PNG/JPEG/GIF/WebP, malformed and oversized content and the decoder
+large PNG/JPEG/GIF/WebP/BMP/ICO/TIFF, malformed and oversized content and the decoder
 allocation cap; the cache (deduplication, bounded queue and in-flight
 loads, byte-budget eviction, bounded records and retries, disabling while
 loading, stale completions, removed rows); and GPUI tests for no loading

@@ -51,7 +51,7 @@ pub trait Fetcher: Send + Sync {
     }
 }
 
-const ACCEPT: &str = "image/png,image/jpeg,image/gif,image/webp;q=0.9";
+const ACCEPT: &str = "image/png,image/jpeg,image/gif,image/webp,image/bmp,image/x-icon,image/vnd.microsoft.icon,image/tiff;q=0.9";
 const READ_CHUNK: usize = 16 * 1024;
 
 pub struct HttpFetcher {

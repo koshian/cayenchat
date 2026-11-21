@@ -496,7 +496,7 @@ Candidates: the first link of a message (found by the log's existing URL
 recognition) that is `http`/`https`, has no credentials, uses the default
 port, names a public host (no `localhost`, single-label names or non-public
 IP literals) and whose last path segment ends in `.png`, `.jpg`, `.jpeg`,
-`.gif` or `.webp`. ImgBB's `https://i.ibb.co/<id>/<name>.<ext>` links
+`.gif`, `.webp`, `.bmp`, `.ico`, `.tif` or `.tiff`. ImgBB's `https://i.ibb.co/<id>/<name>.<ext>` links
 qualify; ImgBB's `ibb.co/<id>` pages do not. Web pages are never fetched to
 discover images: no HTML, Open Graph, oEmbed or provider-specific scraping.
 
@@ -508,7 +508,7 @@ NAT64/6to4 forms) before connecting, so names and redirects cannot reach
 local services either; no proxy, cookies, `Referer`, credentials or
 compression; 5 s to connect and 15 s per preview in total. The response must
 be 200 with an `image/*` type (not SVG), at most 8 MiB, and the content must
-sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. The process-wide
+sniff as PNG, JPEG, GIF, WebP, BMP, ICO or TIFF; the extension is only a hint. The process-wide
 decode gate is held while constructing the limited decoder, so header parsing
 is serialized and charged to the 48 MiB per-image allocation budget. PNG
 iCCP and text chunks are removed before decoding because their metadata is not
@@ -525,11 +525,36 @@ The full image is dropped as soon as the thumbnail (at most
 show their first frame. There is no disk cache. Anything unsupported or
 failed leaves the ordinary text link.
 
+Formats added by #1100: BMP, ICO and TIFF (`.bmp`, `.ico`, `.tif`, `.tiff`).
+The pixel, byte, budget and gate limits above are unchanged, and the content
+still decides: ICO is recognized in `media` only (`ImageFormat::sniff`, which
+the upload path uses, is untouched). Findings from auditing the decoders in
+`image` 0.25.10: BMP and ICO ignore `max_alloc`, but their raster is the only
+large allocation and is charged by `reserve_source_image`; hostile headers
+fail on dimensions before pixels. TIFF honours `max_alloc` but decodes into a
+second raster-sized buffer, so a TIFF needs about twice its raster inside the
+budget (roughly 6 MP RGBA; larger ones become the text link). ICO entries may
+embed a whole PNG, which `image` decodes without our limits and without
+metadata stripping, so an ICO whose embedded PNG carries iCCP, text or eXIf
+chunks is refused (`check_ico_embedded_png`); the largest ICO entry is 256 px,
+so the final selected image is far below the budget. The same decode and
+fetch code serves avatar loads, so BMP, ICO and TIFF avatars load too;
+wallpapers and avatar editing are unchanged. Measurements are in
+`crates/media/tests/decode_allocations.rs` and `performance.md`.
+
+AVIF is deferred. `image` decodes it only with `avif-native`, which needs the
+C library `libdav1d` found through `pkg-config` (not built from source by
+default and absent from the build machine used here, with no
+checked memory limit for the C decoder) plus `mp4parse`. Shipping that on
+Linux, macOS, Windows and FreeBSD, and bounding dav1d's allocations, is a
+separate piece of work; until then an `.avif` link stays text (sniffed as
+`Unsupported`, and the `.avif` extension is not a preview candidate).
+
 Implementation: a GPUI-free `cayenchat-media` crate owns recognition,
 loading, decoding and the application-wide `PreviewCache`; the UI runs loads
 on GPUI's background executor and draws `RenderImage`s. It uses `ureq` 3
 (already used by `upload`) with its resolver hook, and the `image` crate
-GPUI already depends on (PNG/JPEG/GIF/WebP decoders only); no new crates.
+GPUI already depends on (PNG/JPEG/GIF/WebP/BMP/ICO/TIFF decoders only); no new crates.
 GPUI's own `img()` URL loading was not used: it has no address, redirect,
 size or pixel limits and caches without a byte budget. GPUI 0.2.2's sprite
 atlases never reused the space of a removed image; the vendored copy now

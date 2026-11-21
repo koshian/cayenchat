@@ -55,6 +55,9 @@ pub(crate) fn limited_decoder<'a>(
         return Err(insufficient_memory());
     }
 
+    if format == ImageFormat::Ico {
+        check_ico_embedded_png(bytes)?;
+    }
     let input = if format == ImageFormat::Png {
         strip_png_metadata(bytes)
     } else {
@@ -315,9 +318,58 @@ pub fn format(bytes: &[u8]) -> Result<ImageFormat, LoadError> {
         Some(Sniffed::Jpeg) => Ok(ImageFormat::Jpeg),
         Some(Sniffed::Gif) => Ok(ImageFormat::Gif),
         Some(Sniffed::Webp) => Ok(ImageFormat::WebP),
+        Some(Sniffed::Bmp) => Ok(ImageFormat::Bmp),
+        Some(Sniffed::Tiff) => Ok(ImageFormat::Tiff),
         Some(_) => Err(LoadError::Unsupported),
+        // ICO is not an upload format, so `ImageFormat::sniff` does not know
+        // it; it is recognized here only.
+        None if is_ico(bytes) => Ok(ImageFormat::Ico),
         None => Err(LoadError::NotImage),
     }
+}
+
+/// ICO directory header: reserved 0, type 1 (icons; 2 is cursors), and at
+/// least one entry.
+fn is_ico(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0, 0, 1, 0]) && bytes.get(4..6).is_some_and(|count| count != [0, 0])
+}
+
+/// ICO entries may embed a whole PNG, which `image` hands to `png` without our
+/// limits and without `strip_png_metadata`: `png` then inflates iCCP and
+/// compressed text chunks and holds eXIf twice during construction, outside
+/// the per-image budget. Real icons carry none of these, so an ICO with any
+/// such chunk in an embedded PNG is refused instead of being filtered.
+/// Entries are 16 bytes each, so reading all of them is bounded by the input.
+fn check_ico_embedded_png(bytes: &[u8]) -> image::ImageResult<()> {
+    let count = usize::from(u16::from_le_bytes([bytes[4], bytes[5]]));
+    for entry in bytes
+        .get(6..)
+        .unwrap_or_default()
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .take(count)
+    {
+        let size = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+        let Some(data) = offset
+            .checked_add(size)
+            .and_then(|end| bytes.get(offset..end))
+        else {
+            continue;
+        };
+        if data.starts_with(PNG_SIGNATURE)
+            && PngChunks::new(data).any(|(kind, _)| is_png_metadata(&kind) || &kind == b"eXIf")
+        {
+            return Err(image::ImageError::Decoding(
+                image::error::DecodingError::new(
+                    image::error::ImageFormatHint::Exact(ImageFormat::Ico),
+                    "ICO embeds a PNG with metadata chunks",
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The largest size within `max_width` × `max_height` with the aspect ratio
@@ -437,6 +489,7 @@ pub(crate) fn into_bgra(image: DynamicImage) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format_fixtures::*;
     use crate::testing::{encode, gif_two_frames};
 
     fn ihdr_png(width: u32, height: u32, depth: u8, color_type: u8) -> Vec<u8> {
@@ -472,6 +525,8 @@ mod tests {
             ImageFormat::Jpeg,
             ImageFormat::Gif,
             ImageFormat::WebP,
+            ImageFormat::Bmp,
+            ImageFormat::Tiff,
         ] {
             let bytes = encode(format, 1200, 600);
             let thumb = thumbnail(&bytes, &limits, &CancelFlag::default()).unwrap();
@@ -507,10 +562,17 @@ mod tests {
             thumbnail(b"<html>hi</html>", &limits, &cancel),
             Err(LoadError::NotImage)
         );
-        let bmp = encode(ImageFormat::Bmp, 4, 4);
+        // AVIF and HEIC are recognized but not decoded.
+        let mut avif = b"\0\0\0\x18ftypavif\0\0\0\0avifmif1".to_vec();
+        avif.resize(64, 0);
         assert_eq!(
-            thumbnail(&bmp, &limits, &cancel),
+            thumbnail(&avif, &limits, &cancel),
             Err(LoadError::Unsupported)
+        );
+        // Cursors (ICO type 2) are not icons.
+        assert_eq!(
+            thumbnail(b"\0\0\x02\0\x01\0 rest of a cursor", &limits, &cancel),
+            Err(LoadError::NotImage)
         );
         let mut truncated = encode(ImageFormat::Png, 64, 64);
         truncated.truncate(60);
@@ -621,6 +683,144 @@ mod tests {
             thumbnail(bytes, &limits, &CancelFlag::default()),
             Err(LoadError::TooLarge)
         );
+    }
+
+    fn red_ico(embedded: Vec<u8>, side: u8) -> Vec<u8> {
+        ico_of(&[(side, side, embedded)])
+    }
+
+    #[test]
+    fn ico_with_png_or_bmp_entries_decodes_the_best_entry() {
+        let limits = Limits::default();
+        let cancel = CancelFlag::default();
+        // Several candidates: the larger one at the same depth wins.
+        let ico = ico_of(&[
+            (16, 16, encode(ImageFormat::Png, 16, 16)),
+            (64, 64, encode(ImageFormat::Png, 64, 64)),
+        ]);
+        let thumb = thumbnail(&ico, &limits, &cancel).unwrap();
+        assert_eq!((thumb.width, thumb.height), (64, 64));
+        assert!(thumb.bgra[2] > 200 && thumb.bgra[0] < 60);
+
+        // Through the encoder, which writes PNG entries.
+        let mut encoded = Vec::new();
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut encoded), ImageFormat::Ico)
+            .unwrap();
+        let thumb = thumbnail(&encoded, &limits, &cancel).unwrap();
+        assert_eq!((thumb.width, thumb.height), (32, 32));
+
+        // A BMP (DIB) entry: a bottom-up 24-bit DIB with a mask, no file header.
+        let mut dib = bmp_declaring(4, 8, 4 * 4 * 3 + 4 * 4)[14..].to_vec();
+        dib[8..12].copy_from_slice(&8i32.to_le_bytes());
+        let thumb = thumbnail(&red_ico(dib, 4), &limits, &cancel);
+        assert!(thumb.is_ok(), "{thumb:?}");
+    }
+
+    #[test]
+    fn hostile_ico_is_refused_within_the_budget() {
+        let limits = Limits::default();
+        let cancel = CancelFlag::default();
+        let png = encode(ImageFormat::Png, 16, 16);
+        // The directory disagrees with the embedded PNG.
+        assert_eq!(
+            thumbnail(&red_ico(png.clone(), 8), &limits, &cancel),
+            Err(LoadError::Malformed)
+        );
+        // Entries pointing past the end, and a truncated entry.
+        let mut ico = red_ico(png.clone(), 16);
+        ico.truncate(ico.len() - 20);
+        assert_eq!(thumbnail(&ico, &limits, &cancel), Err(LoadError::Malformed));
+        let mut count = red_ico(png.clone(), 16);
+        count[4..6].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(
+            thumbnail(&count, &limits, &cancel),
+            Err(LoadError::Malformed)
+        );
+        // An embedded PNG declaring a huge raster never reaches pixel decoding.
+        let huge = png_declaring(png.clone(), 60_000, 60_000);
+        assert_eq!(
+            thumbnail(&red_ico(huge, 16), &limits, &cancel),
+            Err(LoadError::TooLarge)
+        );
+        // Metadata that `png` would inflate outside our budget: refused.
+        let text = |kind: &[u8; 4]| {
+            let mut chunk = 4u32.to_be_bytes().to_vec();
+            chunk.extend_from_slice(kind);
+            chunk.extend_from_slice(b"k\0v\0");
+            chunk.extend_from_slice(&[0; 4]);
+            let mut with = png[..33].to_vec();
+            with.extend_from_slice(&chunk);
+            with.extend_from_slice(&png[33..]);
+            with
+        };
+        for kind in [b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"eXIf"] {
+            assert_eq!(
+                thumbnail(&red_ico(text(kind), 16), &limits, &cancel),
+                Err(LoadError::Malformed),
+                "{}",
+                String::from_utf8_lossy(kind)
+            );
+        }
+    }
+
+    #[test]
+    fn bmp_and_tiff_with_hostile_headers_fail_within_the_limits() {
+        let limits = Limits::default();
+        let cancel = CancelFlag::default();
+        let large = |bytes: Vec<u8>| thumbnail(&bytes, &limits, &cancel);
+        // Dimensions beyond the side and pixel limits, from the header alone.
+        assert_eq!(
+            large(bmp_declaring(60_000, 60_000, 64)),
+            Err(LoadError::TooLarge)
+        );
+        assert_eq!(
+            large(bmp_declaring(8192, 8192, 64)),
+            Err(LoadError::TooLarge)
+        );
+        assert_eq!(
+            large(tiff_gray(60_000, 60_000, 1, 64, 64)),
+            Err(LoadError::TooLarge)
+        );
+        assert_eq!(
+            large(tiff_gray(8192, 8192, 1, 64, 64)),
+            Err(LoadError::TooLarge)
+        );
+        // Within the limits but with far less data than declared.
+        assert_eq!(
+            large(bmp_declaring(4000, 4000, 64)),
+            Err(LoadError::Malformed)
+        );
+        assert_eq!(
+            large(tiff_gray(4000, 4000, 1, 64, 64)),
+            Err(LoadError::Malformed)
+        );
+        assert_eq!(
+            large(tiff_gray(4000, 4000, 5, 64, 64)),
+            Err(LoadError::Malformed)
+        );
+        // A strip claiming more bytes than the file has, and a huge tag.
+        assert!(large(tiff_gray(8, 8, 1, 64, u32::MAX)).is_err());
+        assert!(large(tiff_with_huge_tag(u32::MAX / 8)).is_err());
+        // Run-length BMP with an absurd declared height, and a short one.
+        assert!(large(bmp_rle8(100, -60_000)).is_err());
+        let _ = large(bmp_rle8(100, 100));
+        // Truncated files and a bare signature.
+        let mut bmp = encode(ImageFormat::Bmp, 64, 64);
+        bmp.truncate(bmp.len() / 2);
+        assert_eq!(large(bmp), Err(LoadError::Malformed));
+        let mut tiff = encode(ImageFormat::Tiff, 64, 64);
+        tiff.truncate(tiff.len() / 2);
+        assert_eq!(large(tiff), Err(LoadError::Malformed));
+        assert_eq!(
+            large(b"BM\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec()),
+            Err(LoadError::Malformed)
+        );
+        assert_eq!(
+            large(b"II*\0\x08\0\0\0".to_vec()),
+            Err(LoadError::Malformed)
+        );
+        assert_eq!(large(vec![0, 0, 1, 0, 1, 0]), Err(LoadError::Malformed));
     }
 
     #[test]

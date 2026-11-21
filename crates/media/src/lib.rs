@@ -20,6 +20,8 @@ pub mod avatar_edit;
 pub mod cache;
 pub mod decode;
 pub mod fetch;
+#[cfg(test)]
+mod format_fixtures;
 pub mod policy;
 #[cfg(test)]
 mod testing;
@@ -298,6 +300,47 @@ mod tests {
         assert_eq!(load("/page.png"), Err(LoadError::NotImage));
     }
 
+    #[test]
+    fn bmp_ico_and_tiff_previews_load_and_fake_ones_fall_back_to_text() {
+        let mut ico = Vec::new();
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut ico), ImageFormat::Ico)
+            .unwrap();
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/a.bmp".to_string(),
+            Route::image("image/bmp", encode(ImageFormat::Bmp, 600, 300)),
+        );
+        routes.insert("/a.ico".to_string(), Route::image("image/x-icon", ico));
+        routes.insert(
+            "/a.tiff".to_string(),
+            Route::image("image/tiff", encode(ImageFormat::Tiff, 600, 300)),
+        );
+        // Extensions and types are hints: HTML under a `.tif` name is no image.
+        routes.insert(
+            "/fake.tif".to_string(),
+            Route::image("image/tiff", b"<!doctype html>".to_vec()),
+        );
+        // AVIF is not decoded: back to the text link.
+        let mut avif = b"\0\0\0\x18ftypavif\0\0\0\0avifmif1".to_vec();
+        avif.resize(64, 0);
+        routes.insert("/a.avif".to_string(), Route::image("image/avif", avif));
+        let server = FixtureServer::start(routes);
+        let limits = Limits::default();
+        let fetcher = HttpFetcher::for_local_fixture(&limits);
+        let load = |path: &str| {
+            let source = MediaRef::Link(url::Url::parse(&server.url(path)).unwrap());
+            load_thumbnail(&source, &fetcher, &limits, &CancelFlag::default())
+        };
+        for path in ["/a.bmp", "/a.tiff"] {
+            let thumb = load(path).unwrap();
+            assert_eq!((thumb.width, thumb.height), (400, 200), "{path}");
+        }
+        let thumb = load("/a.ico").unwrap();
+        assert_eq!((thumb.width, thumb.height), (48, 48));
+        assert_eq!(load("/fake.tif"), Err(LoadError::NotImage));
+        assert_eq!(load("/a.avif"), Err(LoadError::Unsupported));
+    }
     #[test]
     fn extensionless_avatar_endpoints_load_but_must_be_images() {
         let mut routes = HashMap::new();
