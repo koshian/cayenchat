@@ -120,13 +120,16 @@ jobs:
           ITERATIONS: "100"
         run: cargo test -p cayenchat-ui --locked connect_auth_tests::a_464_asks_only_for_the_server_password_and_sends_the_typed_sasl_password_again -- --exact
 
-      # The vendored GPUI crate has its own workspace; run the Linux pipe
-      # reader tests explicitly because it is a path dependency here.
-      - name: Test Wayland clipboard reader
+      # The split GPUI platform crates under vendor/ are path dependencies, not
+      # workspace members, so `cargo test --workspace` skips their tests (the
+      # Wayland clipboard reader, the XIM attribute choice, the DIB conversion).
+      - name: Test vendored GPUI platform crate (Linux)
         if: runner.os == 'Linux'
-        env:
-          CARGO_TARGET_DIR: target
-        run: cargo test --manifest-path vendor/gpui/Cargo.toml --locked --config 'patch.crates-io.zed-xim.path="vendor/zed-xim"' --lib platform::linux::platform::tests::async_clipboard_reader
+        run: cargo test -p gpui-pre-linux --locked
+
+      - name: Test vendored GPUI platform crate (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test -p gpui-pre-windows --locked
 
       # The UI test binary has died on Windows ARM64 with 0xc0000005 (#659).
       # libtest prints a test's name only when it ends, so the log cannot say
