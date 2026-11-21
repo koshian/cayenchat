@@ -1569,3 +1569,29 @@ first character typed into an empty draft redraws the four panes once (GPUI
 tests count the redraws after the first character, so a regression that
 redraws on each keystroke is still caught. The process-level scenarios
 (`run_baseline.py`) ran once in debug as a smoke test, not as a comparison.
+
+## GPUI 0.3 migration, before merging into master (2026-11-22, #1081)
+
+All patches are re-applied on `gpui-kit-migration`. Release build, headless
+`perf_baseline` (`cargo test --release --locked -p cayenchat-ui perf_baseline
+-- --ignored --nocapture --test-threads=1`), same Linux container, three
+runs each of master (`origin/master`, GPUI 0.2.2, a separate worktree) and
+the migration branch merged with that master. Median of all single-server
+samples (µs; 24 per cell: 8 tests' lines over three runs):
+
+| Build | Typing | Typing after | Channel switch | Select same | Switch unread | Scroll 20 rows | 256-event batch | Roster 2,000 | Roster burst 32 | Resize |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| master | 328 | 342 | 1,890 | 1,460 | 1,898 | 1,459 | 1,887 | 1,672 | 2,791 | 2,301 |
+| This branch | 195 | 211 | 1,818 | 1,346 | 1,783 | 1,412 | 1,997 | 1,641 | 2,860 | 2,353 |
+
+Typing, channel switching and scrolling (the log paths) are lower than
+master. The 256-event batch (+6 %), roster burst (+2 %) and resize (+2 %)
+are slightly higher, within the run-to-run spread of those cells (the batch
+ranges 1.6–2.4 ms in both builds). The four-server cells are equal or lower
+as well. The `shape-run-cache` patch is not re-applied (it reversed `<`/`>`
+after right-to-left text), so the first draw after a channel switch shapes
+every row again; the channel-switch cells above include that cost.
+
+Limits: headless only (no GPU, no real window); no macOS or Windows run; the
+process-level scenarios (`run_baseline.py`) were not repeated for this
+comparison.
