@@ -104,7 +104,6 @@ Do not build a second mechanism for any of these; extend them instead.
 | Channel wallpaper (D084) | one image ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | The selected channel's, loaded, blurred and toned (brightness, saturation; D092, about 4 ms) once per file, blur and tone setting on a background thread, never per frame. Pictures of other channels' looks that were shown once stay loaded (one ~1.6 MB image each, shared by key between the areas, D093) and are released when no look or standard names them any more. Decoding shares the process decode gate. The range editor of the channel settings window (D088) holds one decoded image ≤ 2048 px a side (about 16 MB) only while it is open, decoded and cut on background threads. |
 | Standard wallpapers (D089) | four images (channel log, combined log, member list, channel tree), each ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | One slot per area, loaded and filtered once per file, blur and tone setting on a background thread, never per frame; released when the area has none. The channel log's standard is the same slot as a channel's own. The Appearance tab's miniature (window, one side) holds its own four slots of the same kind, so at most four more such images while the settings window is open. Each open channel settings window holds one more slot of that kind for its channel log miniature (#989). Decoding shares the process decode gate. A row resolves the channel log's look (`channel_look::resolve`), which clones the picture's path (one short string per row, as a channel's own wallpaper did before); no image data is copied. |
 | Theme files (D089) | file ≤ 48 MiB, expanded JSON ≤ 64 MiB, image ≤ 8 MiB each (four), 64 imported themes | per import, apply, export | Read, expanded, decoded and written on a background thread; the expansion is bounded by `take`, so a compression bomb stops at the limit. Applying a theme writes at most four content-named files under `wallpapers/`. |
-| Linux shaping cache | swept every 128 lines | process | Age-based, not a byte bound. |
 
 ## Measuring
 
@@ -1598,9 +1597,39 @@ The `shape-run-cache` patch is not re-applied (it reversed `<`/`>` after
 right-to-left text). Its effect is **not evaluated** here: `perf_baseline`
 uses `NoopTextSystem` and does no real text shaping, so the channel-switch
 cells say nothing about the cost of shaping every row again on the first draw
-after a switch. That needs a measurement with a real text system.
+after a switch. That is measured next, with the real text system.
 
 Limits: headless only (no GPU, no real window, no real text shaping); no macOS
 or Windows run; the process-level scenarios (`run_baseline.py`) were not
 repeated for this comparison. The master side is `origin/master` at
 `1532e9c`.
+
+### Real text shaping: what the missing shaping cache costs (2026-11-22, #1081)
+
+`scripts/perf/shape_bench` (a separate package, not a workspace member) drives
+the real Linux text system (`gpui-pre-wgpu` 0.3.12, cosmic-text 0.19, Noto Sans
+CJK JP, 14 px, system fonts) in a release build. It shapes 60 distinct log
+lines per "channel" (a mix of Japanese, short ASCII, long ASCII wrapped text,
+URL with Japanese and a ~100-character Japanese paragraph) the way a channel
+switch does, 19 channels in turn. "First" is each channel's first visit;
+"again" is a later visit, where GPUI's own line cache no longer holds the
+lines (it keeps only the previous frame). The same program is built without
+and with cosmic-text's `shape-run-cache` (`--features cache`), three runs each,
+same container; medians of the per-switch time in ms for 60 lines:
+
+| Build | First visit | Visit again |
+| --- | --- | --- |
+| No cache (this branch) | 1.54–1.59 | 1.55–1.58 |
+| `shape-run-cache` on | 1.07–1.08 | 0.80–0.81 |
+
+Without the cache every switch shapes about 1.6 ms for 60 new lines (about
+26 µs a line), and with it a revisit costs 0.8 ms. The loss from not having
+the cache is therefore about 0.8 ms per 60 lines, or roughly 3 ms for a
+200-line pane, per channel switch; steady scrolling is not affected because
+GPUI's line cache covers the previous frame. That is a fraction of one 16 ms
+frame, so the patch is not re-applied (D094) and the direction-keyed cache is
+not worth a vendored cosmic-text. This compares the same cosmic-text with the
+cache off and on, not master's GPUI 0.2.2 binary (its cosmic-text and its
+sweeping differ); the earlier 10 ms → 2 ms figure in `vendor/gpui/PATCHES.md`
+was taken in a debug-like container and is not reproduced here. Headless: no
+GPU upload of glyphs, no real window, no macOS or Windows.

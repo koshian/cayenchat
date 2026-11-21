@@ -1,0 +1,14 @@
+[package]
+name = "shapebench"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[features]
+cache = ["cosmic-text/shape-run-cache"]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.12" }
+cosmic-text = "0.19.0"

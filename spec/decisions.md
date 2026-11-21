@@ -4456,13 +4456,18 @@ requires Rust 1.95. This replaces D019's pins and `vendor/native-theme`.
   `vendor/README.md` lists the switch-back conditions. Patches whose fix
   upstream already has (X11 connection loss, SVG colors, macOS blur
   materials) were dropped. `vendor/gpui` (0.2.2) is kept only as the
-  reference and for one CI unit test.
+  reference only; CI tests the split crates (`cargo test -p gpui-pre-linux`,
+  `-p gpui-pre-windows`).
 - Not re-applied: the Linux `shape-run-cache`. cosmic-text 0.19's cache key
   omits the text direction, so a line after a right-to-left one shows `<` and
-  `>` mirrored. The effect on channel switching was measured against master
-  in `spec/performance.md` for the paths the benchmarks cover; real text
-  shaping is not covered there. Reintroduce it with the direction in the key
-  and a real-backend regression test if shaping shows up in a profile.
+  `>` mirrored. Measured with the real text system
+  (`scripts/perf/shape_bench`, `spec/performance.md`), not having it costs
+  about 0.8 ms per 60 lines per channel switch (1.6 ms against 0.8 ms), a
+  fraction of a frame. Reintroduce it with the direction in the key and a
+  real-backend regression test only if shaping shows up in a profile.
+- The X11 input context keeps the style chosen from the server's
+  `XNQueryInputStyle` reply and does not resend creation-time attributes in
+  `set_ic_values` (#227); the split `gpui-pre-linux` has tests for both.
 - Verification: Linux (Xvfb GUI checks, E2E, CI). macOS needs a person before
   the merge to master. Windows is checked on the beta build, after the merge,
   and gates the 1.2.0 release, not the merge; its checklist is in #1081.
