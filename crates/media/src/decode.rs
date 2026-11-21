@@ -2,8 +2,9 @@
 //! Turns downloaded bytes into a small static thumbnail.
 //!
 //! The format comes from the content (`ImageFormat::sniff`), never from the
-//! URL or the declared type. Only PNG, JPEG, GIF, WebP, BMP and ICO are
-//! decoded (TIFF and AVIF are recognized but refused); GIF and animated WebP
+//! URL or the declared type. Only PNG, JPEG, GIF, WebP, BMP, ICO and (for
+//! previews, not avatars; see `avif`) AVIF are decoded (TIFF and HEIC are
+//! recognized but refused); GIF and animated WebP
 //! show their first frame, and an ICO shows its largest entry, an embedded
 //! PNG going through the PNG path below. Dimensions are read from the
 //! header and checked before any pixel buffer is allocated, the decoder's
@@ -449,12 +450,22 @@ pub fn thumbnail(
     limits: &Limits,
     cancel: &CancelFlag,
 ) -> Result<Thumbnail, LoadError> {
-    let format = format(bytes)?;
+    // AVIF is previewed but is not an `image` format here (see `avif`), and
+    // avatars do not take it.
+    let avif = !limits.crop_square && crate::avif::is_avif(bytes);
+    let format = if avif {
+        ImageFormat::Avif
+    } else {
+        format(bytes)?
+    };
     let _decoding = DECODE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if cancel.is_cancelled() {
         return Err(LoadError::Cancelled);
+    }
+    if avif {
+        return crate::avif::thumbnail(bytes, limits, cancel);
     }
     let (mut decoder, reserved_copy_bytes) =
         limited_decoder(bytes, format, limits).map_err(|error| match error {
@@ -598,11 +609,27 @@ mod tests {
             thumbnail(b"<html>hi</html>", &limits, &cancel),
             Err(LoadError::NotImage)
         );
-        // AVIF and HEIC are recognized but not decoded.
+        // A file that only claims to be AVIF is damaged; HEIC is recognized
+        // but not decoded.
         let mut avif = b"\0\0\0\x18ftypavif\0\0\0\0avifmif1".to_vec();
         avif.resize(64, 0);
         assert_eq!(
             thumbnail(&avif, &limits, &cancel),
+            Err(LoadError::Malformed)
+        );
+        let mut heic = b"\0\0\0\x18ftypheic\0\0\0\0heicmif1".to_vec();
+        heic.resize(64, 0);
+        assert_eq!(
+            thumbnail(&heic, &limits, &cancel),
+            Err(LoadError::Unsupported)
+        );
+        // Avatars do not take AVIF.
+        assert_eq!(
+            thumbnail(
+                include_bytes!("testdata/opaque8.avif"),
+                &Limits::avatar(64),
+                &cancel
+            ),
             Err(LoadError::Unsupported)
         );
         // TIFF is recognized, not decoded (nested JPEG strips escape the limits).

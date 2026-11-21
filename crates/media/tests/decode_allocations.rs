@@ -418,3 +418,43 @@ fn bmp_and_ico_decodes_stay_within_the_default_budget() {
         assert!(decode(&bytes).is_err(), "{name}");
     }
 }
+
+/// AVIF goes through `rav1d`, which has no allocation limit to set: the memory
+/// it needs is estimated from the sequence header before decoding. The estimate
+/// must stay above what is really allocated, so a budget just above it still
+/// holds, and frames that do not fit are refused before any frame memory exists.
+#[test]
+fn avif_decodes_stay_within_the_estimate_and_the_default_budget() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // 4096 × 4096, 8 bit, 4:2:0: peak measured at 32 MiB (planes 24 MiB).
+    let flat = include_bytes!("../src/testdata/plasma4096.avif");
+    // 4096 × 4096, 10 bit, 4:4:4: 96 MiB of planes alone.
+    let wide = include_bytes!("../src/testdata/plasma4096_444_10.avif");
+    let default_budget = Limits::default().max_decode_bytes as usize;
+    let result = within_budget(default_budget, || {
+        decode::thumbnail(flat, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result.map(|thumb| thumb.source_width), Ok(4096));
+    // The estimate for the first is 25.2 + 16.7 MB; 44 MiB holds it.
+    let tight = Limits {
+        max_decode_bytes: 44 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let result = within_budget(44 * 1024 * 1024, || {
+        decode::thumbnail(flat, &tight, &CancelFlag::default())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let result = within_budget(1024 * 1024, || {
+        decode::thumbnail(wide, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+    // Smaller frames are fine in a bigger budget, still inside the estimate.
+    let roomy = Limits {
+        max_decode_bytes: 160 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let result = within_budget(160 * 1024 * 1024, || {
+        decode::thumbnail(wide, &roomy, &CancelFlag::default())
+    });
+    assert!(result.is_ok(), "{result:?}");
+}
