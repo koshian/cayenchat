@@ -2,8 +2,10 @@
 //! Turns downloaded bytes into a small static thumbnail.
 //!
 //! The format comes from the content (`ImageFormat::sniff`), never from the
-//! URL or the declared type. Only PNG, JPEG, GIF and WebP are decoded; GIF
-//! and animated WebP show their first frame. Dimensions are read from the
+//! URL or the declared type. Only PNG, JPEG, GIF, WebP, BMP and ICO are
+//! decoded (TIFF and AVIF are recognized but refused); GIF and animated WebP
+//! show their first frame, and an ICO shows its largest entry, an embedded
+//! PNG going through the PNG path below. Dimensions are read from the
 //! header and checked before any pixel buffer is allocated, the decoder's
 //! allocation is capped, and one decode runs at a time in the whole process,
 //! so the full-size image exists only briefly and only once.
@@ -50,19 +52,39 @@ pub(crate) fn limited_decoder<'a>(
     // change after construction (`PngDecoder::set_limits` does not reach it),
     // so for PNG the input copy, the retained eXIf data and the raster
     // declared by IHDR are all taken off that limit here.
-    let (metadata_copy_bytes, raster_bytes) = png_reservations(bytes, format)?;
+    //
+    // ICO is reduced to the one entry that will be shown before anything else:
+    // an embedded PNG goes through the PNG path above (same limits, same
+    // stripping), and an embedded DIB is repacked as a one-entry ICO, whose
+    // copy is charged like the PNG copy.
+    let (mut input, mut format) = (Cow::Borrowed(bytes), format);
+    let mut ico_copy_bytes = 0;
+    if format == ImageFormat::Ico {
+        let (head, entry) = ico_best_entry(bytes)?;
+        if entry.starts_with(PNG_SIGNATURE) {
+            (input, format) = (Cow::Borrowed(entry), ImageFormat::Png);
+        } else {
+            ico_copy_bytes = entry.len() as u64 + ICO_SINGLE_HEADER_LEN as u64;
+            if ico_copy_bytes > limits.max_decode_bytes {
+                return Err(insufficient_memory());
+            }
+            input = Cow::Owned(single_entry_ico(head, entry));
+        }
+    }
+    let (metadata_copy_bytes, raster_bytes) = png_reservations(&input, format)?;
+    let metadata_copy_bytes = metadata_copy_bytes.saturating_add(ico_copy_bytes);
     if metadata_copy_bytes.saturating_add(raster_bytes) > limits.max_decode_bytes {
         return Err(insufficient_memory());
     }
 
-    if format == ImageFormat::Ico {
-        check_ico_embedded_png(bytes)?;
-    }
-    let input = if format == ImageFormat::Png {
-        strip_png_metadata(bytes)
-    } else {
-        Cow::Borrowed(bytes)
+    let stripped = match format {
+        ImageFormat::Png => match strip_png_metadata(&input) {
+            Cow::Owned(stripped) => Some(stripped),
+            Cow::Borrowed(_) => None,
+        },
+        _ => None,
     };
+    let input = stripped.map_or(input, Cow::Owned);
     let mut reader = ImageReader::with_format(Cursor::new(input), format);
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_source_side);
@@ -319,7 +341,8 @@ pub fn format(bytes: &[u8]) -> Result<ImageFormat, LoadError> {
         Some(Sniffed::Gif) => Ok(ImageFormat::Gif),
         Some(Sniffed::Webp) => Ok(ImageFormat::WebP),
         Some(Sniffed::Bmp) => Ok(ImageFormat::Bmp),
-        Some(Sniffed::Tiff) => Ok(ImageFormat::Tiff),
+        // TIFF is not previewed: its JPEG-compressed strips are expanded by a
+        // nested decoder outside our limits (D018).
         Some(_) => Err(LoadError::Unsupported),
         // ICO is not an upload format, so `ImageFormat::sniff` does not know
         // it; it is recognized here only.
@@ -334,42 +357,56 @@ fn is_ico(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0, 0, 1, 0]) && bytes.get(4..6).is_some_and(|count| count != [0, 0])
 }
 
-/// ICO entries may embed a whole PNG, which `image` hands to `png` without our
-/// limits and without `strip_png_metadata`: `png` then inflates iCCP and
-/// compressed text chunks and holds eXIf twice during construction, outside
-/// the per-image budget. Real icons carry none of these, so an ICO with any
-/// such chunk in an embedded PNG is refused instead of being filtered.
-/// Entries are 16 bytes each, so reading all of them is bounded by the input.
-fn check_ico_embedded_png(bytes: &[u8]) -> image::ImageResult<()> {
+fn ico_error(message: &'static str) -> image::ImageError {
+    image::ImageError::Decoding(image::error::DecodingError::new(
+        image::error::ImageFormatHint::Exact(ImageFormat::Ico),
+        message,
+    ))
+}
+
+/// Length of the header of an ICO with one entry: 6 + 16.
+const ICO_SINGLE_HEADER_LEN: usize = 22;
+
+/// The data of the ICO entry to show: the one declaring the most pixels (the
+/// first of equals; 0 means 256). `image` would hand an embedded PNG to `png`
+/// outside our limits and without `strip_png_metadata`, and does not bound the
+/// read by the entry's size, so the caller decodes this one entry itself.
+/// The directory (16 bytes per entry) is read once and must lie within the
+/// input, and the chosen entry must too: the work is bounded by the input and
+/// does not depend on what the entries point at.
+fn ico_best_entry(bytes: &[u8]) -> image::ImageResult<([u8; 8], &[u8])> {
     let count = usize::from(u16::from_le_bytes([bytes[4], bytes[5]]));
-    for entry in bytes
-        .get(6..)
-        .unwrap_or_default()
+    let directory = bytes
+        .get(6..6 + 16 * count)
+        .ok_or_else(|| ico_error("ICO directory is cut off"))?;
+    let side = |byte: u8| if byte == 0 { 256 } else { u32::from(byte) };
+    let best = directory
         .as_chunks::<16>()
         .0
         .iter()
-        .take(count)
-    {
-        let size = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
-        let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
-        let Some(data) = offset
-            .checked_add(size)
-            .and_then(|end| bytes.get(offset..end))
-        else {
-            continue;
-        };
-        if data.starts_with(PNG_SIGNATURE)
-            && PngChunks::new(data).any(|(kind, _)| is_png_metadata(&kind) || &kind == b"eXIf")
-        {
-            return Err(image::ImageError::Decoding(
-                image::error::DecodingError::new(
-                    image::error::ImageFormatHint::Exact(ImageFormat::Ico),
-                    "ICO embeds a PNG with metadata chunks",
-                ),
-            ));
-        }
-    }
-    Ok(())
+        .rev()
+        .max_by_key(|entry| side(entry[0]) * side(entry[1]))
+        .ok_or_else(|| ico_error("ICO has no entries"))?;
+    let size = u32::from_le_bytes(best[8..12].try_into().unwrap()) as usize;
+    let offset = u32::from_le_bytes(best[12..16].try_into().unwrap()) as usize;
+    let data = offset
+        .checked_add(size)
+        .and_then(|end| bytes.get(offset..end))
+        .ok_or_else(|| ico_error("ICO entry is cut off"))?;
+    // The first 8 bytes of the entry: size, colours, planes and depth.
+    Ok((best[..8].try_into().unwrap(), data))
+}
+
+/// An ICO holding only `dib`, the bitmap data of the chosen entry, under the
+/// entry's own `head` (`image` checks it against the bitmap header).
+fn single_entry_ico(head: [u8; 8], dib: &[u8]) -> Vec<u8> {
+    let mut ico = Vec::with_capacity(ICO_SINGLE_HEADER_LEN + dib.len());
+    ico.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+    ico.extend_from_slice(&head);
+    ico.extend_from_slice(&(dib.len() as u32).to_le_bytes());
+    ico.extend_from_slice(&(ICO_SINGLE_HEADER_LEN as u32).to_le_bytes());
+    ico.extend_from_slice(dib);
+    ico
 }
 
 /// The largest size within `max_width` × `max_height` with the aspect ratio
@@ -526,7 +563,6 @@ mod tests {
             ImageFormat::Gif,
             ImageFormat::WebP,
             ImageFormat::Bmp,
-            ImageFormat::Tiff,
         ] {
             let bytes = encode(format, 1200, 600);
             let thumb = thumbnail(&bytes, &limits, &CancelFlag::default()).unwrap();
@@ -567,6 +603,11 @@ mod tests {
         avif.resize(64, 0);
         assert_eq!(
             thumbnail(&avif, &limits, &cancel),
+            Err(LoadError::Unsupported)
+        );
+        // TIFF is recognized, not decoded (nested JPEG strips escape the limits).
+        assert_eq!(
+            thumbnail(&encode(ImageFormat::Tiff, 16, 16), &limits, &cancel),
             Err(LoadError::Unsupported)
         );
         // Cursors (ICO type 2) are not icons.
@@ -722,11 +763,6 @@ mod tests {
         let limits = Limits::default();
         let cancel = CancelFlag::default();
         let png = encode(ImageFormat::Png, 16, 16);
-        // The directory disagrees with the embedded PNG.
-        assert_eq!(
-            thumbnail(&red_ico(png.clone(), 8), &limits, &cancel),
-            Err(LoadError::Malformed)
-        );
         // Entries pointing past the end, and a truncated entry.
         let mut ico = red_ico(png.clone(), 16);
         ico.truncate(ico.len() - 20);
@@ -743,7 +779,9 @@ mod tests {
             thumbnail(&red_ico(huge, 16), &limits, &cancel),
             Err(LoadError::TooLarge)
         );
-        // Metadata that `png` would inflate outside our budget: refused.
+        // The embedded PNG takes the PNG path: metadata that `png` would
+        // inflate outside the budget is stripped, wherever the directory says
+        // the entry ends.
         let text = |kind: &[u8; 4]| {
             let mut chunk = 4u32.to_be_bytes().to_vec();
             chunk.extend_from_slice(kind);
@@ -755,17 +793,54 @@ mod tests {
             with
         };
         for kind in [b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"eXIf"] {
-            assert_eq!(
-                thumbnail(&red_ico(text(kind), 16), &limits, &cancel),
-                Err(LoadError::Malformed),
-                "{}",
-                String::from_utf8_lossy(kind)
+            let bytes = red_ico(text(kind), 16);
+            let thumb = thumbnail(&bytes, &limits, &cancel);
+            // A malformed chunk body may fail in `png`; it must not get further.
+            assert!(
+                thumb.is_ok() || thumb == Err(LoadError::Malformed),
+                "{thumb:?}"
             );
+        }
+        // A 16×16 entry whose PNG really is 4096 × 3070 (the directory's size
+        // is not trusted): the PNG budget refuses it.
+        let big = png_declaring(png.clone(), 4096, 3070);
+        assert_eq!(
+            thumbnail(&ico_of(&[(0, 0, big)]), &limits, &cancel),
+            Err(LoadError::TooLarge)
+        );
+        // Many entries pointing at one PNG cost one directory read.
+        let many = ico_many(&png, 4000);
+        assert!(thumbnail(&many, &limits, &cancel).is_ok());
+    }
+
+    #[test]
+    fn ico_with_a_huge_metadata_png_is_decoded_within_the_budget() {
+        // 20 MiB of compressed iCCP in a 16×16 PNG: stripped, so only the
+        // pixels are decoded. A directory claiming less or more than the PNG
+        // never widens what is read.
+        let mut info = png::Info::with_size(16, 16);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = Some(std::borrow::Cow::Owned(vec![0; 20 * 1024 * 1024]));
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::with_info(&mut png, info).unwrap();
+        encoder.set_compression(png::Compression::High);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 0, 0].repeat(256)).unwrap();
+        drop(writer);
+        let honest = red_ico(png, 16);
+        let result = thumbnail(&honest, &Limits::default(), &CancelFlag::default());
+        assert!(result.is_ok(), "{result:?}");
+        for size in [33u32, u32::MAX] {
+            let mut ico = honest.clone();
+            ico[14..18].copy_from_slice(&size.to_le_bytes());
+            let result = thumbnail(&ico, &Limits::default(), &CancelFlag::default());
+            assert_eq!(result, Err(LoadError::Malformed), "{size}");
         }
     }
 
     #[test]
-    fn bmp_and_tiff_with_hostile_headers_fail_within_the_limits() {
+    fn bmp_with_hostile_headers_fails_within_the_limits() {
         let limits = Limits::default();
         let cancel = CancelFlag::default();
         let large = |bytes: Vec<u8>| thumbnail(&bytes, &limits, &cancel);
@@ -778,30 +853,11 @@ mod tests {
             large(bmp_declaring(8192, 8192, 64)),
             Err(LoadError::TooLarge)
         );
-        assert_eq!(
-            large(tiff_gray(60_000, 60_000, 1, 64, 64)),
-            Err(LoadError::TooLarge)
-        );
-        assert_eq!(
-            large(tiff_gray(8192, 8192, 1, 64, 64)),
-            Err(LoadError::TooLarge)
-        );
         // Within the limits but with far less data than declared.
         assert_eq!(
             large(bmp_declaring(4000, 4000, 64)),
             Err(LoadError::Malformed)
         );
-        assert_eq!(
-            large(tiff_gray(4000, 4000, 1, 64, 64)),
-            Err(LoadError::Malformed)
-        );
-        assert_eq!(
-            large(tiff_gray(4000, 4000, 5, 64, 64)),
-            Err(LoadError::Malformed)
-        );
-        // A strip claiming more bytes than the file has, and a huge tag.
-        assert!(large(tiff_gray(8, 8, 1, 64, u32::MAX)).is_err());
-        assert!(large(tiff_with_huge_tag(u32::MAX / 8)).is_err());
         // Run-length BMP with an absurd declared height, and a short one.
         assert!(large(bmp_rle8(100, -60_000)).is_err());
         let _ = large(bmp_rle8(100, 100));
@@ -809,15 +865,8 @@ mod tests {
         let mut bmp = encode(ImageFormat::Bmp, 64, 64);
         bmp.truncate(bmp.len() / 2);
         assert_eq!(large(bmp), Err(LoadError::Malformed));
-        let mut tiff = encode(ImageFormat::Tiff, 64, 64);
-        tiff.truncate(tiff.len() / 2);
-        assert_eq!(large(tiff), Err(LoadError::Malformed));
         assert_eq!(
             large(b"BM\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec()),
-            Err(LoadError::Malformed)
-        );
-        assert_eq!(
-            large(b"II*\0\x08\0\0\0".to_vec()),
             Err(LoadError::Malformed)
         );
         assert_eq!(large(vec![0, 0, 1, 0, 1, 0]), Err(LoadError::Malformed));

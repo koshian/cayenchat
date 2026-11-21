@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Hand-built BMP, TIFF and ICO inputs for tests, including hostile ones
+//! Hand-built BMP and ICO inputs for tests, including hostile ones
 //! whose headers declare far more than the data holds. Shared by the unit
 //! tests and `tests/decode_allocations.rs` (through `#[path]`).
 
@@ -41,58 +41,6 @@ pub fn bmp_rle8(width: i32, height: i32) -> Vec<u8> {
     bytes
 }
 
-/// One IFD entry: tag, field type (3 SHORT, 4 LONG), count and the value or
-/// offset, little-endian.
-fn tiff_entry(tag: u16, kind: u16, count: u32, value: u32) -> [u8; 12] {
-    let mut entry = [0; 12];
-    entry[..2].copy_from_slice(&tag.to_le_bytes());
-    entry[2..4].copy_from_slice(&kind.to_le_bytes());
-    entry[4..8].copy_from_slice(&count.to_le_bytes());
-    entry[8..12].copy_from_slice(&value.to_le_bytes());
-    entry
-}
-
-/// A single-strip 8-bit grayscale TIFF declaring `width` × `height` with
-/// `data_len` bytes of uncompressed strip data (`compression` 1 is none, 5 is
-/// LZW). `strip_bytes` is the byte count the strip tag claims.
-pub fn tiff_gray(
-    width: u32,
-    height: u32,
-    compression: u16,
-    data_len: usize,
-    strip_bytes: u32,
-) -> Vec<u8> {
-    let entries = [
-        tiff_entry(256, 4, 1, width),
-        tiff_entry(257, 4, 1, height),
-        tiff_entry(258, 3, 1, 8),
-        tiff_entry(259, 3, 1, u32::from(compression)),
-        tiff_entry(262, 3, 1, 1),
-        tiff_entry(273, 4, 1, 8 + 2 + 9 * 12 + 4),
-        tiff_entry(277, 3, 1, 1),
-        tiff_entry(278, 4, 1, height),
-        tiff_entry(279, 4, 1, strip_bytes),
-    ];
-    let mut bytes = b"II*\0\x08\0\0\0".to_vec();
-    bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    for entry in entries {
-        bytes.extend_from_slice(&entry);
-    }
-    bytes.extend_from_slice(&[0; 4]);
-    bytes.resize(bytes.len() + data_len, 0x40);
-    bytes
-}
-
-/// A TIFF whose first entry is a tag of `count` values stored out of line at
-/// an offset past the end of the file, to see how metadata is bounded.
-pub fn tiff_with_huge_tag(count: u32) -> Vec<u8> {
-    let mut bytes = tiff_gray(4, 4, 1, 16, 16);
-    // Replace the BitsPerSample entry (third) with `count` LONGs elsewhere.
-    let at = 8 + 2 + 2 * 12;
-    bytes[at..at + 12].copy_from_slice(&tiff_entry(258, 4, count, 0x00ff_0000));
-    bytes
-}
-
 /// An ICO with one entry per `(width byte, height byte, data)`; 0 means 256.
 pub fn ico_of(entries: &[(u8, u8, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = vec![0, 0, 1, 0];
@@ -107,6 +55,20 @@ pub fn ico_of(entries: &[(u8, u8, Vec<u8>)]) -> Vec<u8> {
     for (_, _, data) in entries {
         bytes.extend_from_slice(data);
     }
+    bytes
+}
+
+/// An ICO of `count` entries that all point at the one `data`.
+pub fn ico_many(data: &[u8], count: usize) -> Vec<u8> {
+    let mut bytes = vec![0, 0, 1, 0];
+    bytes.extend_from_slice(&(count as u16).to_le_bytes());
+    let offset = 6 + 16 * count;
+    for _ in 0..count {
+        bytes.extend_from_slice(&[0, 0, 0, 0, 1, 0, 32, 0]);
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+    }
+    bytes.extend_from_slice(data);
     bytes
 }
 
