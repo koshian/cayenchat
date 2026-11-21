@@ -1604,32 +1604,48 @@ or Windows run; the process-level scenarios (`run_baseline.py`) were not
 repeated for this comparison. The master side is `origin/master` at
 `1532e9c`.
 
-### Real text shaping: what the missing shaping cache costs (2026-11-22, #1081)
+### Real text shaping: master against this branch (2026-11-22, #1081)
 
 `scripts/perf/shape_bench` (a separate package, not a workspace member) drives
-the real Linux text system (`gpui-pre-wgpu` 0.3.12, cosmic-text 0.19, Noto Sans
-CJK JP, 14 px, system fonts) in a release build. It shapes 60 distinct log
-lines per "channel" (a mix of Japanese, short ASCII, long ASCII wrapped text,
-URL with Japanese and a ~100-character Japanese paragraph) the way a channel
-switch does, 19 channels in turn. "First" is each channel's first visit;
-"again" is a later visit, where GPUI's own line cache no longer holds the
-lines (it keeps only the previous frame). The same program is built without
-and with cosmic-text's `shape-run-cache` (`--features cache`), three runs each,
-same container; medians of the per-switch time in ms for 60 lines:
+the real Linux text system (cosmic-text, Noto Sans CJK JP, 14 px, system
+fonts) in a release build, in the same container, three runs of each build.
+It shapes 60 distinct log lines per "channel" (a mix of Japanese, short
+ASCII, long ASCII wrapped text, URL with Japanese and a ~100-character
+Japanese paragraph) the way a channel switch does. GPUI's own line cache
+keeps only the previous frame, so a switch shapes its lines again. Builds:
 
-| Build | First visit | Visit again |
-| --- | --- | --- |
-| No cache (this branch) | 1.54–1.59 | 1.55–1.58 |
-| `shape-run-cache` on | 1.07–1.08 | 0.80–0.81 |
+- **master**: `vendor/gpui` 0.2.2 as on `origin/master` (cosmic-text 0.14 with
+  `shape-run-cache`, swept every 128 lines), with `CosmicTextSystem`,
+  `PlatformTextSystem` and `FontRun` made public in a scratch copy under
+  `target/tmp` so the program can reach them (`--features legacy`, path
+  dependency; nothing else changed).
+- **branch**: `gpui-pre-wgpu` 0.3.12, cosmic-text 0.19, no cache (this branch).
+- **branch + cache**: the same with `--features cache` (reference only).
 
-Without the cache every switch shapes about 1.6 ms for 60 new lines (about
-26 µs a line), and with it a revisit costs 0.8 ms. The loss from not having
-the cache is therefore about 0.8 ms per 60 lines, or roughly 3 ms for a
-200-line pane, per channel switch; steady scrolling is not affected because
-GPUI's line cache covers the previous frame. That is a fraction of one 16 ms
-frame, so the patch is not re-applied (D094) and the direction-keyed cache is
-not worth a vendored cosmic-text. This compares the same cosmic-text with the
-cache off and on, not master's GPUI 0.2.2 binary (its cosmic-text and its
-sweeping differ); the earlier 10 ms → 2 ms figure in `vendor/gpui/PATCHES.md`
-was taken in a debug-like container and is not reproduced here. Headless: no
-GPU upload of glyphs, no real window, no macOS or Windows.
+Medians, ms per 60 lines unless noted. "First" is each channel's first visit
+(19 channels); "19 channels" revisits all 19 in turn (about 1140 lines, more
+than master's cache window of roughly 500–640 lines); "3 channels" alternates
+three (about 180 lines, inside that window); "scroll" is the mean time for one
+new, never shaped line (1000 lines).
+
+| Build | First | 19 channels | 3 channels | Scroll, µs per new line |
+| --- | --- | --- | --- | --- |
+| master | 1.51–1.55 | 1.48–1.52 | 0.85–0.87 | 25.3–25.9 |
+| branch | 1.60–1.62 | 1.59–1.61 | 1.58–1.60 | 27.2–27.4 |
+| branch + cache | 1.06–1.07 | 0.80–0.81 | 0.79–0.80 | 19.3–19.7 |
+
+Reading: a first visit and new lines while scrolling shape 5–8 % slower than
+on master (+0.1 ms per 60 lines; about 2 µs per new line, i.e. about 0.1 ms
+for a screenful scrolled at once). Switching back and forth among a few
+channels loses master's per-word cache: 1.6 ms instead of 0.86 ms per 60
+lines, about +0.7 ms (roughly +2.5 ms for a 200-line pane). When more
+channels are visited than the cache window holds, the two are equal. Both
+are a fraction of one 16 ms frame, so the patch is not re-applied (D094) and
+a direction-keyed cache is not worth a vendored cosmic-text. The 10 ms →
+2 ms figure in `vendor/gpui/PATCHES.md` is not reproduced (it was taken in a
+different environment).
+
+Limits: this is `layout_line` only. It does not include GPUI's line layout
+cache, wrapping, painting, GPU glyph upload or a real window, and only Linux
+was run (no macOS or Windows). Scrolling is measured as the cost of shaping
+new lines, not as a frame time of a scrolling window.

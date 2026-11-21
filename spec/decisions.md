@@ -4460,10 +4460,10 @@ requires Rust 1.95. This replaces D019's pins and `vendor/native-theme`.
   `-p gpui-pre-windows`).
 - Not re-applied: the Linux `shape-run-cache`. cosmic-text 0.19's cache key
   omits the text direction, so a line after a right-to-left one shows `<` and
-  `>` mirrored. Measured with the real text system
-  (`scripts/perf/shape_bench`, `spec/performance.md`), not having it costs
-  about 0.8 ms per 60 lines per channel switch (1.6 ms against 0.8 ms), a
-  fraction of a frame. Reintroduce it with the direction in the key and a
+  `>` mirrored. Measured with the real text system against master's GPUI
+  0.2.2 (`scripts/perf/shape_bench`, `spec/performance.md`), a revisit among a
+  few channels costs about 0.7 ms more per 60 lines (1.6 ms against 0.86 ms),
+  and new lines are 5–8 % slower; both are a fraction of a frame. Reintroduce it with the direction in the key and a
   real-backend regression test only if shaping shows up in a profile.
 - The X11 input context keeps the style chosen from the server's
   `XNQueryInputStyle` reply and does not resend creation-time attributes in
