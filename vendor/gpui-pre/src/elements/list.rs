@@ -777,6 +777,13 @@ impl ListState {
         point(Pixels::ZERO, state.max_scroll_offset())
     }
 
+    /// Returns the height of all items, measured or estimated (CayenChat
+    /// patch, #1081). `max_offset_for_scrollbar` is this minus the viewport,
+    /// clamped to zero, so a short list cannot tell its height from it.
+    pub fn content_height(&self) -> Pixels {
+        self.0.borrow().items.summary().height
+    }
+
     /// Returns the current scroll offset adjusted for the scrollbar.
     ///
     /// The returned offset has a negative `y` component representing
