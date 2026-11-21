@@ -638,8 +638,10 @@ Switch back when the GPUI question in #265 allows native-theme 0.6.1 or later.
 2026-11-18 (#1025): the versions a GPUI Kit migration would pin, the state of
 each `vendor/gpui` patch against `gpui-pre` 0.3.12, the build errors seen and
 the `gpui-component::setting` API are recorded in
-`spec/gpui-kit-migration-2026-11-18.md`. Nothing is migrated yet; this decision
-stays in force until a migration PR replaces it.
+`spec/gpui-kit-migration-2026-11-18.md`.
+
+2026-11-22 (#1081): superseded by D094. The pins above, `vendor/native-theme`
+and the 0.2.2 patches no longer apply to the application.
 
 `ui::settings_theme` calls `SystemTheme::from_system()` and converts both
 variants with `native_theme_gpui::to_theme()`. The connector supplies settings
@@ -2408,7 +2410,7 @@ OS-wide settings stay untouched.
   GPUI attaches the IME only when `accepts_text_input && !prefers_direct_input`.
   `accepts_text_input` has upstream's meaning ("is a text field"), so
   `prefers_direct_input` is CayenChat's own and the only difference from
-  upstream. On the `gpui-kit-migration` branch (GPUI 0.3.12, #1081)
+  upstream. With GPUI 0.3.12 (#1081)
   `Window::draw` reads the answer when it registers the focused handler and
   keeps it in the `PlatformInputHandler`; the platform windows read it with
   `query_ime_enabled()` (`accepts_text_input && !prefers_direct_input`) in
@@ -4437,3 +4439,30 @@ loaded the next one, so the pane was without a wallpaper for a frame or more
 - **Limits.** Pictures of the theme not on show are not kept. A picture whose
   setting was removed while another channel is on show stays until the picture
   on show of an area changes next.
+
+## D094 — GPUI 0.3.12 through `gpui-pre`, GPUI Kit crates pinned (#1081)
+
+2026-11-22. The application builds on `gpui-pre` 0.3.12 (imported as `gpui`),
+`gpui-pre-platform` 0.3.12, `gpui-component` 0.9.1, `native-theme-gpui` 0.7.1,
+`native-theme` 0.7.1 and `native-theme-derive` 0.7.1, all pinned with `=`.
+`gpui-kit` 0.10.0 is not used until `native-theme-gpui` supports it. The UI
+requires Rust 1.95. This replaces D019's pins and `vendor/native-theme`.
+
+- The patches the application needs are re-applied to `vendor/gpui-pre`,
+  `vendor/gpui-pre-windows`, `vendor/gpui-pre-macos` and
+  `vendor/gpui-pre-linux`, one concern at a time (IME and focus, quit and
+  window, files, background blur, clipboard limits, phrase-aware wrapping,
+  link tooltips, filler above a short log). Each has its own `PATCHES.md`;
+  `vendor/README.md` lists the switch-back conditions. Patches whose fix
+  upstream already has (X11 connection loss, SVG colors, macOS blur
+  materials) were dropped. `vendor/gpui` (0.2.2) is kept only as the
+  reference and for one CI unit test.
+- Not re-applied: the Linux `shape-run-cache`. cosmic-text 0.19's cache key
+  omits the text direction, so a line after a right-to-left one shows `<` and
+  `>` mirrored. The effect on channel switching was measured against master
+  in `spec/performance.md` for the paths the benchmarks cover; real text
+  shaping is not covered there. Reintroduce it with the direction in the key
+  and a real-backend regression test if shaping shows up in a profile.
+- Verification: Linux (Xvfb GUI checks, E2E, CI). macOS needs a person before
+  the merge to master. Windows is checked on the beta build, after the merge,
+  and gates the 1.2.0 release, not the merge; its checklist is in #1081.

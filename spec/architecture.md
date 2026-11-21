@@ -942,9 +942,9 @@ encoding) and the final line length is checked when a `PART` is sent.
 Quitting from the close button, the menu, `/quit` or an OS session end (Windows
 sign-out, shutdown, restart or an installer's Restart Manager close; issue #284)
 all reach `quit_connections`, which waits at most `QUIT_WAIT` (2 seconds, shared
-by all servers). The vendored GPUI answers `WM_QUERYENDSESSION` with TRUE and
-runs the app quit handlers synchronously on `WM_ENDSESSION`; see
-`vendor/gpui/PATCHES.md`. If the network is already down the QUIT is not delivered.
+by all servers). GPUI 0.3.12 answers `WM_QUERYENDSESSION` with TRUE and
+runs the app quit handlers synchronously on `WM_ENDSESSION`.
+If the network is already down the QUIT is not delivered.
 
 On Linux and FreeBSD SIGTERM, SIGHUP and SIGINT take the same path (issue #285,
 `crates/ui/src/signals.rs`). A `signal-hook` thread wakes the UI thread through a
@@ -2678,6 +2678,6 @@ Each item is its own task; the order is the suggested one.
    ISUPPORT values could follow `CaseMapping`: one value per network, reported
    by an event. The worker owns `CaseMapping` and passes it to the modules
    per call; the five that key state by it keep a copy only to re-key.
-5. **Vendored crates.** `vendor/gpui`, `vendor/irc-proto` and
+5. **Vendored crates.** `vendor/gpui-pre*`, `vendor/irc-proto` and
    `vendor/zed-xim` cost a merge on every upstream update. Check the
    switch-back conditions in `vendor/README.md` when updating dependencies.
