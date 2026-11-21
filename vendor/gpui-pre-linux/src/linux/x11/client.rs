@@ -36,7 +36,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
     xcb_ffi::XCBConnection,
 };
-use xim::{AttributeName, Client, InputStyle, x11rb::X11rbClient};
+use xim::{Client, x11rb::X11rbClient};
 use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION};
 use xkbcommon::xkb::{self as xkbc, STATE_LAYOUT_EFFECTIVE};
 
@@ -293,24 +293,13 @@ impl X11ClientStatePtr {
             return;
         };
         let scaled_bounds = bounds.scale(state.scale_factor);
-        let ic_attributes = ximc
-            .build_ic_attributes()
-            .push(
-                xim::AttributeName::InputStyle,
-                xim::InputStyle::PREEDIT_CALLBACKS,
-            )
-            .push(xim::AttributeName::ClientWindow, xim_handler.window)
-            .push(xim::AttributeName::FocusWindow, xim_handler.window)
-            .nested_list(xim::AttributeName::PreeditAttributes, |b| {
-                b.push(
-                    xim::AttributeName::SpotLocation,
-                    xim::Point {
-                        x: u32::from(scaled_bounds.origin.x + scaled_bounds.size.width) as i16,
-                        y: u32::from(scaled_bounds.origin.y + scaled_bounds.size.height) as i16,
-                    },
-                );
-            })
-            .build();
+        let ic_attributes = xim_handler.spot_ic_attributes(
+            &ximc,
+            xim::Point {
+                x: u32::from(scaled_bounds.origin.x + scaled_bounds.size.width) as i16,
+                y: u32::from(scaled_bounds.origin.y + scaled_bounds.size.height) as i16,
+            },
+        );
         let _ = ximc
             .set_ic_values(xim_handler.im_id, xim_handler.ic_id, ic_attributes)
             .log_err();
@@ -823,11 +812,7 @@ impl X11Client {
         let Some((mut ximc, xim_handler)) = state.take_xim() else {
             return;
         };
-        let mut ic_attributes = ximc
-            .build_ic_attributes()
-            .push(AttributeName::InputStyle, InputStyle::PREEDIT_CALLBACKS)
-            .push(AttributeName::ClientWindow, xim_handler.window)
-            .push(AttributeName::FocusWindow, xim_handler.window);
+        let mut spot = None;
 
         let window_id = state.keyboard_focused_window;
         drop(state);
@@ -840,20 +825,14 @@ impl X11Client {
                 return;
             };
             if let Some(scaled_area) = window.get_ime_area() {
-                ic_attributes =
-                    ic_attributes.nested_list(xim::AttributeName::PreeditAttributes, |b| {
-                        b.push(
-                            xim::AttributeName::SpotLocation,
-                            xim::Point {
-                                x: u32::from(scaled_area.origin.x + scaled_area.size.width) as i16,
-                                y: u32::from(scaled_area.origin.y + scaled_area.size.height) as i16,
-                            },
-                        );
-                    });
+                spot = Some(xim::Point {
+                    x: u32::from(scaled_area.origin.x + scaled_area.size.width) as i16,
+                    y: u32::from(scaled_area.origin.y + scaled_area.size.height) as i16,
+                });
             }
         }
-        ximc.create_ic(xim_handler.im_id, ic_attributes.build())
-            .ok();
+        let ic_attributes = xim_handler.create_ic_attributes(&ximc, spot);
+        ximc.create_ic(xim_handler.im_id, ic_attributes).ok();
         let mut state = self.0.borrow_mut();
         state.restore_xim(ximc, xim_handler);
     }
@@ -1579,24 +1558,13 @@ impl X11Client {
         window.handle_ime_preedit(text);
 
         if let Some(scaled_area) = window.get_ime_area() {
-            let ic_attributes = ximc
-                .build_ic_attributes()
-                .push(
-                    xim::AttributeName::InputStyle,
-                    xim::InputStyle::PREEDIT_CALLBACKS,
-                )
-                .push(xim::AttributeName::ClientWindow, xim_handler.window)
-                .push(xim::AttributeName::FocusWindow, xim_handler.window)
-                .nested_list(xim::AttributeName::PreeditAttributes, |b| {
-                    b.push(
-                        xim::AttributeName::SpotLocation,
-                        xim::Point {
-                            x: u32::from(scaled_area.origin.x + scaled_area.size.width) as i16,
-                            y: u32::from(scaled_area.origin.y + scaled_area.size.height) as i16,
-                        },
-                    );
-                })
-                .build();
+            let ic_attributes = xim_handler.spot_ic_attributes(
+                &ximc,
+                xim::Point {
+                    x: u32::from(scaled_area.origin.x + scaled_area.size.width) as i16,
+                    y: u32::from(scaled_area.origin.y + scaled_area.size.height) as i16,
+                },
+            );
             ximc.set_ic_values(xim_handler.im_id, xim_handler.ic_id, ic_attributes)
                 .ok();
         }

@@ -53,3 +53,14 @@ grew memory without bound.
   anyway.)
 Check on Wayland: pasting text and an image still works, and the UI stays
 responsive while a selection owner stalls.
+
+## X11 input context (#1081, CayenChat #227)
+
+`XimHandler` keeps the input style chosen by `xim::choose_input_style` from the
+server's `XNQueryInputStyle` reply (upstream hard-codes `PREEDIT_CALLBACKS`,
+which IBus does not offer) and uses it for every `create_ic`, including the one
+in `enable_ime`. `set_ic_values` sends only `FocusWindow` and the preedit spot;
+`InputStyle` and `ClientWindow` are creation-time only. The attribute lists are
+built in `XimHandler::create_ic_attributes` and `spot_ic_attributes`, which the
+tests in `xim_handler.rs` check. Needs `zed-xim` to export `ClientCore` for the
+test client.
