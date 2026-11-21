@@ -268,14 +268,14 @@ impl LogList {
     /// above its bottom edge (a short or empty log); `None` when the rows
     /// reach the bottom. Whole pixels, from the previous frame's layout, so a
     /// caller can compare it across frames.
-    // TODO(#1081): GPUI 0.2.2 reported the height of all rows as the scroll
-    // offset of a list following its bottom. `gpui-pre` reports the overflow
-    // (0 for a short list) and no bounds for rows before the scroll top, so
-    // the height of a short list is not available through `ListState`. Until
-    // the list patch (or a measurement of our own) returns it, no log is
-    // short and the filler above a short log is not drawn.
     pub fn unfilled_from(&self) -> Option<Pixels> {
-        None
+        let viewport = self.state.viewport_bounds().size.height;
+        if self.state.max_offset_for_scrollbar().y > px(0.) {
+            return None;
+        }
+        // A list that cannot scroll shows every row from the top.
+        let from = self.state.content_height().round();
+        (from < viewport).then_some(from)
     }
 
     /// How many message rows lie above row `visible_start` (the first row a
@@ -426,7 +426,6 @@ mod tests {
     /// A short log reports where its rows end so the rest can be filled; a
     /// log whose rows reach the bottom reports nothing.
     #[gpui::test]
-    #[ignore = "needs the list patch of #1081"]
     fn a_short_log_reports_where_its_rows_end(cx: &mut gpui::TestAppContext) {
         use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, list};
 

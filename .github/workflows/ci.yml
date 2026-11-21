@@ -289,20 +289,9 @@ jobs:
         run: python3 scripts/e2e/url_bubble_gui.py --app target/debug/cayenchat --session "$RUNNER_TEMP/e2e/url-bubble"
 
       - name: Run log colors pixel test
-        # Not on the migration branch (#1081): still fails there (a stray color
-        # in the rows, probably the filler above
-        # a short log, `LogList::unfilled_from`; see
-        # spec/gpui-kit-migration-2026-11-18.md). It runs again once the
-        # filler is restored, and always on master.
-        if: github.base_ref != 'gpui-kit-migration' && github.ref_name != 'gpui-kit-migration'
         run: python3 scripts/e2e/log_colors_gui.py --app target/debug/cayenchat
 
       - name: Run translucent log pixel test
-        # Not on the migration branch (#1081): the filler above a short log is
-        # not drawn yet (`LogList::unfilled_from`, see
-        # spec/gpui-kit-migration-2026-11-18.md). The background blur patch is
-        # back. It runs again once the filler is restored, and always on master.
-        if: github.base_ref != 'gpui-kit-migration' && github.ref_name != 'gpui-kit-migration'
         run: python3 scripts/e2e/opacity_gui.py --app target/debug/cayenchat
 
       - name: Upload screenshots

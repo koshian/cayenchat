@@ -270,19 +270,16 @@ master は GPUI 0.2.2 のままで、このブランチだけが §1 の採用�
 
 ### テストの状態
 
-次のテストは `#[ignore = "#1081: ..."]` にした。理由を付けてあるので、載せ直しの PR か
-別の調査で戻す。
+`#[ignore = "#1081: ..."]` のテストは残っていない。
 
-- `log_list::a_short_log_reports_where_its_rows_end`: `ListState` から短いログの行の高さを
-  取れない (`LogList::unfilled_from` は常に `None`、短いログの上の埋め草を描かない)。
-
-CI の GUI 検査 (`.github/workflows/ci.yml`): 統合ブランチ (`gpui-kit-migration`) と、
-それ宛ての PR では、埋め草の仮実装に依存する 2 本 (`url_bubble_gui.py` はツールチップの PR で戻した。
-`log_colors_gui.py`: 行の背景色、`opacity_gui.py`: 背景の透過) をステップ単位で外す。
-`history_gui.py` は外さず、起動・描画・履歴の操作は引き続き検査する。
-背景ぼかしの PR で分かったこと: `opacity_gui.py` が失敗する原因はぼかしの API ではなく、
-短いログの上の埋め草を描かないこと (`LogList::unfilled_from` が常に `None`)。
-この 2 本は、埋め草を戻す PR で戻し、master では常に動く。
+短いログの上の埋め草 (`LogList::unfilled_from`) は **載せ直し済み** (埋め草の PR)。
+0.2.2 は、下に追従するリストのスクロール量として全行の高さを返していたが、0.3.12 は
+あふれた分 (短いリストでは 0) を返し、スクロール位置より前の行の範囲も返さない。
+そのため `vendor/gpui-pre` に `ListState::content_height()` を足した
+(`vendor/gpui-pre/PATCHES.md`)。`log_list::a_short_log_reports_where_its_rows_end`、
+CI の `log_colors_gui.py` (行の背景色) と `opacity_gui.py` (背景の透過) を戻した。
+GUI 検査はすべて統合ブランチでも動く。2 本の検査は、ログ枠の高さを 342 px から 341 px に
+読み替えた (0.3 では下の入力欄との仕切りの 1 px がログ枠に入らない)。
 
 ignore から戻したテスト (レビュー 1 回目):
 

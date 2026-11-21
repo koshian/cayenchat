@@ -142,3 +142,12 @@ the window (tabs, accessibility, close) keep `log_err`.
 - The root occludes the mouse (`.occlude()`). Without it a click on the
   dialog's button (or on its backdrop) also reached the views behind it, so
   closing a CayenChat notice could select the channel tree row under it.
+
+## List content height (#1081)
+
+`ListState::content_height()` (`src/elements/list.rs`) returns the height of
+all items. 0.2.2 reported it as the scroll offset of a list that follows its
+bottom; 0.3.12 reports the overflow (0 for a short list) and has no bounds for
+rows before the scroll top, so `LogList::unfilled_from` could not find where a
+short log ends (the filler above it is drawn from there). Candidate for an
+upstream proposal.

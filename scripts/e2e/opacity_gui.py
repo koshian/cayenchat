@@ -67,7 +67,7 @@ def check(app, percent):
 
 # Right of the picture a "contain" wallpaper leaves in the log (the square
 # picture is centered in the 855 px wide pane), where only the background lies.
-BESIDE_PICTURE = Rect(650, 0, 200, 342)
+BESIDE_PICTURE = Rect(650, 0, 200, 341)
 
 
 def black_square(path, side=40):
