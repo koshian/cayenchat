@@ -78,8 +78,69 @@ struct Sequence {
     full_range: bool,
 }
 
+/// Checks that `coded` is one still picture the estimate can speak for: exactly
+/// one sequence header and exactly one frame (a frame OBU, or a frame header
+/// OBU whose tile groups follow). The header is what the memory estimate is made
+/// from and `rav1d` takes the last one it finds, and every further frame (hidden
+/// ones included, up to eight reference slots) would be decoded and kept, so
+/// anything else is refused before decoding. An AVIF image item is one frame.
+fn is_single_frame(coded: &[u8]) -> bool {
+    let (mut headers, mut frames) = (0u32, 0u32);
+    let mut rest = coded;
+    while let Some((&first, tail)) = rest.split_first() {
+        let has_extension = first & 0b100 != 0;
+        let has_size = first & 0b10 != 0;
+        let kind = (first >> 3) & 0b1111;
+        if first & 0x80 != 0 {
+            return false;
+        }
+        let tail = if has_extension {
+            match tail.split_first() {
+                Some((_, tail)) => tail,
+                None => return false,
+            }
+        } else {
+            tail
+        };
+        let (size, tail) = if has_size {
+            // LEB128, at most 8 bytes.
+            let (mut value, mut shift, mut used) = (0u64, 0u32, 0usize);
+            loop {
+                let Some(&byte) = tail.get(used) else {
+                    return false;
+                };
+                used += 1;
+                value |= u64::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+                if used == 8 {
+                    return false;
+                }
+            }
+            (value, &tail[used..])
+        } else {
+            (tail.len() as u64, tail)
+        };
+        let Ok(size) = usize::try_from(size) else {
+            return false;
+        };
+        if size > tail.len() {
+            return false;
+        }
+        match kind {
+            1 => headers += 1,
+            3 | 6 => frames += 1,
+            _ => {}
+        }
+        rest = &tail[size..];
+    }
+    headers == 1 && frames == 1
+}
+
 fn sequence_header(coded: &[u8]) -> Option<Sequence> {
-    if coded.is_empty() {
+    if coded.is_empty() || !is_single_frame(coded) {
         return None;
     }
     let mut header = MaybeUninit::<Dav1dSequenceHeader>::uninit();
@@ -117,23 +178,33 @@ fn quarter_samples(layout: u32) -> u64 {
     }
 }
 
-/// Upper bound of the memory decoding `sequence` takes, from its header, plus
-/// `alpha` for the second plane of an alpha item. The planes are the picture
-/// itself; `rav1d` adds working memory proportional to the frame (metadata,
-/// loop filter and reference state) which `OVERHEAD_PER_PIXEL` covers.
-fn budget_bytes(sequence: &Sequence, alpha: bool, input_bytes: usize) -> u64 {
-    // dav1d pads frame sizes to whole 128 pixel superblocks.
+/// The padded pixel count and the planes (the picture itself) of `sequence`.
+/// dav1d pads frame sizes to whole 128 pixel superblocks, and (with the local
+/// `rav1d` patch) no frame exceeds the header's `max_width` × `max_height`.
+fn planes_bytes(sequence: &Sequence) -> (u64, u64) {
     let pad = |side: u32| u64::from(side).div_ceil(128) * 128;
     let pixels = pad(sequence.width) * pad(sequence.height);
-    let planes = pixels * quarter_samples(sequence.layout) / 4 * sequence.sample_bytes;
-    let alpha_plane = if alpha {
-        pixels * sequence.sample_bytes
-    } else {
-        0
-    };
+    (
+        pixels,
+        pixels * quarter_samples(sequence.layout) / 4 * sequence.sample_bytes,
+    )
+}
+
+/// Upper bound of the memory decoding takes, from the sequence headers of the
+/// primary item and of the alpha item, if any. `rav1d` adds working memory
+/// proportional to the frame (metadata, loop filter and reference state) which
+/// `OVERHEAD_PER_PIXEL` covers. The primary picture is kept while the alpha item
+/// is decoded, so the peak is the larger of the two stages.
+fn budget_bytes(primary: &Sequence, alpha: Option<&Sequence>, input_bytes: usize) -> u64 {
+    let (pixels, planes) = planes_bytes(primary);
+    let first = planes + pixels * OVERHEAD_PER_PIXEL;
+    let second = alpha.map_or(0, |alpha| {
+        let (pixels, planes) = planes_bytes(alpha);
+        planes + pixels * OVERHEAD_PER_PIXEL + planes_bytes(primary).1
+    });
     // The container parse and the copy handed to the decoder.
     let copies = 2 * input_bytes as u64;
-    (planes + alpha_plane + pixels * OVERHEAD_PER_PIXEL).saturating_add(copies)
+    first.max(second).saturating_add(copies)
 }
 
 /// Bytes of decoder working memory per (padded) pixel, on top of the planes.
@@ -440,7 +511,21 @@ pub(crate) fn thumbnail(
     {
         return Err(LoadError::TooLarge);
     }
-    if budget_bytes(&sequence, alpha_coded.is_some(), bytes.len()) > limits.max_decode_bytes {
+    // The alpha item is decoded too, so its header gets the same checks and its
+    // memory is part of the estimate. It must match the primary picture anyway.
+    let alpha_sequence = match alpha_coded {
+        Some(alpha_coded) => {
+            let alpha = sequence_header(alpha_coded).ok_or(LoadError::Malformed)?;
+            if (alpha.width, alpha.height) != (sequence.width, sequence.height)
+                || alpha.layout != I400
+            {
+                return Err(LoadError::Malformed);
+            }
+            Some(alpha)
+        }
+        None => None,
+    };
+    if budget_bytes(&sequence, alpha_sequence.as_ref(), bytes.len()) > limits.max_decode_bytes {
         return Err(LoadError::TooLarge);
     }
     let colour = colour(&sequence).ok_or(LoadError::Unsupported)?;
@@ -448,7 +533,8 @@ pub(crate) fn thumbnail(
         return Err(LoadError::Cancelled);
     }
 
-    let frame_limit = u32::try_from(limits.max_source_pixels).unwrap_or(u32::MAX);
+    // No frame may be larger than the header the estimate was made from.
+    let frame_limit = sequence.width.saturating_mul(sequence.height);
     let primary = Decoder::new(frame_limit)
         .and_then(|decoder| decoder.decode(coded))
         .ok_or(LoadError::Malformed)?;
@@ -609,6 +695,31 @@ mod tests {
             thumbnail(OPAQUE8, &Limits::default(), &cancel),
             Err(LoadError::Cancelled)
         );
+    }
+
+    /// OBUs with a size field: type, then a one byte size.
+    fn obu(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![kind << 3 | 0b10, payload.len() as u8];
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn only_one_sequence_header_and_one_frame_are_decoded() {
+        let one = [obu(2, &[]), obu(1, &[1, 2]), obu(6, &[3])].concat();
+        assert!(is_single_frame(&one));
+        // A frame header OBU followed by its tile group is one frame.
+        let split = [obu(1, &[1]), obu(3, &[1]), obu(4, &[1]), obu(4, &[1])].concat();
+        assert!(is_single_frame(&split));
+        let two_headers = [one.clone(), obu(1, &[9])].concat();
+        assert!(!is_single_frame(&two_headers));
+        let two_frames = [one.clone(), obu(6, &[3])].concat();
+        assert!(!is_single_frame(&two_frames));
+        assert!(!is_single_frame(&obu(1, &[1])));
+        assert!(!is_single_frame(&obu(6, &[1])));
+        // A size running past the data.
+        assert!(!is_single_frame(&[0x0a, 0x7f, 1]));
+        assert!(!is_single_frame(&[]));
     }
 
     #[test]

@@ -575,11 +575,19 @@ colour matrices other than identity (4:4:4), BT.709, BT.601, SMPTE 240M and
 BT.2020 NCL stay text; ICC profiles, HDR transfer functions and `imir`
 mirroring are ignored. The sequence header gives the frame size before any frame
 memory exists: it is checked against 8192 px and 16.7 MP, and an estimate of the
-decode (planes at their sample size and layout, padded to 128 px, plus the alpha
-plane, 1 byte per pixel of decoder working memory and two copies of the file)
+decode (planes at their sample size and layout, padded to 128 px, 1 byte per
+pixel of decoder working memory and two copies of the file; the alpha item gets
+the same from its own sequence header, with the primary planes still held)
 must fit the 48 MiB budget, so a 4096 × 4096 4:2:0 8-bit picture fits and a 4:4:4
-10-bit one does not. `rav1d` also refuses larger frames itself
-(`frame_size_limit`), runs one thread with one frame in flight, applies no film
+10-bit one does not (nor a 4032 × 3024 10-bit 4:2:0 photo, about 54 MB: such an
+HDR-derived AVIF stays a text link). The estimate has to describe what is
+decoded, so each item (primary and alpha) must hold exactly one sequence header
+and exactly one frame (`is_single_frame`; `rav1d` would take the last header
+and decode and keep every further, even hidden, frame), the alpha item must match
+the primary in size and be monochrome, and the vendored `rav1d` refuses a
+`frame_size_override` frame larger than the header's `max_width` × `max_height`
+(a conformance rule it did not check). `rav1d` also refuses frames beyond the
+header's area itself (`frame_size_limit`), runs one thread with one frame in flight, applies no film
 grain (which would copy the picture) and logs nothing. The estimate was checked
 against the real peak in `decode_allocations.rs` (measured 0.6–0.7 bytes per
 pixel of working memory). Decoding is serialized by the same gate.
