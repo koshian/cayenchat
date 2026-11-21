@@ -50,7 +50,7 @@ pub fn captured(keystroke: &Keystroke, macos: bool, windows: bool) -> Option<Rec
     if types_text_on(keystroke, macos, windows) {
         return Some(Recorded::Rejected(Rejection::TypesText));
     }
-    let key = keystroke.unparse();
+    let key = keystroke.unparse(crate::shortcuts::HOST_OS);
     Some(match usable_key_on(&key, macos, windows) {
         Some(_) => Recorded::Key(key),
         None => Recorded::Rejected(Rejection::NeedsModifier),
@@ -87,7 +87,7 @@ pub fn record<V: 'static>(
 /// which is right whatever the layout; guessing which key it is on would be
 /// wrong on layouts that place symbols differently (JIS, for one).
 pub fn describe(key: &str) -> String {
-    let Ok(keystroke) = Keystroke::parse(key) else {
+    let Ok(keystroke) = Keystroke::parse_with_os(key, crate::shortcuts::HOST_OS) else {
         return key.to_owned();
     };
     let modifiers = &keystroke.modifiers;
@@ -163,7 +163,9 @@ mod tests {
     /// A key as a real press delivers it: a plain character comes with its
     /// text (without it, the IME would be taken to be composing).
     fn press(source: &str) -> Keystroke {
-        Keystroke::parse(source).unwrap().with_simulated_ime()
+        Keystroke::parse_with_os(source, crate::shortcuts::HOST_OS)
+            .unwrap()
+            .with_simulated_ime()
     }
 
     /// What is recorded on a system where no combination types a character.
@@ -178,7 +180,9 @@ mod tests {
         // `unparse` makes of the keystroke.
         assert_eq!(
             captured_anywhere(&press("cmd-}")),
-            Some(Recorded::Key(press("cmd-}").unparse()))
+            Some(Recorded::Key(
+                press("cmd-}").unparse(crate::shortcuts::HOST_OS)
+            ))
         );
         // Spelled another way, it is kept in the canonical order.
         assert_eq!(
@@ -204,7 +208,9 @@ mod tests {
         // With a modifier Escape is just a key (and usable).
         assert_eq!(
             captured_anywhere(&press("cmd-escape")),
-            Some(Recorded::Key(press("cmd-escape").unparse()))
+            Some(Recorded::Key(
+                press("cmd-escape").unparse(crate::shortcuts::HOST_OS)
+            ))
         );
         for bare in ["a", "shift-a", "1", "home", "space"] {
             assert_eq!(
@@ -332,7 +338,7 @@ mod tests {
         });
         let (probe, cx) = cx.add_window_view(|window, cx| {
             let focus = cx.focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             Probe {
                 recorded: Vec::new(),
                 shortcut_fired: 0,

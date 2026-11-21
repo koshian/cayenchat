@@ -655,7 +655,7 @@ impl ChatWindow {
                     .iter()
                     .find(|input| input.read(cx).text().is_empty())
             {
-                window.focus(&next.focus_handle(cx));
+                window.focus(&next.focus_handle(cx), cx);
                 return;
             }
         }
@@ -972,8 +972,8 @@ impl ChatWindow {
             .first()
             .and_then(|p| p.inputs().next())
         {
-            Some(next) => window.focus(&next.focus_handle(cx)),
-            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx)),
+            Some(next) => window.focus(&next.focus_handle(cx), cx),
+            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx),
         }
     }
 
@@ -1003,7 +1003,7 @@ impl ChatWindow {
                 .find(|input| input.read(cx).text().is_empty())
                 .or_else(|| self.credential_prompts[index].inputs().next())
         {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
         }
         let theme = theme::current(cx);
         let border = theme.border;

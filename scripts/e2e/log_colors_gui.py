@@ -29,8 +29,9 @@ ALTERNATE = "#cc6633"
 LINES = [f"line {n}" for n in range(1, 7)]
 # The log pane of the 1100x750 window, and the part of it where there is
 # only row background: right of the longest line, below the oldest one.
-LOG_PANE = Rect(0, 28, 855, 342)
-TEXT_FREE = Rect(300, 0, 500, 342)  # inside the pane
+# (341 px high: the 1 px divider above the draft box is not part of the log.)
+LOG_PANE = Rect(0, 28, 855, 341)
+TEXT_FREE = Rect(300, 0, 500, 341)  # inside the pane
 EMPTY_TOP = Rect(0, 0, 855, 150)  # inside the pane
 
 

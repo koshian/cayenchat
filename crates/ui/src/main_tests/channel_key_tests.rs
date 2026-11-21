@@ -149,7 +149,7 @@ fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
         assert_eq!(chat.key_prompts.len(), 1, "no second dialog from a replay");
     });
     // The dialog draws (masked field, checkbox, buttons).
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 #[gpui::test]

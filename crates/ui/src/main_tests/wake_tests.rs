@@ -220,6 +220,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
         for network in networks {
             if let Some(connection) = chat.sessions.get_mut(&network).and_then(|s| s.irc.take()) {
                 let _ = connection.disconnect();
+                connection.wait_closed(std::time::Duration::from_secs(5));
             }
         }
     });
@@ -419,6 +420,7 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
         for network in networks {
             if let Some(connection) = chat.sessions.get_mut(&network).and_then(|s| s.irc.take()) {
                 let _ = connection.disconnect();
+                connection.wait_closed(std::time::Duration::from_secs(5));
             }
         }
     });
@@ -459,6 +461,7 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
         assert!(!chat.sessions[&network].asleep);
         if let Some(connection) = chat.sessions.get_mut(&network).and_then(|s| s.irc.take()) {
             let _ = connection.disconnect();
+            connection.wait_closed(std::time::Duration::from_secs(5));
         }
     });
 }

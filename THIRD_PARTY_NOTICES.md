@@ -1,9 +1,11 @@
 # Third-party notices
 
-The application uses a local copy of [GPUI 0.2.2](https://docs.rs/crate/gpui/0.2.2)
-in `vendor/gpui`, Copyright Zed Industries, licensed under Apache License 2.0.
-The Windows keyboard-message handling in this copy is patched as described in
-`vendor/gpui/PATCHES.md`. In addition,
+The application uses [GPUI](https://github.com/zed-industries/zed) through the
+`gpui-pre` 0.3.12 and `gpui-pre-platform` 0.3.12 crates of GPUI Kit (Cargo
+dependencies, Copyright Zed Industries, licensed under Apache License 2.0).
+CayenChat's patches to GPUI 0.2.2, kept for reference in `vendor/gpui`
+(`vendor/gpui/PATCHES.md`), are re-applied to the split crates in later steps
+of the migration (#1081). In addition,
 `crates/ui/src/input.rs` adapts its
 [text input example](https://docs.rs/crate/gpui/0.2.2/source/examples/input.rs)
 and remains under Apache License 2.0. The license is retained in
@@ -17,13 +19,13 @@ its types remain inside `crates/irc-core`. The crate's license is retained in
 `licenses/IRC-MPL-2.0.md`. Include the dependency's required license and source
 availability materials when preparing a distributable binary.
 
-Settings appearance uses [native-theme and native-theme-gpui 0.5.7](https://github.com/tiborgats/native-theme)
-(MIT OR Apache-2.0 OR 0BSD) and [gpui-component 0.5.1](https://github.com/longbridge/gpui-component)
-(Apache-2.0). They are Cargo dependencies. native-theme 0.5.7 is used as a
-patched copy in `vendor/native-theme` (Windows DPI fix backported from 0.6.1;
-see its `PATCHES.md`), used under the 0BSD option of its license; the upstream
-license texts are kept in that directory. Include their license notices and
-those of their transitive dependencies when preparing a distributable binary.
+Settings appearance uses [native-theme and native-theme-gpui 0.7.1](https://github.com/tiborgats/native-theme)
+(MIT OR Apache-2.0 OR 0BSD) and [gpui-component 0.9.1](https://github.com/longbridge/gpui-component)
+(Apache-2.0). They are Cargo dependencies, used unpatched (native-theme 0.7.1
+reads Windows fonts at 96 DPI itself, so the patched copy of 0.5.7 in
+`vendor/native-theme` is gone), under the 0BSD option of the native-theme
+license. Include their license notices and those of their transitive
+dependencies when preparing a distributable binary.
 
 AVIF previews decode with [rav1d 1.1.0](https://github.com/memorysafety/rav1d), the
 Rust port of [dav1d](https://code.videolan.org/videolan/dav1d), licensed under the

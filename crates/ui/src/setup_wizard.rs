@@ -133,7 +133,7 @@ impl ChatWindow {
 
     fn wizard_choose_easy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.setup_wizard.step = Step::Easy { error: None };
-        window.focus(&self.setup_wizard.nickname.read(cx).focus_handle(cx));
+        window.focus(&self.setup_wizard.nickname.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -150,13 +150,13 @@ impl ChatWindow {
     /// Closes the wizard; nothing was written.
     fn wizard_dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.setup_wizard.open = false;
-        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx), cx);
         cx.notify();
     }
 
     fn wizard_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.setup_wizard.step = Step::Choose;
-        window.focus(&self.setup_wizard.easy);
+        window.focus(&self.setup_wizard.easy, cx);
         cx.notify();
     }
 
@@ -173,7 +173,7 @@ impl ChatWindow {
                 .is_focused(window)
     }
 
-    pub(crate) fn wizard_move_focus(&self, backwards: bool, window: &mut Window, cx: &App) {
+    pub(crate) fn wizard_move_focus(&self, backwards: bool, window: &mut Window, cx: &mut App) {
         let handles = self.setup_wizard.handles(cx);
         if handles.is_empty() {
             return;
@@ -184,7 +184,7 @@ impl ChatWindow {
             (Some(index), true) => (index + handles.len() - 1) % handles.len(),
             (None, _) => 0,
         };
-        window.focus(&handles[next]);
+        window.focus(&handles[next], cx);
     }
 
     /// "Connect with these settings": checks the nickname as a connection
@@ -320,7 +320,7 @@ impl ChatWindow {
         // Focus goes to the first control when it is not already inside.
         let handles = self.setup_wizard.handles(cx);
         if !handles.is_empty() && !handles.iter().any(|handle| handle.is_focused(window)) {
-            window.focus(&handles[0]);
+            window.focus(&handles[0], cx);
         }
         let theme = theme::current(cx);
         let box_width = dialog::box_width(BOX_MAX_WIDTH, window);

@@ -584,7 +584,7 @@ mod tests {
     #[gpui::test]
     fn up_and_down_move_through_the_categories(cx: &mut gpui::TestAppContext) {
         let (form, cx) = form(SettingsTab::Connection, cx);
-        form.update_in(cx, |form, window, _| window.focus(&form.nav_focus));
+        form.update_in(cx, |form, window, cx| window.focus(&form.nav_focus, cx));
         let tab = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
             form.read_with(cx, |form, _| form.tab)
         };
@@ -601,7 +601,7 @@ mod tests {
         let (form, cx) = form(SettingsTab::Keyboard, cx);
         cx.update(|window, _| window.activate_window());
         form.update_in(cx, |form, window, cx| {
-            window.focus(&form.nav_focus);
+            window.focus(&form.nav_focus, cx);
             form.toggle_shortcut_recording("next_channel", cx);
         });
         cx.run_until_parked();

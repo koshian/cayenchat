@@ -214,7 +214,7 @@ impl ChatWindow {
         if let Some(prompt) = self.paste_prompt.take()
             && let Some(handle) = prompt.previous
         {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -365,7 +365,7 @@ impl ChatWindow {
         ];
         let step = if forward { 1 } else { order.len() - 1 };
         let at = order.iter().position(|handle| handle.is_focused(window));
-        window.focus(&order[at.map_or(0, |at| (at + step) % order.len())]);
+        window.focus(&order[at.map_or(0, |at| (at + step) % order.len())], cx);
     }
 
     pub(crate) fn render_paste_prompt(
@@ -376,7 +376,7 @@ impl ChatWindow {
         let prompt = self.paste_prompt.as_mut()?;
         if prompt.focus_pending {
             prompt.focus_pending = false;
-            window.focus(&prompt.confirm);
+            window.focus(&prompt.confirm, cx);
         }
         let theme = theme::current(cx);
         let prompt = self.paste_prompt.as_ref()?;

@@ -12,10 +12,31 @@
 //! character with Shift cleared (Cmd+Shift+[ is `cmd-{`), so matching and
 //! saving by what arrives is what keeps a saved key working.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, rc::Rc};
 
 use cayenchat_app::Command;
-use gpui::{KeyBinding, Keystroke};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem};
+
+/// The modifiers of the secondary key alone (Cmd on macOS, Ctrl elsewhere),
+/// for the tests; `Modifiers::secondary_key` needs an `App`.
+#[cfg(test)]
+pub(crate) fn secondary_modifiers() -> gpui::Modifiers {
+    gpui::Modifiers {
+        platform: HOST_OS == OperatingSystem::Mac,
+        control: HOST_OS != OperatingSystem::Mac,
+        ..Default::default()
+    }
+}
+
+/// The system the keys are written for: GPUI spells the platform key `cmd`,
+/// `super` or `win` by it.
+pub const HOST_OS: OperatingSystem = if cfg!(target_os = "macos") {
+    OperatingSystem::Mac
+} else if cfg!(target_os = "windows") {
+    OperatingSystem::Windows
+} else {
+    OperatingSystem::Linux
+};
 
 /// What the user changed: action id → key.
 pub type Overrides = BTreeMap<String, String>;
@@ -218,7 +239,7 @@ pub fn usable_key_on(key: &str, macos: bool, windows: bool) -> Option<Keystroke>
     if key.is_empty() || key.chars().any(char::is_whitespace) {
         return None;
     }
-    let keystroke = Keystroke::parse(key).ok()?;
+    let keystroke = Keystroke::parse_with_os(key, HOST_OS).ok()?;
     if types_text_on(&keystroke, macos, windows) {
         return None;
     }
@@ -251,29 +272,43 @@ pub fn keys(action: &ShortcutAction, overrides: &Overrides) -> Vec<String> {
 
 /// The action bindings for the defaults and what the user changed.
 /// Entries for unknown actions and unusable keys are ignored.
-pub fn bindings(overrides: &Overrides) -> Vec<KeyBinding> {
+pub fn bindings(overrides: &Overrides, cx: &App) -> Vec<KeyBinding> {
     ACTIONS
         .iter()
         .flat_map(|action| {
             keys(action, overrides)
                 .into_iter()
-                .map(|key| match action.target {
-                    Target::Command(command) => crate::navigation_binding(&key, command),
-                    Target::ScrollToLatest => {
-                        KeyBinding::new(&key, crate::ScrollToLatest, Some("ChatWindow"))
-                    }
+                .filter_map(|key| match action.target {
+                    Target::Command(command) => crate::navigation_binding(&key, command, cx),
+                    Target::ScrollToLatest => chat_window_binding(&key, crate::ScrollToLatest, cx),
                     Target::ToggleSelectedHeading => {
-                        KeyBinding::new(&key, crate::ToggleSelectedHeading, Some("ChatWindow"))
+                        chat_window_binding(&key, crate::ToggleSelectedHeading, cx)
                     }
                     Target::CollapseAllHeadings => {
-                        KeyBinding::new(&key, crate::CollapseAllHeadings, Some("ChatWindow"))
+                        chat_window_binding(&key, crate::CollapseAllHeadings, cx)
                     }
                     Target::ExpandAllHeadings => {
-                        KeyBinding::new(&key, crate::ExpandAllHeadings, Some("ChatWindow"))
+                        chat_window_binding(&key, crate::ExpandAllHeadings, cx)
                     }
                 })
         })
         .collect()
+}
+
+/// A `ChatWindow` binding for a key kept in the settings. `KeyBinding::new`
+/// takes only a `'static` string; `KeyBinding::load` reads the key of the
+/// settings. A key that does not parse binds nothing.
+pub(crate) fn chat_window_binding(key: &str, action: impl Action, cx: &App) -> Option<KeyBinding> {
+    let context = KeyBindingContextPredicate::parse("ChatWindow").ok()?;
+    KeyBinding::load(
+        key,
+        Box::new(action),
+        Some(Rc::new(context)),
+        false,
+        None,
+        cx,
+    )
+    .ok()
 }
 
 /// Who holds a key. Conflicts are logged at startup and shown as warnings by
@@ -302,7 +337,7 @@ pub fn conflicts(overrides: &Overrides, fixed: &[KeyBinding]) -> Vec<Conflict> {
             let Some(keystroke) = usable_key(&key) else {
                 continue;
             };
-            let canonical = keystroke.unparse();
+            let canonical = keystroke.unparse(HOST_OS);
             match by_key
                 .iter_mut()
                 .find(|(existing, _, _)| *existing == canonical)
@@ -341,13 +376,24 @@ mod tests {
             .collect()
     }
 
+    /// `bindings` for `overrides`; making a binding needs an `App`.
+    fn made(overrides: &Overrides) -> Vec<KeyBinding> {
+        gpui::TestAppContext::single().update(|cx| bindings(overrides, cx))
+    }
+
+    /// The shortcuts that cannot be changed, with the Ctrl channel keys.
+    fn fixed() -> Vec<KeyBinding> {
+        gpui::TestAppContext::single()
+            .update(|cx| crate::fixed_bindings(cayenchat_storage::ChannelNumberModifier::Ctrl, cx))
+    }
+
     /// (key, command) of every navigation binding made; actions that are not
     /// commands have their own test.
     fn navigation(overrides: &Overrides) -> Vec<(String, Command)> {
-        bindings(overrides)
+        made(overrides)
             .iter()
             .filter_map(|binding| {
-                let key = binding.keystrokes()[0].unparse();
+                let key = binding.keystrokes()[0].unparse(HOST_OS);
                 let command = binding
                     .action()
                     .as_any()
@@ -539,14 +585,14 @@ mod tests {
 
     #[test]
     fn the_defaults_conflict_with_nothing() {
-        let fixed = crate::fixed_bindings(cayenchat_storage::ChannelNumberModifier::Ctrl);
+        let fixed = fixed();
         assert_eq!(conflicts(&Overrides::new(), &fixed), Vec::new());
     }
 
     #[test]
     fn scrolling_to_the_latest_line_is_an_action_of_its_own_and_can_be_changed() {
         let latest = |overrides: &Overrides| {
-            bindings(overrides)
+            made(overrides)
                 .iter()
                 .filter(|binding| {
                     binding
@@ -555,7 +601,7 @@ mod tests {
                         .downcast_ref::<crate::ScrollToLatest>()
                         .is_some()
                 })
-                .map(|binding| binding.keystrokes()[0].unparse())
+                .map(|binding| binding.keystrokes()[0].unparse(HOST_OS))
                 .collect::<Vec<_>>()
         };
         let default = if cfg!(target_os = "macos") {
@@ -572,7 +618,7 @@ mod tests {
 
     #[test]
     fn two_actions_on_one_key_and_a_fixed_shortcut_are_conflicts() {
-        let fixed = crate::fixed_bindings(cayenchat_storage::ChannelNumberModifier::Ctrl);
+        let fixed = fixed();
         let shared = conflicts(
             &overrides(&[
                 ("next_channel", "ctrl-shift-n"),

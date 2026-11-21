@@ -5,6 +5,7 @@
 //! per-widget metrics without replacing the IME-aware text input.
 
 use gpui::{prelude::*, *};
+use native_theme::AccessibilityPreferences;
 use native_theme_gpui::{ResolvedTheme, SystemTheme};
 
 /// Width of the label column of a settings row.
@@ -36,7 +37,11 @@ struct Variant {
 
 impl Variant {
     fn new(resolved: ResolvedTheme, name: &str, dark: bool, reduce_transparency: bool) -> Self {
-        let mapped = native_theme_gpui::to_theme(&resolved, name, dark, reduce_transparency);
+        // Only the transparency preference, as before: the text scale is
+        // not applied twice (the platform reports it separately).
+        let mut prefs = AccessibilityPreferences::DEFAULT;
+        prefs.reduce_transparency = reduce_transparency;
+        let mapped = native_theme_gpui::to_theme(&resolved, name, dark, &prefs);
         Self { resolved, mapped }
     }
 }
@@ -70,7 +75,7 @@ pub fn refresh(cx: &mut App) {
         let read = cx.background_spawn(async { SystemTheme::from_system() });
         cx.spawn(async move |cx| {
             let result = read.await;
-            let _ = cx.update(|cx| finish(result, cx));
+            cx.update(|cx| finish(result, cx));
         })
         .detach();
     }
@@ -227,8 +232,10 @@ pub fn button(id: impl Into<ElementId>, primary: bool, cx: &App) -> Stateful<Div
             } else {
                 color(b.border.color)
             })
-            .px(px(b.border.padding_horizontal))
-            .py(px(b.border.padding_vertical))
+            .when_some(b.border.padding.left, |d, left| d.pl(px(left)))
+            .when_some(b.border.padding.right, |d, right| d.pr(px(right)))
+            .when_some(b.border.padding.top, |d, top| d.pt(px(top)))
+            .when_some(b.border.padding.bottom, |d, bottom| d.pb(px(bottom)))
             .hover(move |d| d.bg(hover).text_color(hover_text))
             .active(move |d| d.bg(active).text_color(active_text));
     }
@@ -264,8 +271,10 @@ pub fn tooltip(text: SharedString, cx: &App) -> Div {
         .rounded(px(t.border.corner_radius))
         .border(px(t.border.line_width))
         .border_color(color(t.border.color))
-        .px(px(t.border.padding_horizontal))
-        .py(px(t.border.padding_vertical))
+        .when_some(t.border.padding.left, |d, left| d.pl(px(left)))
+        .when_some(t.border.padding.right, |d, right| d.pr(px(right)))
+        .when_some(t.border.padding.top, |d, top| d.pt(px(top)))
+        .when_some(t.border.padding.bottom, |d, bottom| d.pb(px(bottom)))
         .child(text)
 }
 
@@ -339,7 +348,12 @@ mod tests {
     fn preset(name: &str) -> NativeSettingsTheme {
         NativeSettingsTheme {
             variants: Some([false, true].map(|dark| {
-                let (mapped, resolved) = native_theme_gpui::from_preset(name, dark).unwrap();
+                let (mapped, resolved) = native_theme_gpui::from_preset(
+                    name,
+                    dark,
+                    &native_theme::AccessibilityPreferences::DEFAULT,
+                )
+                .unwrap();
                 Variant { resolved, mapped }
             })),
             loading: false,
@@ -351,7 +365,7 @@ mod tests {
         cx.update(|cx| {
             cx.set_global(app_theme(false));
             assert_eq!(palette(cx), crate::theme::current(cx));
-            cx.set_global(preset("macos-sonoma"));
+            cx.set_global(preset("macos-tahoe"));
             for dark in [false, true] {
                 cx.set_global(app_theme(dark));
                 let original = crate::theme::current(cx);
@@ -410,11 +424,11 @@ mod tests {
         });
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| TextInput::new_settings_field("Host", "", false, cx));
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
             Controls { input, clicks: 0 }
         });
         cx.simulate_input("irc.example.org");
-        for name in ["macos-sonoma", "windows-11", "adwaita", "kde-breeze"] {
+        for name in ["macos-tahoe", "windows-11", "adwaita", "kde-breeze"] {
             cx.update(|_, cx| cx.set_global(preset(name)));
             for dark in [false, true] {
                 cx.update(|_, cx| {

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, gpui-kit-migration]
   pull_request:
-    branches: [master]
+    branches: [master, gpui-kit-migration]
 
 permissions:
   contents: read
@@ -16,6 +16,8 @@ jobs:
   # Pull requests run only the jobs their changed paths can affect, so a
   # Linux-only or documentation-only change does not wait for Windows and macOS
   # (scripts/ci-jobs.sh). Pushes to master run everything for the beta.
+  # gpui-kit-migration is the GPUI migration's integration branch (#1081); it
+  # gets the same checks until it is merged into master.
   changes:
     name: Choose jobs
     runs-on: ubuntu-24.04
@@ -92,6 +94,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libfontconfig1-dev \
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev
@@ -253,6 +256,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libfontconfig1-dev \
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \

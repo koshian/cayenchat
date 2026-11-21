@@ -213,8 +213,10 @@ mod portal {
                         }
                         cx.refresh_windows();
                     }
-                })
-                .is_ok()
+                });
+                // `AsyncApp::update` no longer reports a released app; the
+                // task is dropped with it.
+                true
             };
             if !apply(read(&settings).await, cx) {
                 return;
