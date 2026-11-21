@@ -379,6 +379,35 @@ impl SaslMechanism {
     }
 }
 
+/// What a server does when it rejects the nickname during registration
+/// (432/433) and the connection already knows the server's `NICKLEN`
+/// (#1072). A candidate that does not fit `NICKLEN` is never sent; the
+/// nickname dialog opens instead, as it does after the automatic tries.
+/// The tried nickname is for that connection only; it is never saved.
+/// Added without a version change; files without it read as `Underscore`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NickCollision {
+    /// Try the nickname plus one `_`, once.
+    #[default]
+    Underscore,
+    /// Keep appending `_`, up to five tries.
+    Underscores,
+    /// Try the nickname plus 1, 2, 3 ..., up to five tries.
+    Digits,
+    /// Always open the nickname dialog.
+    Dialog,
+}
+
+impl NickCollision {
+    pub const ALL: [Self; 4] = [
+        Self::Underscore,
+        Self::Underscores,
+        Self::Digits,
+        Self::Dialog,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
@@ -1538,6 +1567,9 @@ pub struct ServerProfile {
     /// without a version change, so files without it read as on.
     #[serde(default = "default_regain_ops")]
     pub regain_ops: bool,
+    /// What to do when the nickname is in use at registration (#1072).
+    #[serde(default)]
+    pub nick_collision: NickCollision,
     /// Opt-in IRCv3 features for this server (version 15), off by default.
     #[serde(default)]
     pub ircv3: Ircv3Preferences,
@@ -1615,6 +1647,7 @@ impl ServerProfile {
             connect_on_startup: false,
             user_avatars: false,
             regain_ops: true,
+            nick_collision: NickCollision::default(),
             ircv3: Ircv3Preferences::default(),
             avatar_url: String::new(),
             peer_avatar_url: String::new(),
@@ -4683,6 +4716,38 @@ mod tests {
                 .map(|s| s.user_avatars)
                 .collect::<Vec<_>>(),
             [true, false]
+        );
+    }
+
+    #[test]
+    fn nick_collision_defaults_to_underscore_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        settings.add_server("b.example");
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|s| s.nick_collision == NickCollision::Underscore)
+        );
+        settings.servers[0].nick_collision = NickCollision::Digits;
+        save_to(&path, &settings).unwrap();
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.servers[0].nick_collision, NickCollision::Digits);
+        for server in saved["servers"].as_array_mut().unwrap() {
+            server.as_object_mut().unwrap().remove("nick_collision");
+        }
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(
+            loaded
+                .servers
+                .iter()
+                .all(|s| s.nick_collision == NickCollision::Underscore)
         );
     }
 

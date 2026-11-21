@@ -1634,6 +1634,36 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
     window_bounds_ctor(Bounds::new(final_origin, base_size))
 }
 
+/// Platform callbacks can still arrive for a window GPUI has already removed
+/// while the native window is being torn down (for example Windows sends
+/// activation and redraw messages around `DestroyWindow`). Those failures are
+/// expected, so they are dropped quietly; any other failure is still logged.
+trait LogUnlessWindowClosed<T> {
+    fn log_unless_window_closed(
+        self,
+        handle: AnyWindowHandle,
+        cx: &crate::AsyncApp,
+    ) -> Option<T>;
+}
+
+impl<T> LogUnlessWindowClosed<T> for Result<T> {
+    fn log_unless_window_closed(
+        self,
+        handle: AnyWindowHandle,
+        cx: &crate::AsyncApp,
+    ) -> Option<T> {
+        match self {
+            Ok(value) => Some(value),
+            Err(error) => {
+                if !cx.window_closed(handle.window_id()) {
+                    log::error!("{error:?}");
+                }
+                None
+            }
+        }
+    }
+}
+
 impl Window {
     pub(crate) fn new(
         handle: AnyWindowHandle,
@@ -1937,7 +1967,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
 
                 // Keep presenting briefly after high-rate input to prevent display
                 // underclocking, but subject to the same power limits as redraws.
@@ -1982,7 +2012,7 @@ impl Window {
                                 handle.window_id()
                             )
                         })
-                        .log_err();
+                        .log_unless_window_closed(handle, &cx);
                     // The demand is still unserved; platforms that stop
                     // requesting frames for idle windows need a wakeup to retry.
                     invalidator.wake_platform();
@@ -2019,7 +2049,7 @@ impl Window {
                                 handle.window_id()
                             )
                         })
-                        .log_err();
+                        .log_unless_window_closed(handle, &cx);
                 }
 
                 let should_draw = invalidator.is_dirty() || force_render;
@@ -2049,7 +2079,7 @@ impl Window {
                                     handle.window_id()
                                 )
                             })
-                            .log_err();
+                            .log_unless_window_closed(handle, &cx);
                     })
                 } else if needs_present {
                     handle
@@ -2057,7 +2087,7 @@ impl Window {
                         .with_context(|| {
                             format!("presenting frame for window {:?}", handle.window_id())
                         })
-                        .log_err();
+                        .log_unless_window_closed(handle, &cx);
                 }
 
                 handle
@@ -2074,7 +2104,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
 
                 // Platforms that stop requesting frames for idle windows only
                 // deliver another request after a wakeup. If demand remains
@@ -2106,7 +2136,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_insets_changed(Box::new({
@@ -2117,7 +2147,7 @@ impl Window {
                     .with_context(|| {
                         format!("handling insets change for window {:?}", handle.window_id())
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_resize(Box::new({
@@ -2126,7 +2156,7 @@ impl Window {
                 handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
                     .with_context(|| format!("handling resize for window {:?}", handle.window_id()))
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_moved(Box::new({
@@ -2135,7 +2165,7 @@ impl Window {
                 handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
                     .with_context(|| format!("handling move for window {:?}", handle.window_id()))
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_display_changed(Box::new({
@@ -2175,7 +2205,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -2202,7 +2232,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_visibility_change(Box::new({
@@ -2218,7 +2248,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_hover_status_change(Box::new({
@@ -2235,7 +2265,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err();
+                    .log_unless_window_closed(handle, &cx);
             }
         }));
         platform_window.on_input({
@@ -2246,7 +2276,7 @@ impl Window {
                     .with_context(|| {
                         format!("dispatching input for window {:?}", handle.window_id())
                     })
-                    .log_err()
+                    .log_unless_window_closed(handle, &cx)
                     .unwrap_or(DispatchEventResult::default())
             })
         });
@@ -2268,7 +2298,7 @@ impl Window {
                             handle.window_id()
                         )
                     })
-                    .log_err()
+                    .log_unless_window_closed(handle, &cx)
                     .unwrap_or(None)
             })
         });

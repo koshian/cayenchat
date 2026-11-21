@@ -120,3 +120,25 @@ elements but hard-codes text tooltips as not hoverable.
 
 `scripts/e2e/url_bubble_gui.py` (real binary under Xvfb) and
 `a_decoded_reference_shows_its_original_and_copies_only_that` exercise it.
+
+## Quiet callbacks for removed windows (#1081)
+
+Platform callbacks registered in `Window::new` (frame requests, resize, move,
+activation, hover, visibility, input, ...) can still arrive after GPUI removed
+the window while the native one is torn down; Windows sends activation and
+redraw messages around `DestroyWindow`. Upstream logged `window not found` for
+each. `LogUnlessWindowClosed::log_unless_window_closed` (`src/window.rs`) drops
+the error when `AsyncApp::window_closed` (`src/app/async_context.rs`) says the
+window is gone, and still logs any other failure. Callbacks that do not touch
+the window (tabs, accessibility, close) keep `log_err`.
+
+## Fallback prompt (#1081)
+
+`FallbackPromptRenderer` (`src/window/prompts.rs`), the Linux dialog:
+
+- Escape picks the cancel button (`KeyDownEvent`, `PromptButton::is_cancel`).
+- The box is `w_96` instead of `w_72`, and the detail text is centered at full
+  width, so CayenChat's notices do not wrap word by word.
+- The root occludes the mouse (`.occlude()`). Without it a click on the
+  dialog's button (or on its backdrop) also reached the views behind it, so
+  closing a CayenChat notice could select the channel tree row under it.

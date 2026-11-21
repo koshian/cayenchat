@@ -117,6 +117,12 @@ pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig
         && config.allow_plaintext_pass == profile.allow_plaintext_pass
 }
 
+/// Whether two configurations connect to the same server, so that what one
+/// learned about it (its `NICKLEN`) holds for the other.
+pub(crate) fn same_server(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
+    a.host == b.host && a.port == b.port && a.use_tls == b.use_tls
+}
+
 /// The configuration a dialog connects with: built again from `profile`, as
 /// saved now, because a change made while the dialog was open belongs to the
 /// connection it starts (#723). `opened` is the configuration of when the
@@ -131,6 +137,9 @@ pub(crate) fn rebuild_config(
 ) -> Result<ConnectionConfig, String> {
     let mut config = crate::connection_config_without_secrets(profile, language)?;
     config.peer_avatar_cache = opened.peer_avatar_cache.clone();
+    if same_server(opened, &config) {
+        config.nicklen = opened.nicklen.clone();
+    }
     if matches_profile(profile, opened) {
         config.resume_history.clone_from(&opened.resume_history);
         config.history_targets_since = opened.history_targets_since;
@@ -1210,6 +1219,19 @@ mod tests {
         assert_eq!(new.host, "other.example");
         assert_eq!(new.server_password, None);
         assert_eq!(new.sasl.unwrap().password, "");
+    }
+
+    #[test]
+    fn a_rebuilt_configuration_keeps_nicklen_only_for_the_same_server() {
+        let old = config(true);
+        old.nicklen.set(30);
+        let mut saved = profile(true);
+        saved.username = "me".into();
+        let same = rebuild_config(&saved, &old, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(same.nicklen.get(), Some(30));
+        saved.port = old.port.wrapping_add(1);
+        let other = rebuild_config(&saved, &old, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(other.nicklen.get(), None);
     }
 
     #[test]

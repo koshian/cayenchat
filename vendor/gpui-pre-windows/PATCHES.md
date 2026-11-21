@@ -45,3 +45,9 @@ odd-sized allocation, one over 16 MiB, and one without a UTF-16 NUL inside the
 `GlobalSize`-bounded bytes. Upstream scans for a NUL but falls back to the
 whole buffer and has no size cap. The decoder has no `windows` dependency and
 its tests run in CayenChat's workspace (`crates/ui/src/main.rs`).
+
+## Jump list descriptions without ICU (#1081)
+
+`destination_list.rs` measures the `IShellLinkW::GetDescription` buffer up to
+its first NUL itself. Upstream 0.3.12 still calls ICU's `u_strlen`, which makes
+the executable import `icuuc.dll` for nothing.

@@ -3476,6 +3476,7 @@ fn nickname_in_use_waits_for_another_nickname() {
     config.port = port;
     config.use_tls = false; // The private worker is tested without a certificate.
     let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    config.nick_collision = NickCollision::Dialog;
     let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
     let worker = thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -3507,6 +3508,106 @@ fn nickname_in_use_waits_for_another_nickname() {
     commands.try_send(Outgoing::Quit).unwrap();
     server.join().unwrap();
     worker.join().unwrap();
+}
+
+#[test]
+fn known_nicklen_lets_a_rejected_nickname_be_retried_once_automatically() {
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            if line.starts_with("USER ") {
+                break;
+            }
+        }
+        socket
+            .write_all(b":server 433 * alice :Nickname is already in use\r\n")
+            .unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "NICK alice_");
+        // The automatic try is used up: the next rejection goes to the user.
+        socket
+            .write_all(b":server 433 * alice_ :Nickname is already in use\r\n")
+            .unwrap();
+        line.clear();
+        let _ = lines.read_line(&mut line);
+    });
+
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false; // The private worker is tested without a certificate.
+    config.nicklen.set(9);
+    let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+    let worker = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(config, command_rx, event_tx));
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rejected = None;
+    while Instant::now() < deadline && rejected.is_none() {
+        match event_rx.try_recv() {
+            Ok(Event::NicknameRejected { nickname }) => rejected = Some(nickname),
+            Ok(Event::Disconnected(reason) | Event::Refused(reason)) => {
+                panic!("disconnected after 433: {reason}")
+            }
+            _ => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(rejected.as_deref(), Some("alice_"));
+    commands.try_send(Outgoing::Quit).unwrap();
+    server.join().unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn nick_collision_candidates_follow_the_policy_and_nicklen() {
+    use NickCollision::*;
+    assert_eq!(
+        Underscore.candidate("alice", 0, Some(9)).as_deref(),
+        Some("alice_")
+    );
+    assert_eq!(Underscore.candidate("alice", 1, Some(9)), None);
+    assert_eq!(
+        Underscore.candidate("alice", 0, None).as_deref(),
+        Some("alice_")
+    );
+    assert_eq!(Underscore.candidate("alice", 0, Some(5)), None);
+    assert_eq!(
+        Underscores.candidate("alice", 2, Some(9)).as_deref(),
+        Some("alice___")
+    );
+    assert_eq!(Underscores.candidate("alice", 2, Some(7)), None);
+    assert_eq!(
+        Underscores.candidate("alice", NickCollision::MAX_TRIES, Some(99)),
+        None
+    );
+    assert_eq!(
+        Digits.candidate("alice", 2, Some(9)).as_deref(),
+        Some("alice3")
+    );
+    assert_eq!(Dialog.candidate("alice", 0, Some(9)), None);
+}
+
+#[test]
+fn nicklen_is_read_from_isupport() {
+    let parse = |line: &str| advertised_nicklen(&line.parse::<IrcMessage>().unwrap());
+    assert_eq!(
+        parse(":s 005 me CHANTYPES=# NICKLEN=30 :are supported"),
+        Some(30)
+    );
+    assert_eq!(parse(":s 005 me -NICKLEN :are supported"), Some(0));
+    assert_eq!(parse(":s 005 me NICKLEN=x :are supported"), None);
+    assert_eq!(parse(":s 005 me CHANTYPES=# :are supported"), None);
 }
 
 /// Whether a client line is the query of a channel's modes sent after a join.
