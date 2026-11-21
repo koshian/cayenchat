@@ -4,7 +4,7 @@
 //! A link is a preview candidate only when it looks like a *direct* image
 //! link: `http` or `https`, no credentials, the default port, a public host,
 //! and a last path segment ending in `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`,
-//! `.bmp` or `.ico` (any case; query and fragment are ignored). ImgBB links
+//! `.avif`, `.bmp` or `.ico` (any case; query and fragment are ignored). ImgBB links
 //! (`https://i.ibb.co/<id>/<name>.png`) qualify. The extension is only a
 //! hint: the response type and the content decide (see `fetch` and
 //! `decode`). Web pages are never fetched to discover images.
@@ -21,7 +21,7 @@ use url::{Host, Url};
 use crate::{LoadError, MediaRef};
 
 /// Extensions of the formats previews decode.
-pub const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"];
+pub const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico"];
 
 /// Longer links are not previewed.
 const MAX_URL_LEN: usize = 2048;
@@ -259,6 +259,7 @@ mod tests {
             "http://example.com/x.jpeg?size=large#frag",
             "https://cdn.example.org/anim.gif",
             "https://cdn.example.org/pic.webp",
+            "https://cdn.example.org/pic.avif",
             "https://cdn.example.org/pic.bmp",
             "https://cdn.example.org/favicon.ICO",
             "https://example.com:443/pic.png",
@@ -277,7 +278,7 @@ mod tests {
             "https://example.com/image.png/",
             "https://example.com/pic.svg",
             "https://example.com/pic.qoi",
-            "https://example.com/pic.avif",
+            "https://example.com/pic.heic",
             "https://example.com/scan.tif",
             "https://example.com/scan.tiff",
             "https://example.com/pic.png.html",
