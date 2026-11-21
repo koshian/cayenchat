@@ -650,6 +650,11 @@ fn parse_frame_size(
     if frame_size_override {
         width1 = gb.get_bits(seqhdr.width_n_bits.into()) as c_int + 1;
         height = gb.get_bits(seqhdr.height_n_bits.into()) as c_int + 1;
+        // Local patch (see PATCHES.md): the spec requires this; without it a
+        // small sequence header can announce a frame far larger than it states.
+        if width1 > seqhdr.max_width || height > seqhdr.max_height {
+            return Err(EINVAL);
+        }
     } else {
         width1 = seqhdr.max_width;
         height = seqhdr.max_height;
