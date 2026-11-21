@@ -131,7 +131,10 @@ fn is_single_frame(coded: &[u8]) -> bool {
         }
         match kind {
             1 => headers += 1,
-            3 | 6 => frames += 1,
+            // The OBU kinds that start a frame in `rav1d`: frame header (3),
+            // frame (6) and redundant frame header (7, parsed as a new frame
+            // header when none is pending).
+            3 | 6 | 7 => frames += 1,
             _ => {}
         }
         rest = &tail[size..];
@@ -715,6 +718,16 @@ mod tests {
         assert!(!is_single_frame(&two_headers));
         let two_frames = [one.clone(), obu(6, &[3])].concat();
         assert!(!is_single_frame(&two_frames));
+        // A redundant frame header can start a hidden frame of its own.
+        let hidden = [
+            obu(1, &[1]),
+            obu(3, &[1]),
+            obu(4, &[1]),
+            obu(7, &[1]),
+            obu(4, &[1]),
+        ]
+        .concat();
+        assert!(!is_single_frame(&hidden));
         assert!(!is_single_frame(&obu(1, &[1])));
         assert!(!is_single_frame(&obu(6, &[1])));
         // A size running past the data.
