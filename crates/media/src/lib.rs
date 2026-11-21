@@ -17,9 +17,12 @@
 //! no provider or account.
 
 pub mod avatar_edit;
+mod avif;
 pub mod cache;
 pub mod decode;
 pub mod fetch;
+#[cfg(test)]
+mod format_fixtures;
 pub mod policy;
 #[cfg(test)]
 mod testing;
@@ -296,6 +299,59 @@ mod tests {
         assert_eq!((large.source_width, large.source_height), (3000, 2000));
         assert_eq!(load("/broken.png"), Err(LoadError::Malformed));
         assert_eq!(load("/page.png"), Err(LoadError::NotImage));
+    }
+
+    #[test]
+    fn avif_bmp_and_ico_previews_load_and_other_formats_fall_back_to_text() {
+        let mut ico = Vec::new();
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut ico), ImageFormat::Ico)
+            .unwrap();
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/a.bmp".to_string(),
+            Route::image("image/bmp", encode(ImageFormat::Bmp, 600, 300)),
+        );
+        routes.insert("/a.ico".to_string(), Route::image("image/x-icon", ico));
+        routes.insert(
+            "/a.tiff".to_string(),
+            Route::image("image/tiff", encode(ImageFormat::Tiff, 600, 300)),
+        );
+        // Extensions and types are hints: HTML under a `.ico` name is no image.
+        routes.insert(
+            "/fake.ico".to_string(),
+            Route::image("image/x-icon", b"<!doctype html>".to_vec()),
+        );
+        routes.insert(
+            "/a.avif".to_string(),
+            Route::image(
+                "image/avif",
+                include_bytes!("testdata/opaque8.avif").to_vec(),
+            ),
+        );
+        // Only the brand is AVIF: damaged, back to the text link.
+        let mut damaged = b"\0\0\0\x18ftypavif\0\0\0\0avifmif1".to_vec();
+        damaged.resize(64, 0);
+        routes.insert(
+            "/damaged.avif".to_string(),
+            Route::image("image/avif", damaged),
+        );
+        let server = FixtureServer::start(routes);
+        let limits = Limits::default();
+        let fetcher = HttpFetcher::for_local_fixture(&limits);
+        let load = |path: &str| {
+            let source = MediaRef::Link(url::Url::parse(&server.url(path)).unwrap());
+            load_thumbnail(&source, &fetcher, &limits, &CancelFlag::default())
+        };
+        let thumb = load("/a.bmp").unwrap();
+        assert_eq!((thumb.width, thumb.height), (400, 200));
+        let thumb = load("/a.ico").unwrap();
+        assert_eq!((thumb.width, thumb.height), (48, 48));
+        assert_eq!(load("/fake.ico"), Err(LoadError::NotImage));
+        assert_eq!(load("/a.tiff"), Err(LoadError::Unsupported));
+        let thumb = load("/a.avif").unwrap();
+        assert_eq!((thumb.width, thumb.height), (120, 80));
+        assert_eq!(load("/damaged.avif"), Err(LoadError::Malformed));
     }
 
     #[test]

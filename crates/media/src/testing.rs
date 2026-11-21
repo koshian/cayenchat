@@ -23,10 +23,6 @@ pub fn encode(format: ImageFormat, width: u32, height: u32) -> Vec<u8> {
         RgbImage::from_pixel(width, height, Rgb([255, 0, 0]))
             .write_to(&mut Cursor::new(&mut bytes), format)
             .unwrap();
-    } else if format == ImageFormat::Bmp {
-        // Only the signature matters: BMP is recognized and refused.
-        bytes.extend_from_slice(b"BM");
-        bytes.resize(64, 0);
     } else {
         RgbaImage::from_pixel(width, height, Rgba([255, 0, 0, 255]))
             .write_to(&mut Cursor::new(&mut bytes), format)

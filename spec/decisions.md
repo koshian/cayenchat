@@ -496,7 +496,7 @@ Candidates: the first link of a message (found by the log's existing URL
 recognition) that is `http`/`https`, has no credentials, uses the default
 port, names a public host (no `localhost`, single-label names or non-public
 IP literals) and whose last path segment ends in `.png`, `.jpg`, `.jpeg`,
-`.gif` or `.webp`. ImgBB's `https://i.ibb.co/<id>/<name>.<ext>` links
+`.gif`, `.webp`, `.avif`, `.bmp` or `.ico`. ImgBB's `https://i.ibb.co/<id>/<name>.<ext>` links
 qualify; ImgBB's `ibb.co/<id>` pages do not. Web pages are never fetched to
 discover images: no HTML, Open Graph, oEmbed or provider-specific scraping.
 
@@ -508,7 +508,7 @@ NAT64/6to4 forms) before connecting, so names and redirects cannot reach
 local services either; no proxy, cookies, `Referer`, credentials or
 compression; 5 s to connect and 15 s per preview in total. The response must
 be 200 with an `image/*` type (not SVG), at most 8 MiB, and the content must
-sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. The process-wide
+sniff as PNG, JPEG, GIF, WebP, AVIF, BMP or ICO; the extension is only a hint. The process-wide
 decode gate is held while constructing the limited decoder, so header parsing
 is serialized and charged to the 48 MiB per-image allocation budget. PNG
 iCCP and text chunks are removed before decoding because their metadata is not
@@ -525,11 +525,78 @@ The full image is dropped as soon as the thumbnail (at most
 show their first frame. There is no disk cache. Anything unsupported or
 failed leaves the ordinary text link.
 
+Formats added by #1100: BMP and ICO (`.bmp`, `.ico`). The pixel, byte, budget
+and gate limits above are unchanged, and the content still decides: ICO is
+recognized in `media` only (`ImageFormat::sniff`, which the upload path uses,
+is untouched). Findings from auditing the decoders in `image` 0.25.10: BMP
+ignores `max_alloc`, but its raster is the only large allocation and is
+charged by `reserve_source_image`; hostile headers fail on dimensions before
+pixels. `image`'s ICO decoder hands an embedded PNG to `png` without our
+limits or metadata stripping, does not bound the read by the entry's declared
+size, and its dimension check does not stop at 256 px. So ICO is reduced
+first (`ico_best_entry`): the directory (16 bytes an entry, read once, no
+per-entry scan) gives the entry declaring the most pixels, and exactly its
+declared bytes are used. A PNG entry is decoded as a plain PNG, with the PNG
+limits and metadata stripping, whatever the directory claims; a DIB entry is
+repacked as a one-entry ICO whose copy is charged. An entry past the end of
+the file is refused. The same decode and fetch code serves avatar loads, so
+BMP and ICO avatars load too; wallpapers and avatar editing are unchanged.
+Measurements are in `crates/media/tests/decode_allocations.rs` and
+`performance.md`.
+
+TIFF is deferred (`.tif`/`.tiff` are not candidates, and TIFF content is
+`Unsupported`). `tiff` decodes into a second raster-sized buffer and expands
+JPEG-compressed strips with a nested decoder that follows neither our
+dimensions nor `max_alloc` (a 16×16 TIFF holding a 5000×5000 JPEG strip
+allocated about 76 MB). Previews would need those nested decoders bounded
+separately, which is a separate issue. Avatar editing still opens TIFF as
+before.
+
+AVIF is previewed (`.avif`), added by #1100 after BMP and ICO, in previews only
+(avatar loads and avatar editing still refuse it). `image` decodes AVIF only with
+`avif-native`: the C library `libdav1d` found through `pkg-config`, which would
+have to be built or shipped and audited on Linux, macOS, Windows and FreeBSD, and
+which decodes in the decoder's constructor with no use of `Limits`. So AVIF does
+not go through `image` (`crates/media/src/avif.rs`): `mp4parse` (MPL-2.0, pure
+Rust) finds the AV1 data and `rav1d` 1.1.0 (BSD-2-Clause, the Rust port of dav1d)
+decodes it, built without its `asm` feature so no assembler, C compiler step or
+system library is needed on any platform. `rav1d` is vendored
+(`vendor/rav1d/PATCHES.md`) because the published crate aborts the process on some
+damaged streams: it exposes only a C ABI, and an `unwrap` in an error path of
+`dav1d_send_data` cannot unwind. The mutation test
+`crates/media/tests/avif_mutations.rs` found that one; with the fix it passed
+about 3.8 million mutated files (four seeds, release build). That is evidence, not proof:
+a further abort path would end the process, and the vendored copy is the place
+to fix it (see "Switch back when" in `vendor/README.md`).
+What is shown: the primary item (with its separate alpha item, rotated by
+`irot`), reduced straight to the thumbnail by averaging, so there is never a
+full-size RGBA copy. Grid (tiled) images, files without a primary item, and
+colour matrices other than identity (4:4:4), BT.709, BT.601, SMPTE 240M and
+BT.2020 NCL stay text; ICC profiles, HDR transfer functions and `imir`
+mirroring are ignored. The sequence header gives the frame size before any frame
+memory exists: it is checked against 8192 px and 16.7 MP, and an estimate of the
+decode (planes at their sample size and layout, padded to 128 px, 1 byte per
+pixel of decoder working memory and two copies of the file; the alpha item gets
+the same from its own sequence header, with the primary planes still held)
+must fit the 48 MiB budget, so a 4096 × 4096 4:2:0 8-bit picture fits and a 4:4:4
+10-bit one does not (nor a 4032 × 3024 10-bit 4:2:0 photo, about 54 MB: such an
+HDR-derived AVIF stays a text link). The estimate has to describe what is
+decoded, so each item (primary and alpha) must hold exactly one sequence header
+and exactly one frame (`is_single_frame`; `rav1d` would take the last header
+and decode and keep every further, even hidden, frame), the alpha item must match
+the primary in size and be monochrome, and the vendored `rav1d` refuses a
+`frame_size_override` frame larger than the header's `max_width` × `max_height`
+(a conformance rule it did not check). `rav1d` also refuses frames beyond the
+header's area itself (`frame_size_limit`), runs one thread with one frame in flight, applies no film
+grain (which would copy the picture) and logs nothing. The estimate was checked
+against the real peak in `decode_allocations.rs` (measured 0.6–0.7 bytes per
+pixel of working memory). Decoding is serialized by the same gate.
+
 Implementation: a GPUI-free `cayenchat-media` crate owns recognition,
 loading, decoding and the application-wide `PreviewCache`; the UI runs loads
 on GPUI's background executor and draws `RenderImage`s. It uses `ureq` 3
 (already used by `upload`) with its resolver hook, and the `image` crate
-GPUI already depends on (PNG/JPEG/GIF/WebP decoders only); no new crates.
+GPUI already depends on (PNG/JPEG/GIF/WebP/BMP/ICO decoders only); AVIF uses `mp4parse` and `rav1d` (see above).
 GPUI's own `img()` URL loading was not used: it has no address, redirect,
 size or pixel limits and caches without a byte budget. GPUI 0.2.2's sprite
 atlases never reused the space of a removed image; the vendored copy now

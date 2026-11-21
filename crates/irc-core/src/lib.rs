@@ -269,6 +269,8 @@ pub struct ConnectionConfig {
     pub regain_ops: bool,
     /// What to try when the registration nickname is rejected (#1072).
     pub nick_collision: NickCollision,
+    /// The nicknames [`NickCollision::Alternates`] tries, in order.
+    pub alternate_nicknames: Vec<String>,
     /// The server's `NICKLEN`, kept across a network's connections so the
     /// automatic nickname try also works on reconnects (005 arrives only
     /// after registration). Memory only.
@@ -311,6 +313,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("channel_encodings", &self.channel_encodings)
             .field("regain_ops", &self.regain_ops)
             .field("nick_collision", &self.nick_collision)
+            .field("alternate_nicknames", &self.alternate_nicknames)
             .field("char_refs", &self.char_refs)
             .finish()
     }
@@ -345,6 +348,7 @@ impl ConnectionConfig {
             channel_encodings: Vec::new(),
             regain_ops: false,
             nick_collision: NickCollision::default(),
+            alternate_nicknames: Vec::new(),
             nicklen: NickLenCache::default(),
             char_refs: CharRefMode::Auto,
         }
@@ -700,6 +704,8 @@ pub enum NickCollision {
     Underscores,
     /// The nickname plus 1, 2, 3 ..., up to [`NickCollision::MAX_TRIES`].
     Digits,
+    /// The listed alternate nicknames, in order, one per try.
+    Alternates,
     /// No automatic try.
     Dialog,
 }
@@ -711,21 +717,29 @@ impl NickCollision {
     /// The nickname for automatic try number `attempt` (0 for the first) after
     /// `base` was rejected, or `None` when the user must be asked: no more
     /// tries, or the candidate longer than a known `NICKLEN`
-    /// (counted in bytes, the stricter reading).
-    pub fn candidate(self, base: &str, attempt: u32, nicklen: Option<usize>) -> Option<String> {
+    /// (counted in bytes, the stricter reading). `alternates` is the list
+    /// [`NickCollision::Alternates`] draws from.
+    pub fn candidate(
+        self,
+        base: &str,
+        attempt: u32,
+        nicklen: Option<usize>,
+        alternates: &[String],
+    ) -> Option<String> {
         let tries = match self {
             Self::Underscore => 1,
             Self::Underscores | Self::Digits => Self::MAX_TRIES,
+            Self::Alternates => u32::try_from(alternates.len()).unwrap_or(u32::MAX),
             Self::Dialog => 0,
         };
         if attempt >= tries {
             return None;
         }
         let mut candidate = base.to_owned();
-        if self == Self::Digits {
-            candidate.push_str(&(attempt + 1).to_string());
-        } else {
-            candidate.extend(std::iter::repeat_n('_', attempt as usize + 1));
+        match self {
+            Self::Alternates => candidate.clone_from(&alternates[attempt as usize]),
+            Self::Digits => candidate.push_str(&(attempt + 1).to_string()),
+            _ => candidate.extend(std::iter::repeat_n('_', attempt as usize + 1)),
         }
         // Unknown NICKLEN (005 comes after registration): try anyway. A server
         // that rejects it (432/433) uses up the try and the dialog opens.
@@ -3045,6 +3059,7 @@ async fn run_cancellable(
         nick_base: registration_nick.clone(),
         nick_tries: 0,
         nick_collision: config.nick_collision,
+        alternate_nicknames: config.alternate_nicknames.clone(),
         nicklen: config.nicklen.clone(),
         current_nick: registration_nick,
         roster: RosterTracker::default(),
@@ -3240,6 +3255,7 @@ struct Worker {
     nick_base: String,
     nick_tries: u32,
     nick_collision: NickCollision,
+    alternate_nicknames: Vec<String>,
     nicklen: NickLenCache,
     roster: RosterTracker,
     whois: WhoisCollector,
@@ -3935,6 +3951,7 @@ impl Worker {
                     &self.nick_base,
                     self.nick_tries,
                     self.nicklen.get(),
+                    &self.alternate_nicknames,
                 ) {
                     let tries = self.nick_tries + 1;
                     self.note(format!(

@@ -98,7 +98,9 @@ pub fn validate(bytes: &[u8]) -> Result<&'static str, LoadError> {
         image::ImageFormat::Png => "png",
         image::ImageFormat::Jpeg => "jpg",
         image::ImageFormat::Gif => "gif",
-        _ => "webp",
+        image::ImageFormat::WebP => "webp",
+        // Previews also decode BMP, ICO and TIFF; wallpapers stay as they were.
+        _ => return Err(LoadError::Unsupported),
     };
     let limits = Limits {
         thumbnail_width: MAX_SIDE,
@@ -309,6 +311,12 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         assert_eq!(validate(&png), Ok("png"));
+        // BMP, ICO and TIFF are previewed but not wallpapers.
+        let mut bmp = Vec::new();
+        image::RgbaImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .unwrap();
+        assert_eq!(validate(&bmp), Err(LoadError::Unsupported));
         assert_eq!(validate(b"not an image"), Err(LoadError::NotImage));
         // A cut-off file is malformed, not accepted on its header alone.
         assert!(validate(&png[..png.len() / 2]).is_err());

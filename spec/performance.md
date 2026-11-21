@@ -85,7 +85,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Preview records | 256 (ready, failed, queued and loading) | application | Least recently used ready or failed records go first; up to 4 waiting rows each. |
 | Ready thumbnails | 32 MiB charged, least recently used evicted | application | Each thumbnail is charged twice its BGRA bytes (the `RenderImage` copy and its GPU atlas tile); at the largest size (400×200) that is 640,000 bytes, so about 52 thumbnails. Evicted ones are removed from the atlas. |
 | Preview response | 8 MiB, 3 redirects, 5 s connect, 15 s total | per load | At most 16 MiB of response buffers at once (two loads). |
-| Preview decoding | one at a time; ≤ 8192 px a side, ≤ 16.7 MP, decoder allocation ≤ 48 MiB | process | The decode gate covers decoder construction and header parsing as well as pixel decoding; one limited decoder supplies both dimensions and pixels. PNG iCCP/text metadata is discarded before decoding; its full input length is conservatively charged before making the filtered copy, and twice any eXIf length is charged because `png` keeps it twice under a limit fixed at construction, and the raster declared by IHDR is also taken off that limit (PNG only; a PNG not starting with a valid IHDR is rejected before stripping, and 512 KiB is kept aside for `png` buffers outside its limit, measured 283–299 KiB plain/Adam7 near the limit). The source raster and copy are charged before decoder intermediate buffers, including partial GIF frames, use the remaining budget. The full image is freed once the thumbnail exists. |
+| Preview decoding (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO) | one at a time; ≤ 8192 px a side, ≤ 16.7 MP, decoder allocation ≤ 48 MiB | process | The decode gate covers decoder construction and header parsing as well as pixel decoding; one limited decoder supplies both dimensions and pixels. PNG iCCP/text metadata is discarded before decoding; its full input length is conservatively charged before making the filtered copy, and twice any eXIf length is charged because `png` keeps it twice under a limit fixed at construction, and the raster declared by IHDR is also taken off that limit (PNG only; a PNG not starting with a valid IHDR is rejected before stripping, and 512 KiB is kept aside for `png` buffers outside its limit, measured 283–299 KiB plain/Adam7 near the limit). The source raster and copy are charged before decoder intermediate buffers, including partial GIF frames, use the remaining budget. BMP and ICO (D018): BMP ignores `max_alloc` but allocates only the charged raster; ICO is reduced to its one chosen entry first (directory read once), a PNG entry going through the PNG handling above and a DIB entry being repacked with its copy charged. AVIF (D018, `avif.rs`, `rav1d` has no allocation limit): the sequence headers (primary and alpha item, each required to hold one header and one frame) are parsed first and the frame is refused unless an estimate (padded planes at their sample size and layout, the alpha item likewise with the primary planes held, 1 byte a pixel of working memory, two copies of the file) fits the budget, so 4096 × 4096 4:2:0 8-bit fits (measured peak 32 MiB, planes 24 MiB, working memory 0.6–0.7 B/px at 2048², 3000² and 4096²) and 4:4:4 10-bit (107 MiB) is refused up front; the picture is averaged straight down to the thumbnail with no full RGBA copy, film grain is off, one thread. Decoding 4096 × 4096 takes about 0.35 s (release, no assembly; plasma test image). TIFF is not previewed (nested JPEG strips escape the budget). Peaks are measured in `decode_allocations.rs`. The full image is freed once the thumbnail exists. |
 | Preview retries | transient failures (network, 408/429/5xx) once more after 5 min; others never | per record | While the record is retained; redraws never retry. |
 | Avatar image retries (ui) | transient failures (same classification) every 5 min with no attempt limit; others never | per record | The failed avatar shows the default icon. A retry starts only when a visible row asks after the 5 minutes; one timer (none while nothing waits) redraws the avatar panes at the earliest due time so visible rows retry without input, and rows off screen cause no request. Ready images are never refreshed. A changed URL is a new record. |
 | Avatar metadata (irc-core) | 2,048 users with an avatar; values ≤ 2,048 bytes; 16 deferred channel syncs, 3 per channel | per connection | Only the `avatar` key is kept; later users get none. Reset on reconnect or lost capability. |
@@ -1569,3 +1569,38 @@ first character typed into an empty draft redraws the four panes once (GPUI
 tests count the redraws after the first character, so a regression that
 redraws on each keystroke is still caught. The process-level scenarios
 (`run_baseline.py`) ran once in debug as a smoke test, not as a comparison.
+
+## GPUI 0.3 migration, before merging into master (2026-11-22, #1081)
+
+All patches are re-applied on `gpui-kit-migration`. Release build, headless
+`perf_baseline` (`cargo test --release --locked -p cayenchat-ui perf_baseline
+-- --ignored --nocapture --test-threads=1`), same Linux container, three
+runs each of master (`origin/master`, GPUI 0.2.2, a separate worktree) and
+the migration branch merged with that master. Median of all single-server
+samples (µs; 24 per cell: 8 tests' lines over three runs):
+
+| Build | Typing | Typing after | Channel switch | Select same | Switch unread | Scroll 20 rows | 256-event batch | Roster 2,000 | Roster burst 32 | Resize |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| master | 328 | 342 | 1,890 | 1,460 | 1,898 | 1,459 | 1,887 | 1,672 | 2,791 | 2,301 |
+| This branch | 195 | 211 | 1,818 | 1,346 | 1,783 | 1,412 | 1,997 | 1,641 | 2,860 | 2,353 |
+
+Typing, channel switching and scrolling (the log paths) are lower than
+master. The 256-event batch (+6 %), roster burst (+2 %) and resize (+2 %)
+are slightly higher. The batch cell pools the event-batch lines of several
+scenarios, whose medians differ (about 1.6–2.4 ms for most, 18.5 ms in master
+and 21.1 ms in the branch for one heavier scenario), so the pooled median is
+not a spread of repeated runs of one scenario and the +6 % is not shown to be
+noise; it is a small difference of the same size as the per-run variation seen
+in single scenarios, and was not investigated further. The four-server cells
+are not part of the table above; they were equal or lower.
+
+The `shape-run-cache` patch is not re-applied (it reversed `<`/`>` after
+right-to-left text). Its effect is **not evaluated** here: `perf_baseline`
+uses `NoopTextSystem` and does no real text shaping, so the channel-switch
+cells say nothing about the cost of shaping every row again on the first draw
+after a switch. That needs a measurement with a real text system.
+
+Limits: headless only (no GPU, no real window, no real text shaping); no macOS
+or Windows run; the process-level scenarios (`run_baseline.py`) were not
+repeated for this comparison. The master side is `origin/master` at
+`1532e9c`.

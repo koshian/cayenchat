@@ -601,7 +601,8 @@ registration the core turns it into `NicknameRejected`, pauses its registration
 timeout and keeps the link open. First, though, the per-server
 `ServerProfile::nick_collision` policy (#1072; `Underscore` by default: the
 nickname plus one `_`, once; also `Underscores` and `Digits` for up to five
-tries, or `Dialog` for none) may send another NICK on the same connection,
+tries, `Alternates` for the space-separated `ServerProfile::alt_nicks` (up to
+10) in order, one per try, or `Dialog` for none) may send another NICK on the same connection,
 when the candidate fits the server's `NICKLEN`, if known. `NICKLEN` comes from 005,
 after registration, so the core keeps it in a `NickLenCache` the UI carries
 from a network's connection to the next (memory only); while it is unknown (the
@@ -2481,7 +2482,7 @@ lags, both are redrawn on the next frame.
 URL was supplied as an image, so no file extension is required (unlike
 `image_link` for chat links, whose rules are unchanged), but the scheme,
 credential, port and public-address checks, redirect checks, response type
-(`image/*`, not SVG), sniffed content (PNG, JPEG, GIF, WebP; first frame
+(`image/*`, not SVG), sniffed content (PNG, JPEG, GIF, WebP, BMP, ICO; first frame
 of animations), size limits and background decoding are the ones previews
 use. Limits are in D023 and `performance.md`.
 

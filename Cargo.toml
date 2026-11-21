@@ -62,9 +62,18 @@ irc-proto = { path = "vendor/irc-proto" }
 # The published client keeps a channel's user list after we are kicked, so a
 # rejoin appends to stale entries (#342); drop it like our own PART does.
 irc = { path = "vendor/irc" }
+# The published 1.1.0 aborts the process on some damaged AV1 data (an `unwrap`
+# in an error path of a function that cannot unwind); AVIF previews decode
+# untrusted files with it (D018).
+rav1d = { path = "vendor/rav1d" }
 
 [profile.dev]
 debug = 1
+
+# AVIF previews decode full frames with rav1d; unoptimized it takes tens of
+# seconds for a large picture and holds the process-wide decode gate meanwhile.
+[profile.dev.package.rav1d]
+opt-level = 3
 
 # Versioned releases only (release.yml); the rolling beta and test builds use
 # `release`, which builds much faster. On Linux x86_64 this took the binary

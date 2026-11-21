@@ -502,6 +502,7 @@ fn connection_config_without_secrets(
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.regain_ops = profile.regain_ops;
     config.nick_collision = nick_collision(profile.nick_collision);
+    config.alternate_nicknames = cayenchat_storage::parse_alt_nicks(&profile.alt_nicks);
     config.encoding = profile.encoding.label().into();
     config.char_refs = char_ref_mode(profile.char_refs);
     config.channel_encodings = channel_encodings(profile);
@@ -547,6 +548,7 @@ fn nick_collision(choice: cayenchat_storage::NickCollision) -> cayenchat_irc_cor
         Saved::Underscore => Core::Underscore,
         Saved::Underscores => Core::Underscores,
         Saved::Digits => Core::Digits,
+        Saved::Alternates => Core::Alternates,
         Saved::Dialog => Core::Dialog,
     }
 }
@@ -2509,6 +2511,8 @@ impl ChatWindow {
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
                     config.nick_collision = nick_collision(profile.nick_collision);
+                    config.alternate_nicknames =
+                        cayenchat_storage::parse_alt_nicks(&profile.alt_nicks);
                     config.char_refs = char_ref_mode(profile.char_refs);
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.

@@ -3572,30 +3572,31 @@ fn known_nicklen_lets_a_rejected_nickname_be_retried_once_automatically() {
 #[test]
 fn nick_collision_candidates_follow_the_policy_and_nicklen() {
     use NickCollision::*;
+    let none: &[String] = &[];
+    let pick =
+        |policy: NickCollision, attempt, nicklen| policy.candidate("alice", attempt, nicklen, none);
+    assert_eq!(pick(Underscore, 0, Some(9)).as_deref(), Some("alice_"));
+    assert_eq!(pick(Underscore, 1, Some(9)), None);
+    assert_eq!(pick(Underscore, 0, None).as_deref(), Some("alice_"));
+    assert_eq!(pick(Underscore, 0, Some(5)), None);
+    assert_eq!(pick(Underscores, 2, Some(9)).as_deref(), Some("alice___"));
+    assert_eq!(pick(Underscores, 2, Some(7)), None);
+    assert_eq!(pick(Underscores, NickCollision::MAX_TRIES, Some(99)), None);
+    assert_eq!(pick(Digits, 2, Some(9)).as_deref(), Some("alice3"));
+    assert_eq!(pick(Dialog, 0, Some(9)), None);
+    // The list is tried in order, then the dialog opens; NICKLEN still applies.
+    let list = ["bob".to_owned(), "carol_long".to_owned()];
     assert_eq!(
-        Underscore.candidate("alice", 0, Some(9)).as_deref(),
-        Some("alice_")
-    );
-    assert_eq!(Underscore.candidate("alice", 1, Some(9)), None);
-    assert_eq!(
-        Underscore.candidate("alice", 0, None).as_deref(),
-        Some("alice_")
-    );
-    assert_eq!(Underscore.candidate("alice", 0, Some(5)), None);
-    assert_eq!(
-        Underscores.candidate("alice", 2, Some(9)).as_deref(),
-        Some("alice___")
-    );
-    assert_eq!(Underscores.candidate("alice", 2, Some(7)), None);
-    assert_eq!(
-        Underscores.candidate("alice", NickCollision::MAX_TRIES, Some(99)),
-        None
+        Alternates.candidate("alice", 0, Some(9), &list).as_deref(),
+        Some("bob")
     );
     assert_eq!(
-        Digits.candidate("alice", 2, Some(9)).as_deref(),
-        Some("alice3")
+        Alternates.candidate("alice", 1, None, &list).as_deref(),
+        Some("carol_long")
     );
-    assert_eq!(Dialog.candidate("alice", 0, Some(9)), None);
+    assert_eq!(Alternates.candidate("alice", 1, Some(9), &list), None);
+    assert_eq!(Alternates.candidate("alice", 2, None, &list), None);
+    assert_eq!(pick(Alternates, 0, None), None);
 }
 
 #[test]
