@@ -51,3 +51,10 @@ its tests run in CayenChat's workspace (`crates/ui/src/main.rs`).
 `destination_list.rs` measures the `IShellLinkW::GetDescription` buffer up to
 its first NUL itself. Upstream 0.3.12 still calls ICU's `u_strlen`, which makes
 the executable import `icuuc.dll` for nothing.
+
+## DIB clipboard images (#1081)
+
+`convert_dib_to_bmp` (CF_DIB to BMP) checks the header size, palette count and
+pixel offset against the data length with checked arithmetic and returns `None`
+for a malformed header, instead of overflowing on clipboard data from another
+application.

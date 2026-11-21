@@ -273,30 +273,49 @@ fn read_files() -> Option<ClipboardEntry> {
 }
 
 /// DIB is BMP without the 14-byte BITMAPFILEHEADER. Prepend one.
+///
+/// The data comes from another application, so every header value is checked
+/// against the data length; malformed headers give `None`.
 fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
-    if dib.len() < 40 {
+    const FILE_HEADER_SIZE: u32 = 14;
+    const INFO_HEADER_SIZE: u32 = 40;
+    if dib.len() < INFO_HEADER_SIZE as usize {
         return None;
     }
 
     let header_size = u32::from_le_bytes(dib[0..4].try_into().ok()?);
     let bit_count = u16::from_le_bytes(dib[14..16].try_into().ok()?);
     let compression = u32::from_le_bytes(dib[16..20].try_into().ok()?);
+    if header_size < INFO_HEADER_SIZE || header_size as usize > dib.len() {
+        return None;
+    }
 
     let color_table_size = if bit_count <= 8 {
         let colors_used = u32::from_le_bytes(dib[32..36].try_into().ok()?);
-        (if colors_used == 0 {
+        let colors = if colors_used == 0 {
             1u32 << bit_count
         } else {
             colors_used
-        }) * 4
+        };
+        // At most 2^bit_count palette entries (4 bytes each) can be used.
+        if colors > 1 << bit_count {
+            return None;
+        }
+        colors.checked_mul(4)?
     } else if compression == 3 {
         12 // BI_BITFIELDS
     } else {
         0
     };
 
-    let pixel_offset = 14 + header_size + color_table_size;
-    let file_size = 14 + dib.len() as u32;
+    let dib_len = u32::try_from(dib.len()).ok()?;
+    let file_size = FILE_HEADER_SIZE.checked_add(dib_len)?;
+    let pixel_offset = FILE_HEADER_SIZE
+        .checked_add(header_size)?
+        .checked_add(color_table_size)?;
+    if pixel_offset > file_size {
+        return None;
+    }
 
     let mut bmp = Vec::with_capacity(file_size as usize);
     bmp.extend_from_slice(b"BM");
@@ -305,6 +324,47 @@ fn convert_dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     bmp.extend_from_slice(&pixel_offset.to_le_bytes());
     bmp.extend_from_slice(dib);
     Some(bmp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dib(header_size: u32, bit_count: u16, colors_used: u32, total: usize) -> Vec<u8> {
+        let mut dib = vec![0u8; total];
+        dib[0..4].copy_from_slice(&header_size.to_le_bytes());
+        dib[14..16].copy_from_slice(&bit_count.to_le_bytes());
+        dib[32..36].copy_from_slice(&colors_used.to_le_bytes());
+        dib
+    }
+
+    #[test]
+    fn converts_a_well_formed_dib() {
+        let bmp = convert_dib_to_bmp(&dib(40, 24, 0, 44)).unwrap();
+        assert_eq!(&bmp[..2], b"BM");
+        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()), 58);
+        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 54);
+        assert_eq!(bmp.len(), 58);
+    }
+
+    #[test]
+    fn counts_the_palette_in_the_pixel_offset() {
+        let bmp = convert_dib_to_bmp(&dib(40, 8, 0, 40 + 1024 + 4)).unwrap();
+        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 14 + 40 + 1024);
+    }
+
+    #[test]
+    fn rejects_malformed_headers_without_panicking() {
+        assert!(convert_dib_to_bmp(&[0; 39]).is_none());
+        // Header size that overflows the offset sum or exceeds the data.
+        assert!(convert_dib_to_bmp(&dib(u32::MAX, 24, 0, 40)).is_none());
+        assert!(convert_dib_to_bmp(&dib(1000, 24, 0, 40)).is_none());
+        assert!(convert_dib_to_bmp(&dib(39, 24, 0, 40)).is_none());
+        // Palette larger than the bit depth allows, or than the data.
+        assert!(convert_dib_to_bmp(&dib(40, 8, u32::MAX, 40)).is_none());
+        assert!(convert_dib_to_bmp(&dib(40, 4, 17, 200)).is_none());
+        assert!(convert_dib_to_bmp(&dib(40, 8, 0, 40)).is_none());
+    }
 }
 
 fn log_unsupported_clipboard_formats() {
