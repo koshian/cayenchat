@@ -1586,12 +1586,21 @@ samples (µs; 24 per cell: 8 tests' lines over three runs):
 
 Typing, channel switching and scrolling (the log paths) are lower than
 master. The 256-event batch (+6 %), roster burst (+2 %) and resize (+2 %)
-are slightly higher, within the run-to-run spread of those cells (the batch
-ranges 1.6–2.4 ms in both builds). The four-server cells are equal or lower
-as well. The `shape-run-cache` patch is not re-applied (it reversed `<`/`>`
-after right-to-left text), so the first draw after a channel switch shapes
-every row again; the channel-switch cells above include that cost.
+are slightly higher. The batch cell pools the event-batch lines of several
+scenarios, whose medians differ (about 1.6–2.4 ms for most, 18.5 ms in master
+and 21.1 ms in the branch for one heavier scenario), so the pooled median is
+not a spread of repeated runs of one scenario and the +6 % is not shown to be
+noise; it is a small difference of the same size as the per-run variation seen
+in single scenarios, and was not investigated further. The four-server cells
+are not part of the table above; they were equal or lower.
 
-Limits: headless only (no GPU, no real window); no macOS or Windows run; the
-process-level scenarios (`run_baseline.py`) were not repeated for this
-comparison.
+The `shape-run-cache` patch is not re-applied (it reversed `<`/`>` after
+right-to-left text). Its effect is **not evaluated** here: `perf_baseline`
+uses `NoopTextSystem` and does no real text shaping, so the channel-switch
+cells say nothing about the cost of shaping every row again on the first draw
+after a switch. That needs a measurement with a real text system.
+
+Limits: headless only (no GPU, no real window, no real text shaping); no macOS
+or Windows run; the process-level scenarios (`run_baseline.py`) were not
+repeated for this comparison. The master side is `origin/master` at
+`1532e9c`.
