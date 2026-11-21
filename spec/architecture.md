@@ -2482,7 +2482,7 @@ lags, both are redrawn on the next frame.
 URL was supplied as an image, so no file extension is required (unlike
 `image_link` for chat links, whose rules are unchanged), but the scheme,
 credential, port and public-address checks, redirect checks, response type
-(`image/*`, not SVG), sniffed content (PNG, JPEG, GIF, WebP; first frame
+(`image/*`, not SVG), sniffed content (PNG, JPEG, GIF, WebP, BMP, ICO; first frame
 of animations), size limits and background decoding are the ones previews
 use. Limits are in D023 and `performance.md`.
 

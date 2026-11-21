@@ -336,3 +336,85 @@ fn png_decode_peak_stays_within_the_default_budget_near_the_limit() {
     });
     assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
 }
+
+#[path = "../src/format_fixtures.rs"]
+mod format_fixtures;
+
+fn encoded(format: image::ImageFormat, width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::RgbaImage::from_pixel(width, height, image::Rgba([255, 0, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+        .unwrap();
+    bytes
+}
+
+/// BMP and ICO decoders do not honour `max_alloc` (`image` ignores it), so
+/// their real allocations are measured against the default 48 MiB budget:
+/// large valid files, and headers declaring much more than the data holds.
+#[test]
+fn bmp_and_ico_decodes_stay_within_the_default_budget() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    let budget = Limits::default().max_decode_bytes as usize;
+    let decode = |bytes: &[u8]| {
+        within_budget(budget, || {
+            decode::thumbnail(bytes, &Limits::default(), &CancelFlag::default())
+        })
+    };
+    // Valid and large: 2000 × 2000 RGBA (16 MB).
+    let result = decode(&encoded(image::ImageFormat::Bmp, 2000, 2000));
+    assert!(result.is_ok(), "{result:?}");
+    // A raster past the budget, within the pixel limit: refused up front.
+    assert_eq!(
+        decode(&encoded(image::ImageFormat::Bmp, 4096, 4096)),
+        Err(cayenchat_media::LoadError::TooLarge)
+    );
+    // BMP fits up to the budget (3000 × 3000 RGBA, 36 MB).
+    assert!(decode(&encoded(image::ImageFormat::Bmp, 3000, 3000)).is_ok());
+    let png = encoded(image::ImageFormat::Png, 256, 256);
+    let ico = format_fixtures::ico_of(&[(0, 0, png.clone())]);
+    assert!(decode(&ico).is_ok());
+
+    // A PNG entry takes the PNG path whatever the directory says: a 16 × 16
+    // directory over a 4096 × 3070 PNG (50.3 MB of raster) is over the budget,
+    // and a 20 MiB compressed iCCP is stripped, not inflated.
+    use format_fixtures::*;
+    let real_png = |width: u32, height: u32, icc: Option<usize>| {
+        let mut info = png::Info::with_size(width, height);
+        info.color_type = png::ColorType::Rgba;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = icc.map(|len| std::borrow::Cow::Owned(vec![0; len]));
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+        encoder.set_compression(png::Compression::High);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&vec![0; width as usize * height as usize * 4])
+            .unwrap();
+        drop(writer);
+        bytes
+    };
+    let huge_icc = ico_of(&[(16, 16, real_png(16, 16, Some(20 * 1024 * 1024)))]);
+    assert!(huge_icc.len() < 1024 * 1024);
+    assert!(decode(&huge_icc).is_ok());
+    let big = ico_of(&[(16, 16, real_png(4096, 3070, None))]);
+    assert_eq!(decode(&big), Err(cayenchat_media::LoadError::TooLarge));
+
+    // Hostile: far more declared than present.
+    // Run-length data that ends early decodes to a mostly empty image: only
+    // the budget is at stake here.
+    let _ = decode(&bmp_rle8(4000, 4000));
+    for (name, bytes) in [
+        ("bmp 4000²", bmp_declaring(4000, 4000, 64)),
+        ("bmp 8192²", bmp_declaring(8192, 8192, 64)),
+        (
+            "ico png 60000²",
+            ico_of(&[(0, 0, png_declaring(png.clone(), 60_000, 60_000))]),
+        ),
+        (
+            "ico png 4096²",
+            ico_of(&[(0, 0, png_declaring(png.clone(), 4096, 4096))]),
+        ),
+    ] {
+        assert!(decode(&bytes).is_err(), "{name}");
+    }
+}
