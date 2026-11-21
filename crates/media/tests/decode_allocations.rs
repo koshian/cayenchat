@@ -418,3 +418,125 @@ fn bmp_and_ico_decodes_stay_within_the_default_budget() {
         assert!(decode(&bytes).is_err(), "{name}");
     }
 }
+
+/// AVIF goes through `rav1d`, which has no allocation limit to set: the memory
+/// it needs is estimated from the sequence header before decoding. The estimate
+/// must stay above what is really allocated, so a budget just above it still
+/// holds, and frames that do not fit are refused before any frame memory exists.
+#[test]
+fn avif_decodes_stay_within_the_estimate_and_the_default_budget() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // 4096 × 4096, 8 bit, 4:2:0: peak measured at 32 MiB (planes 24 MiB).
+    let flat = include_bytes!("../src/testdata/plasma4096.avif");
+    // 4096 × 4096, 10 bit, 4:4:4: 96 MiB of planes alone.
+    let wide = include_bytes!("../src/testdata/plasma4096_444_10.avif");
+    let default_budget = Limits::default().max_decode_bytes as usize;
+    let result = within_budget(default_budget, || {
+        decode::thumbnail(flat, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result.map(|thumb| thumb.source_width), Ok(4096));
+    // The estimate for the first is 25.2 + 16.7 MB; 44 MiB holds it.
+    let tight = Limits {
+        max_decode_bytes: 44 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let result = within_budget(44 * 1024 * 1024, || {
+        decode::thumbnail(flat, &tight, &CancelFlag::default())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let result = within_budget(1024 * 1024, || {
+        decode::thumbnail(wide, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+    // Smaller frames are fine in a bigger budget, still inside the estimate.
+    let roomy = Limits {
+        max_decode_bytes: 160 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let result = within_budget(160 * 1024 * 1024, || {
+        decode::thumbnail(wide, &roomy, &CancelFlag::default())
+    });
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn be32(bytes: &[u8], at: usize) -> usize {
+    u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+}
+
+fn put_be32(bytes: &mut [u8], at: usize, value: usize) {
+    bytes[at..at + 4].copy_from_slice(&(value as u32).to_be_bytes());
+}
+
+fn find(bytes: &[u8], tag: &[u8; 4]) -> usize {
+    bytes.windows(4).position(|w| w == tag).unwrap()
+}
+
+/// The AV1 data of a single item file made by the fixtures here (`iloc`
+/// version 0 with one extent, `mdat` last).
+fn av1_data(avif: &[u8]) -> &[u8] {
+    let iloc = find(avif, b"iloc");
+    let (offset, length) = (be32(avif, iloc + 16), be32(avif, iloc + 26));
+    &avif[offset..offset + length]
+}
+
+/// `avif` with `extra` added to the end of `mdat`, and the length of the
+/// primary item (`iloc`, extent length) grown to cover it.
+fn with_item_tail(avif: &[u8], extra: &[u8]) -> Vec<u8> {
+    let mut out = avif.to_vec();
+    out.extend_from_slice(extra);
+    let iloc = find(&out, b"iloc");
+    let length = be32(&out, iloc + 26);
+    put_be32(&mut out, iloc + 26, length + extra.len());
+    let mdat = find(&out, b"mdat") - 4;
+    let size = be32(&out, mdat);
+    put_be32(&mut out, mdat, size + extra.len());
+    out
+}
+
+/// The sequence header OBU (type 1, with its size field) inside `av1`.
+fn sequence_header_obu(av1: &[u8]) -> Vec<u8> {
+    let mut rest = av1;
+    while !rest.is_empty() {
+        let size = rest[1] as usize; // sizes here are below 128
+        let (obu, tail) = rest.split_at(2 + size);
+        if (obu[0] >> 3) & 15 == 1 {
+            return obu.to_vec();
+        }
+        rest = tail;
+    }
+    panic!("no sequence header");
+}
+
+/// Files that are well formed but whose headers promise less than the decoder
+/// would be given must be refused before any large allocation.
+#[test]
+fn avif_files_that_hide_large_frames_are_refused_before_decoding() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    let budget = Limits::default().max_decode_bytes as usize;
+    let small = include_bytes!("../src/testdata/opaque8.avif");
+    let wide = include_bytes!("../src/testdata/plasma4096_444_10.avif");
+    let alpha = include_bytes!("../src/testdata/alpha.avif");
+
+    // Two sequence headers in the primary item: the small one comes last.
+    let two_headers = with_item_tail(wide, &sequence_header_obu(av1_data(small)));
+    let result = within_budget(budget, || {
+        decode::thumbnail(&two_headers, &Limits::default(), &CancelFlag::default())
+    });
+    assert!(result.is_err(), "{result:?}");
+
+    // An alpha item holding a 4096 × 4096 4:4:4 10 bit picture.
+    let mut big_alpha = alpha.to_vec();
+    let data = av1_data(wide);
+    let at = big_alpha.len();
+    big_alpha.extend_from_slice(data);
+    let iloc = find(&big_alpha, b"iloc");
+    put_be32(&mut big_alpha, iloc + 34, at);
+    put_be32(&mut big_alpha, iloc + 44, data.len());
+    let mdat = find(&big_alpha, b"mdat") - 4;
+    let size = be32(&big_alpha, mdat);
+    put_be32(&mut big_alpha, mdat, size + data.len());
+    let result = within_budget(budget, || {
+        decode::thumbnail(&big_alpha, &Limits::default(), &CancelFlag::default())
+    });
+    assert!(result.is_err(), "{result:?}");
+}

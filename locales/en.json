@@ -364,7 +364,7 @@
   "linux_display_hint": "Takes effect after restarting. On GNOME, X11 (XWayland) shows the desktop's own title bar; Wayland keeps native input methods and sharp fractional scaling. CAYENCHAT_DISPLAY=x11 or wayland overrides this.",
   "alternate_rows": "Alternate row colors in logs",
   "image_previews": "Show previews of image links",
-  "image_previews_hint": "Shows small thumbnails of direct PNG, JPEG, GIF, WebP, BMP and ICO links in the channel log. While on, CayenChat downloads the linked images for the lines on screen from their servers; the link text stays as it is.",
+  "image_previews_hint": "Shows small thumbnails of direct PNG, JPEG, GIF, WebP, AVIF, BMP and ICO links in the channel log. While on, CayenChat downloads the linked images for the lines on screen from their servers; the link text stays as it is.",
   "user_avatars": "Show user avatars",
   "compact_urls": "Show long URLs compactly",
   "compact_urls_hint": "Shortens long links in the channel log to the host and the start of the path, marked with an arrow. Hover shows the full URL in a bubble you can click to open; opening, selecting and copying use it too.",

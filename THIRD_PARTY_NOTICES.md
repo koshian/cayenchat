@@ -25,6 +25,13 @@ see its `PATCHES.md`), used under the 0BSD option of its license; the upstream
 license texts are kept in that directory. Include their license notices and
 those of their transitive dependencies when preparing a distributable binary.
 
+AVIF previews decode with [rav1d 1.1.0](https://github.com/memorysafety/rav1d), the
+Rust port of [dav1d](https://code.videolan.org/videolan/dav1d), licensed under the
+BSD 2-Clause License (Copyright the dav1d and rav1d authors), and read the container
+with [mp4parse](https://github.com/mozilla/mp4parse-rust) (MPL-2.0). Both are Cargo
+dependencies and no C code is built. rav1d is used as a patched copy in `vendor/rav1d`
+(see its `PATCHES.md`); its license text is kept there as `COPYING`.
+
 UI icons in `assets/icons/ui/` are individual SVG files copied from
 [Lucide](https://github.com/lucide-icons/lucide), licensed under the ISC License;
 icons derived from Feather (including `link` and `external-link`) are

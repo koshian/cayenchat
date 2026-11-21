@@ -15,5 +15,12 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 # avatar editing opens BMP and TIFF too (clipboard images), but previews refuse TIFF (D018).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
+# AVIF previews (D018): `mp4parse` (MPL-2.0, pure Rust) reads the container and
+# `rav1d` (BSD-2-Clause, the Rust port of dav1d) decodes the AV1 picture. No C
+# code or system library is needed on any platform: `asm` is off because it needs
+# nasm, and previews are small, so the portable code is fast enough.
+mp4parse = "0.17"
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+
 [dev-dependencies]
 png = "0.18.1"
