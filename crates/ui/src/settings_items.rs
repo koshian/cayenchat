@@ -329,6 +329,9 @@ impl SettingsWindow {
     }
 }
 
+/// Called with the item and its new value when a Kit switch is flipped.
+pub(crate) type ToggleHandler = std::rc::Rc<dyn Fn(&'static Item, bool, &mut App)>;
+
 /// Converts the visible items of `table` into Kit `setting` items (the thin
 /// adapter to `gpui-component::setting`).
 ///
@@ -345,7 +348,7 @@ pub(crate) fn kit_items(
     values: &Settings,
     i18n: &crate::localization::Localizer,
     field: impl Fn(&str) -> Option<Entity<TextInput>>,
-    on_toggle: std::rc::Rc<dyn Fn(&'static Item, bool, &mut App)>,
+    on_toggle: ToggleHandler,
 ) -> Vec<gpui_component::setting::SettingItem> {
     use gpui_component::setting::{SettingField, SettingItem};
 
