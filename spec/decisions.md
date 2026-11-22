@@ -4481,7 +4481,8 @@ hand-written fields, listeners and validation per setting; the shared code
 creates, reads, validates, resets, translates and draws them (see
 `architecture.md`, "Declared settings items"). The validation, autosave (D021)
 and secret handling stay as they were. Tabs move over one pull request each:
-Notifications first; Appearance (shared with #622) and Connection/Credentials
+Notifications first, then the plain switches, choices (Keyboard) and the
+Experimental tab; Appearance (shared with #622) and Connection/Credentials
 (secrets) last. A thin adapter (`kit_items`) maps a table to
 `gpui-component::setting` `SettingItem`s, with tests. The Kit draws a whole
 `Settings` (sidebar and search) only, so the screen keeps `render_items` until
