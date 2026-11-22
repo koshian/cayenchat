@@ -2525,7 +2525,10 @@ Application tab declares its plain switches and hints in several short tables
 (`APPLICATION_WINDOW`, `APPLICATION_MENU`, `APPLICATION_PREVIEWS`,
 `APPLICATION_TEXT`) drawn between its own widgets (language list, autostart,
 option rows, Reiwa mode shared with the Connection tab, conversation logs,
-settings transfer), which keep their order and behaviour.
+settings transfer), which keep their order and behaviour. The Experimental tab
+declares its automatic phrase switch and hint (`EXPERIMENTAL`); the debug log
+rows (a file chooser and status) stay their own widgets. Like the other
+switches, the phrase switch is saved by the debounced autosave.
 
 ## Conversation logs (D044)
 

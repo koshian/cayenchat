@@ -269,9 +269,22 @@ pub(crate) const APPLICATION_TEXT: &[Item] = &[
     Item::note("decode-char-refs-hint", "decode_char_refs_hint"),
 ];
 
+/// The automatic phrase row of the Experimental tab. The debug log rows
+/// below it choose a file and are their own widgets.
+pub(crate) const EXPERIMENTAL: &[Item] = &[
+    Item::toggle(
+        "auto-phrase-toggle",
+        "auto_phrase",
+        |s| s.experimental.auto_phrase,
+        |s, on| s.experimental.auto_phrase = on,
+    ),
+    Item::note("auto-phrase-hint", "auto_phrase_hint"),
+];
+
 /// Every table; the shared code visits the text fields of all of them.
 const TABLES: &[&[Item]] = &[
     NOTIFICATIONS,
+    EXPERIMENTAL,
     APPLICATION_WINDOW,
     APPLICATION_MENU,
     APPLICATION_PREVIEWS,
