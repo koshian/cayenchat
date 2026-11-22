@@ -2497,6 +2497,31 @@ The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
 
+## Declared settings items (#262)
+
+`ui::settings_items` declares a settings tab as a table of `Item`s: a switch,
+a text field or a note, with its id, label key, platform visibility, an optional
+"usable only while" condition, and, for the control, how the value is read from
+and written to `Settings`. A text item's `store` parses the typed text and
+returns the validation error, so the rule exists once. The shared code builds
+the text fields (`SettingsForm::item_fields`), reads and validates them for the
+autosave snapshot (`read_item_fields`, called by `snapshot`), includes them in
+`text_fields` (autosave trigger, IME check), re-translates their placeholders
+on a language change, restores their defaults and draws the rows
+(`SettingsWindow::render_items`). Autosave, secrets and server drafts are
+unchanged (D021); secret values and screens with their own behaviour
+(auto-join list, avatar editor, color picker, shortcut recorder) are not
+declared and stay separate widgets. Rows use the existing settings palette and
+`TextInput`. `settings_items::kit_items` is the thin adapter to
+`gpui-component::setting`: it converts a table into Kit `SettingItem`s (a switch
+becomes `SettingField::switch`, a text item wraps its `TextInput` in
+`SettingField::render`, a note becomes the description of the item above, an
+unmet condition becomes `disabled`) and is covered by conversion tests. Kit 0.9.1
+exposes no standalone item renderer (`Settings` always draws its sidebar and
+search), so the screen still draws through `render_items`; switching to the Kit
+render path belongs to #622 (rows with descriptions) and #623 (search).
+The Notifications tab is the first table; other tabs move over one by one.
+
 ## Conversation logs (D044)
 
 `storage::chatlog` knows nothing of IRC: it takes `Record`s (network, scope,

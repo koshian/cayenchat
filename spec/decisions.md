@@ -4471,3 +4471,19 @@ requires Rust 1.95. This replaces D019's pins and `vendor/native-theme`.
 - Verification: Linux (Xvfb GUI checks, E2E, CI). macOS needs a person before
   the merge to master. Windows is checked on the beta build, after the merge,
   and gates the 1.2.0 release, not the merge; its checklist is in #1081.
+
+## D095 — Settings tabs are declared as tables (#262)
+
+**Status:** Accepted
+
+A settings tab lists its items in a table (`ui::settings_items`) instead of
+hand-written fields, listeners and validation per setting; the shared code
+creates, reads, validates, resets, translates and draws them (see
+`architecture.md`, "Declared settings items"). The validation, autosave (D021)
+and secret handling stay as they were. Tabs move over one pull request each:
+Notifications first; Appearance (shared with #622) and Connection/Credentials
+(secrets) last. A thin adapter (`kit_items`) maps a table to
+`gpui-component::setting` `SettingItem`s, with tests. The Kit draws a whole
+`Settings` (sidebar and search) only, so the screen keeps `render_items` until
+#622 and #623 move rendering to the Kit; `TextInput` (IME, direct input) stays
+the field.

@@ -150,13 +150,8 @@ impl SettingsWindow {
                 self.shortcut_recording = None;
             }
             SettingsTab::Notifications => {
+                self.show_item_fields(crate::settings_items::NOTIFICATIONS, &defaults, cx);
                 self.settings.values.notifications = defaults.notifications;
-                self.settings
-                    .keywords
-                    .update(cx, |field, cx| field.set_text("", cx));
-                self.settings
-                    .exclude_keywords
-                    .update(cx, |field, cx| field.set_text("", cx));
             }
             SettingsTab::Ircv3 => {
                 if let Some(profile) = self.settings.values.selected_profile_mut() {
@@ -347,6 +342,19 @@ mod tests {
     }
 
     #[gpui::test]
+    fn declared_text_items_reach_the_snapshot(cx: &mut gpui::TestAppContext) {
+        let (form, cx) = form(SettingsTab::Notifications, cx);
+        form.update(cx, |form, cx| {
+            let field = form.settings.item_field("exclude-keywords").unwrap();
+            field.update(cx, |field, cx| field.set_text(" cat , ,dog", cx));
+        });
+        form.read_with(cx, |form, cx| {
+            let saved = form.settings.snapshot(cx).unwrap();
+            assert_eq!(saved.notifications.exclude_keywords, ["cat", "dog"]);
+        });
+    }
+
+    #[gpui::test]
     fn a_tab_resets_only_what_it_shows(cx: &mut gpui::TestAppContext) {
         let (form, cx) = form(SettingsTab::Appearance, cx);
         let is_default =
@@ -392,7 +400,8 @@ mod tests {
 
         form.update_in(cx, |form, window, cx| {
             form.settings
-                .keywords
+                .item_field("keywords")
+                .unwrap()
                 .update(cx, |field, cx| field.set_text("cat", cx));
             form.settings.values.notifications.keyword_alerts = false;
             form.reset_tab(SettingsTab::Notifications, window, cx);
@@ -400,7 +409,14 @@ mod tests {
         form.read_with(cx, |form, cx| {
             assert!(form.settings.values.notifications.keyword_alerts);
             assert_eq!(form.settings.values.notifications, Notifications::default());
-            assert_eq!(form.settings.keywords.read(cx).text(), "");
+            assert_eq!(
+                form.settings
+                    .item_field("keywords")
+                    .unwrap()
+                    .read(cx)
+                    .text(),
+                ""
+            );
         });
         assert!(is_default(&form, SettingsTab::Notifications, cx));
     }
