@@ -2532,13 +2532,16 @@ switches, the phrase switch is saved by the debounced autosave.
 
 Choices (an enum setting shown as a row of buttons) are declared with
 `Item::choice` and `option!("label_key", field = Value)`; the row is drawn by
-`SettingsWindow::choice_row`, which `option_row` (Appearance tab) shares, and
-`kit_items` maps it to a Kit dropdown. The Keyboard tab declares the send and
+`SettingsWindow::choice_row`, and `kit_items` maps it to a Kit dropdown. The Keyboard tab declares the send and
 notice key rows (`KEYBOARD_SEND`) and the channel number modifier and text key
 theme rows (`KEYBOARD_MODIFIERS`) with the clash warning drawn between them
 (it depends on two settings); the shortcut recorder rows stay their own
 widgets. The Application tab's unread log position and display server rows
-joined `APPLICATION_WINDOW` and `APPLICATION_MENU`.
+joined `APPLICATION_WINDOW` and `APPLICATION_MENU`. The Appearance tab
+declares its theme mode row (`APPEARANCE_THEME`) and alternate rows switch
+(`APPEARANCE_ROWS`); the color pairs, opacity and line height sliders, fonts,
+background blur and wallpaper stay their own widgets (#622 reworks the
+layout).
 
 ## Conversation logs (D044)
 
