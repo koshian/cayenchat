@@ -5,7 +5,8 @@ use cayenchat_storage::{Language, LinuxDisplay, UnreadLogPosition};
 use gpui::{prelude::*, *};
 
 use crate::{
-    ExportSettings, ImportSettings, SettingsTab, SettingsWindow, account_settings, settings_theme,
+    ExportSettings, ImportSettings, SettingsTab, SettingsWindow, account_settings, settings_items,
+    settings_theme,
 };
 
 impl SettingsWindow {
@@ -157,153 +158,7 @@ impl SettingsWindow {
                     .child(self.i18n.text("language_hint")),
             )
             .child(autostart_toggle)
-            .when(cfg!(target_os = "windows"), |d| {
-                d.child(
-                    div()
-                        .id("always-on-top")
-                        .ml(settings_theme::LABEL_INDENT)
-                        .flex()
-                        .gap_2()
-                        .cursor_pointer()
-                        .child(settings_theme::checkbox(
-                            self.settings.values.always_on_top,
-                            true,
-                            cx,
-                        ))
-                        .child(self.i18n.text("always_on_top"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.settings.values.always_on_top =
-                                !this.settings.values.always_on_top;
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(
-                div()
-                    .id("restore-window-layout")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.restore_window_layout,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("restore_window_layout"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.restore_window_layout;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("confirm-quit")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.confirm_quit,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("confirm_quit"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.confirm_quit;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("shorten-amazon-urls")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.shorten_amazon_urls,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("shorten_amazon_urls"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.shorten_amazon_urls;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("shorten_amazon_urls_hint")),
-            )
-            .child(
-                div()
-                    .id("confirm-multiline-paste")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.confirm_multiline_paste,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("confirm_multiline_paste"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.confirm_multiline_paste;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("confirm_multiline_paste_hint")),
-            )
-            .child(
-                div()
-                    .id("confirm-server-dblclick-disconnect")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.confirm_server_dblclick_disconnect,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("confirm_server_dblclick_disconnect"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.confirm_server_dblclick_disconnect;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("confirm-channel-dblclick-part")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.confirm_channel_dblclick_part,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("confirm_channel_dblclick_part"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.confirm_channel_dblclick_part;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
+            .children(self.render_items(settings_items::APPLICATION_WINDOW, cx))
             .child(self.option_row(
                 "unread_log_position",
                 [
@@ -321,27 +176,7 @@ impl SettingsWindow {
                     .child(self.i18n.text("unread_log_position_hint")),
             )
             // macOS has its own menu bar that is always shown.
-            .when(!cfg!(target_os = "macos"), |d| {
-                d.child(
-                    div()
-                        .id("menu-bar-auto-hide")
-                        .ml(settings_theme::LABEL_INDENT)
-                        .flex()
-                        .gap_2()
-                        .cursor_pointer()
-                        .child(settings_theme::checkbox(
-                            self.settings.values.menu_bar_auto_hide,
-                            true,
-                            cx,
-                        ))
-                        .child(self.i18n.text("menu_bar_auto_hide"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let hide = !this.settings.values.menu_bar_auto_hide;
-                            this.settings.values.menu_bar_auto_hide = hide;
-                            cx.notify();
-                        })),
-                )
-            })
+            .children(self.render_items(settings_items::APPLICATION_MENU, cx))
             .when(cfg!(unix_desktop), |d| {
                 d.child(self.option_row(
                     "linux_display",
@@ -360,82 +195,9 @@ impl SettingsWindow {
                         .child(self.i18n.text("linux_display_hint")),
                 )
             })
-            .child(
-                div()
-                    .id("image-previews")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.image_previews,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("image_previews"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.image_previews;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("image_previews_hint")),
-            )
+            .children(self.render_items(settings_items::APPLICATION_PREVIEWS, cx))
             .child(self.reiwa_mode_row("reiwa-mode", cx))
-            .child(
-                div()
-                    .id("compact-urls")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.compact_urls,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("compact_urls"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.compact_urls;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("compact_urls_hint")),
-            )
-            .child(
-                div()
-                    .id("decode-char-refs")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.decode_char_refs,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("decode_char_refs"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.decode_char_refs;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("decode_char_refs_hint")),
-            )
+            .children(self.render_items(settings_items::APPLICATION_TEXT, cx))
             .child(self.render_conversation_log_settings(cx))
             .child(self.render_settings_transfer(cx))
             .when_some(self.status_message(), |d, feedback| {

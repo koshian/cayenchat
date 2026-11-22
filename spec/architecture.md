@@ -2520,7 +2520,12 @@ unmet condition becomes `disabled`) and is covered by conversion tests. Kit 0.9.
 exposes no standalone item renderer (`Settings` always draws its sidebar and
 search), so the screen still draws through `render_items`; switching to the Kit
 render path belongs to #622 (rows with descriptions) and #623 (search).
-The Notifications tab is the first table; other tabs move over one by one.
+The Notifications tab is the first table; other tabs move over one by one. The
+Application tab declares its plain switches and hints in several short tables
+(`APPLICATION_WINDOW`, `APPLICATION_MENU`, `APPLICATION_PREVIEWS`,
+`APPLICATION_TEXT`) drawn between its own widgets (language list, autostart,
+option rows, Reiwa mode shared with the Connection tab, conversation logs,
+settings transfer), which keep their order and behaviour.
 
 ## Conversation logs (D044)
 

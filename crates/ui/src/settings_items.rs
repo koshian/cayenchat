@@ -177,8 +177,106 @@ pub(crate) const NOTIFICATIONS: &[Item] = &[
     Item::note("notifications-hint", "notifications_hint").only_if(!cfg!(target_os = "macos")),
 ];
 
+/// The Application tab, from "Always on top" to the double-click
+/// confirmations. The language list, the autostart row and the option rows
+/// around the tables are their own widgets.
+pub(crate) const APPLICATION_WINDOW: &[Item] = &[
+    Item::toggle(
+        "always-on-top",
+        "always_on_top",
+        |s| s.always_on_top,
+        |s, on| s.always_on_top = on,
+    )
+    .only_if(cfg!(target_os = "windows")),
+    Item::toggle(
+        "restore-window-layout",
+        "restore_window_layout",
+        |s| s.restore_window_layout,
+        |s, on| s.restore_window_layout = on,
+    ),
+    Item::toggle(
+        "confirm-quit",
+        "confirm_quit",
+        |s| s.confirm_quit,
+        |s, on| s.confirm_quit = on,
+    ),
+    Item::toggle(
+        "shorten-amazon-urls",
+        "shorten_amazon_urls",
+        |s| s.shorten_amazon_urls,
+        |s, on| s.shorten_amazon_urls = on,
+    ),
+    Item::note("shorten-amazon-urls-hint", "shorten_amazon_urls_hint"),
+    Item::toggle(
+        "confirm-multiline-paste",
+        "confirm_multiline_paste",
+        |s| s.confirm_multiline_paste,
+        |s, on| s.confirm_multiline_paste = on,
+    ),
+    Item::note(
+        "confirm-multiline-paste-hint",
+        "confirm_multiline_paste_hint",
+    ),
+    Item::toggle(
+        "confirm-server-dblclick-disconnect",
+        "confirm_server_dblclick_disconnect",
+        |s| s.confirm_server_dblclick_disconnect,
+        |s, on| s.confirm_server_dblclick_disconnect = on,
+    ),
+    Item::toggle(
+        "confirm-channel-dblclick-part",
+        "confirm_channel_dblclick_part",
+        |s| s.confirm_channel_dblclick_part,
+        |s, on| s.confirm_channel_dblclick_part = on,
+    ),
+];
+
+/// The menu bar row of the Application tab (macOS has its own menu bar).
+pub(crate) const APPLICATION_MENU: &[Item] = &[Item::toggle(
+    "menu-bar-auto-hide",
+    "menu_bar_auto_hide",
+    |s| s.menu_bar_auto_hide,
+    |s, on| s.menu_bar_auto_hide = on,
+)
+.only_if(!cfg!(target_os = "macos"))];
+
+/// The image preview row of the Application tab.
+pub(crate) const APPLICATION_PREVIEWS: &[Item] = &[
+    Item::toggle(
+        "image-previews",
+        "image_previews",
+        |s| s.appearance.image_previews,
+        |s, on| s.appearance.image_previews = on,
+    ),
+    Item::note("image-previews-hint", "image_previews_hint"),
+];
+
+/// The URL and character reference rows of the Application tab.
+pub(crate) const APPLICATION_TEXT: &[Item] = &[
+    Item::toggle(
+        "compact-urls",
+        "compact_urls",
+        |s| s.appearance.compact_urls,
+        |s, on| s.appearance.compact_urls = on,
+    ),
+    Item::note("compact-urls-hint", "compact_urls_hint"),
+    Item::toggle(
+        "decode-char-refs",
+        "decode_char_refs",
+        |s| s.appearance.decode_char_refs,
+        |s, on| s.appearance.decode_char_refs = on,
+    ),
+    Item::note("decode-char-refs-hint", "decode_char_refs_hint"),
+];
+
 /// Every table; the shared code visits the text fields of all of them.
-const TABLES: &[&[Item]] = &[NOTIFICATIONS];
+const TABLES: &[&[Item]] = &[
+    NOTIFICATIONS,
+    APPLICATION_WINDOW,
+    APPLICATION_MENU,
+    APPLICATION_PREVIEWS,
+    APPLICATION_TEXT,
+];
 
 /// The text items of every table, in declaration order.
 fn text_items() -> impl Iterator<Item = &'static Item> {
@@ -459,7 +557,7 @@ mod tests {
 
     #[test]
     fn toggles_write_what_they_read() {
-        for item in NOTIFICATIONS {
+        for item in TABLES.iter().flat_map(|table| table.iter()) {
             if let Control::Toggle { get, set } = &item.control {
                 let mut settings = Settings::default();
                 let before = get(&settings);
