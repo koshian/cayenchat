@@ -507,3 +507,92 @@ fn no_url_bubble_shows_while_the_log_menu_is_open(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.debug_bounds("url-tooltip").is_some(), "back to normal");
 }
+
+/// A shown text tooltip must not keep its builder (and what the builder
+/// captured) alive once the window is gone: the tooltip's visibility check
+/// holds the shared tooltip state, so nothing in it may hold that state back.
+mod tooltip_lifetime {
+    use gpui::{
+        Context, InteractiveText, IntoElement, Modifiers, Render, StyledText, TestAppContext,
+        VisualTestContext, Window, div, point, prelude::*, px,
+    };
+    use std::{rc::Rc, time::Duration};
+
+    struct Bubble;
+    impl Render for Bubble {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child("bubble")
+        }
+    }
+
+    struct Owner {
+        marker: Rc<()>,
+        hoverable: bool,
+    }
+    impl Render for Owner {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let marker = self.marker.clone();
+            let text = InteractiveText::new("text", StyledText::new("https://example.test"));
+            let text = if self.hoverable {
+                text.hoverable_tooltip(
+                    |_| Some(0..20),
+                    move |_, _, cx| {
+                        let _ = &marker;
+                        cx.new(|_| Bubble).into()
+                    },
+                )
+            } else {
+                text.tooltip(move |_, _, cx| {
+                    let _ = &marker;
+                    Some(cx.new(|_| Bubble).into())
+                })
+            };
+            div().size_full().child(text)
+        }
+    }
+
+    /// `hover`: move the pointer on the text (0: not at all, 1: shown, 2:
+    /// still waiting for the delay) before closing the window.
+    fn released(hoverable: bool, hover: u8) -> usize {
+        let marker = Rc::new(());
+        {
+            let mut app = TestAppContext::single();
+            let window = app.add_window(|_, _| Owner {
+                marker: marker.clone(),
+                hoverable,
+            });
+            let mut visual = VisualTestContext::from_window(window.into(), &app);
+            let cx = &mut visual;
+            cx.run_until_parked();
+            if hover > 0 {
+                cx.simulate_mouse_move(point(px(10.), px(10.)), None, Modifiers::none());
+            }
+            if hover == 1 {
+                cx.executor().advance_clock(Duration::from_secs(2));
+            }
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+            drop(visual);
+            app.quit();
+        }
+        Rc::strong_count(&marker)
+    }
+
+    #[test]
+    fn a_shown_hoverable_tooltip_is_released_with_its_window() {
+        assert_eq!(released(true, 1), 1);
+    }
+
+    #[test]
+    fn a_shown_plain_tooltip_is_released_with_its_window() {
+        assert_eq!(released(false, 1), 1);
+    }
+
+    #[test]
+    fn a_waiting_tooltip_is_released_with_its_window() {
+        assert_eq!(released(true, 2), 1);
+        assert_eq!(released(false, 2), 1);
+    }
+}

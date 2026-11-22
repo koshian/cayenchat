@@ -55,7 +55,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | The four panes are separate views drawn with `AnyView::cached` | `ui` `ChatPane`, `ChatPanes` | A keystroke redraws only the window shell and the draft; a GPUI test (`typing_reuses_panes_and_new_messages_redraw_them`) asserts it. State changes that affect panes must `cx.notify()` the chat window. |
 | Message times stored as minutes (`TimeOfDay`); a retained `Message` is 64 bytes plus its sender and text | `model` | Smaller logs, one fewer allocation per line. |
 | QUIT/NICK republish rosters only for channels that contained the user; roster sort keys computed once per member | `irc-core` `RosterTracker`, `app` `sorted_members` | Large channels. |
-| Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
+| Linux: bounded per-word shaping cache (swept every 128 lines, entries unused for four sweeps dropped). **Not applied since GPUI 0.3.12 (D094):** the cache key lacks the text direction | `vendor/gpui` (0.2.2 reference), see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
 | Image previews are requested only by channel-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Links are found once when a message's text is set (`app::links`); requesting, fetching and decoding image previews costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
 | A preview reserves its full height only once the fetcher has confirmed an image (final 200 with an image type other than SVG); until then, and after a failure, the row is a plain text link; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
 | Avatars are requested only by drawn channel-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
@@ -104,7 +104,6 @@ Do not build a second mechanism for any of these; extend them instead.
 | Channel wallpaper (D084) | one image ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | The selected channel's, loaded, blurred and toned (brightness, saturation; D092, about 4 ms) once per file, blur and tone setting on a background thread, never per frame. Pictures of other channels' looks that were shown once stay loaded (one ~1.6 MB image each, shared by key between the areas, D093) and are released when no look or standard names them any more. Decoding shares the process decode gate. The range editor of the channel settings window (D088) holds one decoded image ≤ 2048 px a side (about 16 MB) only while it is open, decoded and cut on background threads. |
 | Standard wallpapers (D089) | four images (channel log, combined log, member list, channel tree), each ≤ 640 px a side (about 1.6 MB BGRA), file ≤ 16 MiB | window | One slot per area, loaded and filtered once per file, blur and tone setting on a background thread, never per frame; released when the area has none. The channel log's standard is the same slot as a channel's own. The Appearance tab's miniature (window, one side) holds its own four slots of the same kind, so at most four more such images while the settings window is open. Each open channel settings window holds one more slot of that kind for its channel log miniature (#989). Decoding shares the process decode gate. A row resolves the channel log's look (`channel_look::resolve`), which clones the picture's path (one short string per row, as a channel's own wallpaper did before); no image data is copied. |
 | Theme files (D089) | file ≤ 48 MiB, expanded JSON ≤ 64 MiB, image ≤ 8 MiB each (four), 64 imported themes | per import, apply, export | Read, expanded, decoded and written on a background thread; the expansion is bounded by `take`, so a compression bomb stops at the limit. Applying a theme writes at most four content-named files under `wallpapers/`. |
-| Linux shaping cache | swept every 128 lines | process | Age-based, not a byte bound. |
 
 ## Measuring
 
@@ -1546,3 +1545,107 @@ the drawing of a pane with a wallpaper whose tone is unchanged was not timed.
 The code that draws it is unchanged by this change: the tone is applied to
 the held pixels at load, and a draw only reads the same image. No macOS or
 Windows run; no GUI frame-rate measurement.
+
+## GPUI 0.3 migration, PR 1 (2026-11-19, #1081)
+
+Release build, headless `perf_baseline_short_urls` (`cargo test --release
+--locked -p cayenchat-ui perf_baseline_short_urls -- --ignored --nocapture
+--test-threads=1`), same Linux container, 20,000 retained messages. Parent
+`293aa8e` (GPUI 0.2.2, built in a separate worktree) and the migration branch
+(`gpui-pre` 0.3.12) alternate, three runs each. Median of the three runs'
+medians in µs, with the range of those medians. The ignored `perf_baseline`
+tests complete again: all 10 pass.
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after | Roster 2,000 | Resize |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Parent | 354 (347–354) | 2,250 (2,126–2,278) | 1,662 (1,633–1,669) | 2,291 (2,262–2,313) | 365 (362–385) | 1,853 (1,806–1,997) | 2,709 (2,523–2,823) |
+| This branch | 197 (195–200) | 1,763 (1,733–1,801) | 1,410 (1,388–1,424) | 2,165 (2,130–2,180) | 201 (200–235) | 1,553 (1,531–1,556) | 2,160 (2,141–2,472) |
+
+The branch is at or below the parent in every step; no per-message or
+per-frame path was changed beyond the API port. One difference is known: the
+first character typed into an empty draft redraws the four panes once (GPUI
+0.3; cause not investigated), and every later character reuses them. The
+tests count the redraws after the first character, so a regression that
+redraws on each keystroke is still caught. The process-level scenarios
+(`run_baseline.py`) ran once in debug as a smoke test, not as a comparison.
+
+## GPUI 0.3 migration, before merging into master (2026-11-22, #1081)
+
+All patches are re-applied on `gpui-kit-migration`. Release build, headless
+`perf_baseline` (`cargo test --release --locked -p cayenchat-ui perf_baseline
+-- --ignored --nocapture --test-threads=1`), same Linux container, three
+runs each of master (`origin/master`, GPUI 0.2.2, a separate worktree) and
+the migration branch merged with that master. Median of all single-server
+samples (µs; 24 per cell: 8 tests' lines over three runs):
+
+| Build | Typing | Typing after | Channel switch | Select same | Switch unread | Scroll 20 rows | 256-event batch | Roster 2,000 | Roster burst 32 | Resize |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| master | 328 | 342 | 1,890 | 1,460 | 1,898 | 1,459 | 1,887 | 1,672 | 2,791 | 2,301 |
+| This branch | 195 | 211 | 1,818 | 1,346 | 1,783 | 1,412 | 1,997 | 1,641 | 2,860 | 2,353 |
+
+Typing, channel switching and scrolling (the log paths) are lower than
+master. The 256-event batch (+6 %), roster burst (+2 %) and resize (+2 %)
+are slightly higher. The batch cell pools the event-batch lines of several
+scenarios, whose medians differ (about 1.6–2.4 ms for most, 18.5 ms in master
+and 21.1 ms in the branch for one heavier scenario), so the pooled median is
+not a spread of repeated runs of one scenario and the +6 % is not shown to be
+noise; it is a small difference of the same size as the per-run variation seen
+in single scenarios, and was not investigated further. The four-server cells
+are not part of the table above; they were equal or lower.
+
+The `shape-run-cache` patch is not re-applied (it reversed `<`/`>` after
+right-to-left text). Its effect is **not evaluated** here: `perf_baseline`
+uses `NoopTextSystem` and does no real text shaping, so the channel-switch
+cells say nothing about the cost of shaping every row again on the first draw
+after a switch. That is measured next, with the real text system.
+
+Limits: headless only (no GPU, no real window, no real text shaping); no macOS
+or Windows run; the process-level scenarios (`run_baseline.py`) were not
+repeated for this comparison. The master side is `origin/master` at
+`1532e9c`.
+
+### Real text shaping: master against this branch (2026-11-22, #1081)
+
+`scripts/perf/shape_bench` (a separate package, not a workspace member) drives
+the real Linux text system (cosmic-text, Noto Sans CJK JP, 14 px, system
+fonts) in a release build, in the same container, three runs of each build.
+It shapes 60 distinct log lines per "channel" (a mix of Japanese, short
+ASCII, long ASCII wrapped text, URL with Japanese and a ~100-character
+Japanese paragraph) the way a channel switch does. GPUI's own line cache
+keeps only the previous frame, so a switch shapes its lines again. Builds:
+
+- **master**: `vendor/gpui` 0.2.2 as on `origin/master` (cosmic-text 0.14 with
+  `shape-run-cache`, swept every 128 lines), with `CosmicTextSystem`,
+  `PlatformTextSystem` and `FontRun` made public in a scratch copy under
+  `target/tmp` so the program can reach them (`--features legacy`, path
+  dependency; nothing else changed).
+- **branch**: `gpui-pre-wgpu` 0.3.12, cosmic-text 0.19, no cache (this branch).
+- **branch + cache**: the same with `--features cache` (reference only).
+
+Medians, ms per 60 lines unless noted. "First" is each channel's first visit
+(19 channels); "19 channels" revisits all 19 in turn (about 1140 lines, more
+than master's cache window of roughly 500–640 lines); "3 channels" alternates
+three (about 180 lines, inside that window); "scroll" is the mean time for one
+new, never shaped line (1000 lines).
+
+| Build | First | 19 channels | 3 channels | Scroll, µs per new line |
+| --- | --- | --- | --- | --- |
+| master | 1.51–1.55 | 1.48–1.52 | 0.85–0.87 | 25.3–25.9 |
+| branch | 1.60–1.62 | 1.59–1.61 | 1.58–1.60 | 27.2–27.4 |
+| branch + cache | 1.06–1.07 | 0.80–0.81 | 0.79–0.80 | 19.3–19.7 |
+
+Reading: a first visit and new lines while scrolling shape 5–8 % slower than
+on master (+0.1 ms per 60 lines; about 2 µs per new line, i.e. about 0.1 ms
+for a screenful scrolled at once). Switching back and forth among a few
+channels loses master's per-word cache: 1.6 ms instead of 0.86 ms per 60
+lines, about +0.7 ms (roughly +2.5 ms for a 200-line pane). When more
+channels are visited than the cache window holds, the two are equal. Both
+are a fraction of one 16 ms frame, so the patch is not re-applied (D094) and
+a direction-keyed cache is not worth a vendored cosmic-text. The 10 ms →
+2 ms figure in `vendor/gpui/PATCHES.md` is not reproduced (it was taken in a
+different environment).
+
+Limits: this is `layout_line` only. It does not include GPUI's line layout
+cache, wrapping, painting, GPU glyph upload or a real window, and only Linux
+was run (no macOS or Windows). Scrolling is measured as the cost of shaping
+new lines, not as a frame time of a scrolling window.

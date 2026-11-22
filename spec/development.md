@@ -270,9 +270,9 @@ cargo build --locked -p cayenchat-ui
 ```
 
 Commit Cargo.lock when committing the application. No rust-toolchain override is used:
-The desktop UI requires Rust 1.94 (`crates/ui/Cargo.toml`) for the pinned
-`native-theme-gpui` 0.5.7 connector. Other workspace crates retain Rust 1.88
-(`rust-version` in the workspace manifest): GPUI 0.2.2
+The desktop UI requires Rust 1.95 (`crates/ui/Cargo.toml`) for the pinned
+`native-theme-gpui` 0.7.1 connector (#1081). Other workspace crates retain Rust 1.88
+(`rust-version` in the workspace manifest): GPUI
 uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
 several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it
 too. `crates/storage` declares 1.89 for `File::try_lock` (conversation logs). Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
@@ -297,7 +297,7 @@ xcodebuild -downloadComponent MetalToolchain
 This command modifies the system development environment; the project never runs it
 automatically. If Xcode itself is absent, install it via the App Store, launch it and
 install the macOS components, then select its developer directory. See the
-[GPUI prerequisites](https://docs.rs/crate/gpui/0.2.2) and
+[GPUI prerequisites](https://docs.rs/crate/gpui-pre/0.3.12) and
 [upstream macOS guidance](https://zed.dev/docs/development/macos).
 
 An optional local bundle makes the application discoverable to macOS UI tools:

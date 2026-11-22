@@ -61,6 +61,7 @@ fn open_chat(
 fn stop(chat: &mut ChatWindow) {
     if let Some(connection) = chat.sessions.get_mut(&NET).and_then(|s| s.irc.take()) {
         let _ = connection.disconnect();
+        connection.wait_closed(std::time::Duration::from_secs(5));
     }
 }
 
@@ -424,7 +425,7 @@ fn a_quit_waits_for_the_store_and_shows_why(cx: &mut TestAppContext) {
         |cx: &mut gpui::VisualTestContext| chat.read_with(cx, |c, _| c.quit_dialog.is_waiting());
     let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| {
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.debug_bounds(id).is_some()
     };
 
@@ -531,7 +532,7 @@ fn quit_during_a_write(
 
 fn shown(cx: &mut gpui::VisualTestContext, id: &'static str) -> bool {
     cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.debug_bounds(id).is_some()
 }
 

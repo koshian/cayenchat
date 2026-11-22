@@ -1,0 +1,18 @@
+[package]
+name = "shapebench"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+[workspace]
+
+[features]
+cache = ["cosmic-text/shape-run-cache"]
+# Build against a copy of vendor/gpui 0.2.2 instead; see src/main.rs.
+legacy = []
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.12" }
+cosmic-text = "0.19.0"

@@ -20,6 +20,7 @@ use cayenchat_storage::{
     ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
+
 use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
 /// What was typed for a server that is not shown: its unsaved passwords and
@@ -1574,7 +1575,7 @@ impl SettingsWindow {
         window.os_set_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, cx);
-        window.focus(&settings.nickname.focus_handle(cx));
+        window.focus(&settings.nickname.focus_handle(cx), cx);
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
@@ -1686,7 +1687,7 @@ impl SettingsWindow {
         // Without a server the form shows no fields, so the focus waits on
         // the page itself and Escape still reaches the window.
         if this.settings.values.servers.is_empty() {
-            window.focus(&this.nav_focus);
+            window.focus(&this.nav_focus, cx);
         }
         this.refresh_autostart(cx);
         this.probe_system_store(cx);
@@ -3106,7 +3107,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         *self.settings.changing_mut(which) = true;
-        window.focus(&self.settings.credential_field(which).focus_handle(cx));
+        window.focus(&self.settings.credential_field(which).focus_handle(cx), cx);
         self.feedback = None;
         cx.notify();
     }
@@ -3676,7 +3677,7 @@ impl SettingsWindow {
                                     cx,
                                 );
                                 if let Some(dialog) = &this.auto_join {
-                                    window.focus(&dialog.focus);
+                                    window.focus(&dialog.focus, cx);
                                 }
                             })),
                     ),
@@ -3765,7 +3766,7 @@ impl SettingsWindow {
             .map(|entry| self.auto_join_row(&entry.name, entry.enabled, cx))
             .collect();
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         self.auto_join = Some(AutoJoinDialog {
             rows,
             focus,
@@ -3778,7 +3779,7 @@ impl SettingsWindow {
     /// Connection tab needed.
     pub(crate) fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.auto_join = None;
-        window.focus(&self.nav_focus);
+        window.focus(&self.nav_focus, cx);
         self.autosave_now(None, cx);
         cx.notify();
     }
@@ -3790,12 +3791,12 @@ impl SettingsWindow {
             return;
         };
         if forward {
-            window.focus_next();
+            window.focus_next(cx);
         } else {
-            window.focus_prev();
+            window.focus_prev(cx);
         }
         if !dialog.focus.contains_focused(window, cx) {
-            window.focus(&dialog.focus);
+            window.focus(&dialog.focus, cx);
         }
         // Only the dialog's own list follows; the panes behind stay put.
         focus_reveal::clear(cx);
@@ -3807,9 +3808,9 @@ impl SettingsWindow {
     /// whichever pane holds the new target by the least amount that shows it.
     fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if forward {
-            window.focus_next();
+            window.focus_next(cx);
         } else {
-            window.focus_prev();
+            window.focus_prev(cx);
         }
         // The dialog covers the panes; nothing behind it needs to follow.
         if self.auto_join.is_none() {
@@ -3861,7 +3862,7 @@ impl SettingsWindow {
             scroll.bounds(),
             target,
             offset.y,
-            scroll.max_offset().height,
+            scroll.max_offset().y,
         );
         if y != offset.y {
             scroll.set_offset(point(offset.x, y));
@@ -3936,7 +3937,7 @@ impl SettingsWindow {
         let row = self.auto_join_row("", true, cx);
         let input = row.name.clone();
         self.edit_auto_join(|rows| rows.push(row), cx);
-        window.focus(&input.read(cx).focus_handle(cx));
+        window.focus(&input.read(cx).focus_handle(cx), cx);
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
@@ -4090,7 +4091,7 @@ impl SettingsWindow {
                 .id("server-menu")
                 .max_h(px(260.))
                 .overflow_y_scroll()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
@@ -4285,7 +4286,7 @@ impl SettingsWindow {
         );
         if self.settings.encoding_list_open {
             let mut menu = div()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
@@ -5480,7 +5481,7 @@ impl SettingsWindow {
                 .ml(settings_theme::LABEL_INDENT)
                 .max_h(px(170.))
                 .overflow_y_scroll()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
@@ -6016,7 +6017,7 @@ impl SettingsWindow {
     fn select_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
         self.show_tab(tab, cx);
         self.font_picker = None;
-        window.focus(&self.nav_focus);
+        window.focus(&self.nav_focus, cx);
         cx.notify();
     }
 
@@ -6545,8 +6546,9 @@ mod server_settings_tests {
             click_count,
             first_mouse: false,
         };
-        field.update_in(cx, |field, window, cx| {
-            field.on_mouse_down(&event, window, cx)
+        // The field is no view of the window; `update_in` needs one.
+        cx.update(|window, cx| {
+            field.update(cx, |field, cx| field.on_mouse_down(&event, window, cx))
         });
     }
 
@@ -6581,12 +6583,12 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn only_ascii_oriented_fields_prefer_direct_input(cx: &mut TestAppContext) {
-        use gpui::EntityInputHandler as _;
+        use gpui::EntityInputHandler;
         let form = form(configured_a(), cx);
         let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
         let direct = |field: &Entity<TextInput>, cx: &mut gpui::VisualTestContext| {
-            field.update_in(cx, |field, window, cx| {
-                field.prefers_direct_input(window, cx)
+            cx.update(|window, cx| {
+                field.update(cx, |field, cx| field.prefers_direct_input(window, cx))
             })
         };
         let wanted = [
@@ -6911,7 +6913,9 @@ mod server_settings_tests {
         );
         let (lines_a, lines_b) = (server_a.join().unwrap(), server_b.join().unwrap());
         let _ = connection_a.disconnect();
+        connection_a.wait_closed(std::time::Duration::from_secs(5));
         let _ = connection_b.disconnect();
+        connection_b.wait_closed(std::time::Duration::from_secs(5));
         let pick = |lines: &[String], prefix: &str| -> Vec<String> {
             lines
                 .iter()

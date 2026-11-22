@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, gpui-kit-migration]
   pull_request:
-    branches: [master]
+    branches: [master, gpui-kit-migration]
 
 permissions:
   contents: read
@@ -16,6 +16,8 @@ jobs:
   # Pull requests run only the jobs their changed paths can affect, so a
   # Linux-only or documentation-only change does not wait for Windows and macOS
   # (scripts/ci-jobs.sh). Pushes to master run everything for the beta.
+  # gpui-kit-migration is the GPUI migration's integration branch (#1081); it
+  # gets the same checks until it is merged into master.
   changes:
     name: Choose jobs
     runs-on: ubuntu-24.04
@@ -92,6 +94,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libfontconfig1-dev \
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev
@@ -117,13 +120,16 @@ jobs:
           ITERATIONS: "100"
         run: cargo test -p cayenchat-ui --locked connect_auth_tests::a_464_asks_only_for_the_server_password_and_sends_the_typed_sasl_password_again -- --exact
 
-      # The vendored GPUI crate has its own workspace; run the Linux pipe
-      # reader tests explicitly because it is a path dependency here.
-      - name: Test Wayland clipboard reader
+      # The split GPUI platform crates under vendor/ are path dependencies, not
+      # workspace members, so `cargo test --workspace` skips their tests (the
+      # Wayland clipboard reader, the XIM attribute choice, the DIB conversion).
+      - name: Test vendored GPUI platform crate (Linux)
         if: runner.os == 'Linux'
-        env:
-          CARGO_TARGET_DIR: target
-        run: cargo test --manifest-path vendor/gpui/Cargo.toml --locked --config 'patch.crates-io.zed-xim.path="vendor/zed-xim"' --lib platform::linux::platform::tests::async_clipboard_reader
+        run: cargo test -p gpui-pre-linux --locked
+
+      - name: Test vendored GPUI platform crate (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test -p gpui-pre-windows --locked
 
       # The UI test binary has died on Windows ARM64 with 0xc0000005 (#659).
       # libtest prints a test's name only when it ends, so the log cannot say
@@ -253,6 +259,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libfontconfig1-dev \
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \

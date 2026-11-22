@@ -514,7 +514,7 @@ impl SettingsWindow {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.upload_token_open = true;
                             this.feedback = None;
-                            window.focus(&this.upload_token.focus_handle(cx));
+                            window.focus(&this.upload_token.focus_handle(cx), cx);
                             cx.notify();
                         })),
                     )

@@ -164,7 +164,7 @@ impl SettingsWindow {
         );
         if self.settings.ircv3_server_list_open {
             let mut menu = div()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
@@ -608,7 +608,7 @@ impl SettingsWindow {
         };
         let read = cx.read_from_clipboard_async();
         cx.spawn_in(window, async move |this, cx| {
-            let item = read.await;
+            let item = read.await.ok().flatten();
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.selected_profile_id().as_deref() == Some(&profile)
                     && let Some(item) = item

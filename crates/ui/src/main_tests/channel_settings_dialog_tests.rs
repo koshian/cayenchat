@@ -25,9 +25,13 @@ pub(super) fn open_channel_window(
     channel: &str,
     cx: &mut VisualTestContext,
 ) -> (Entity<ChannelSettingsView>, &'static mut VisualTestContext) {
-    chat.update_in(cx, |chat, window, cx| {
-        let id = chat.saved.selected_profile().unwrap().id.clone();
-        chat.open_channel_settings_window(&id, channel, CaseMapping::default(), window, cx);
+    // `cx.update` always runs in the chat window; `update_in` follows the
+    // entity's current window, which moves to a settings window drawing it.
+    cx.update(|window, cx| {
+        chat.update(cx, |chat, cx| {
+            let id = chat.saved.selected_profile().unwrap().id.clone();
+            chat.open_channel_settings_window(&id, channel, CaseMapping::default(), window, cx);
+        })
     });
     let handle = chat.read_with(cx, |chat, _| {
         chat.channel_settings_windows.last().unwrap().handle
@@ -361,7 +365,7 @@ fn press(cx: &mut VisualTestContext, key: &str) {
     });
     cx.simulate_keystrokes(key);
     cx.simulate_event(gpui::KeyUpEvent {
-        keystroke: gpui::Keystroke::parse(key).unwrap(),
+        keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::HOST_OS).unwrap(),
     });
 }
 
@@ -832,7 +836,7 @@ fn an_inherited_tone_shows_the_standard_value_until_the_channel_moves_it(cx: &mu
 /// starts `SLIDER_INSET` px inside the element on both sides. The body is
 /// scrolled with the mouse wheel until the slider is in the window.
 fn slider_row(cx: &mut VisualTestContext, selector: &'static str) -> (f32, f32, f32) {
-    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, TouchPhase, point, px};
     let window = cx.update(|window, _| window.bounds());
     let window = gpui::Bounds::new(gpui::Point::default(), window.size);
     let (bounds, body) = (0..100)
@@ -848,11 +852,12 @@ fn slider_row(cx: &mut VisualTestContext, selector: &'static str) -> (f32, f32, 
             if bounds.top() >= body.top() && bounds.bottom() <= body.bottom() {
                 return Some((bounds, body));
             }
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: body.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
                 modifiers: Modifiers::none(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             None
         })
@@ -860,7 +865,9 @@ fn slider_row(cx: &mut VisualTestContext, selector: &'static str) -> (f32, f32, 
     // What can be pressed is the body: it lies in the window, and the slider
     // in it.
     assert!(
-        window.contains(&body.origin) && window.contains(&body.bottom_right()),
+        window.contains(&body.origin)
+            && body.right() <= window.right()
+            && body.bottom() <= window.bottom(),
         "the body {body:?} is outside the window {window:?}"
     );
     let (left, right) = (f32::from(bounds.left()), f32::from(bounds.right()));

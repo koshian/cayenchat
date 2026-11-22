@@ -126,6 +126,7 @@ pub fn window_frame(
                         offset: point(px(0.), px(2.)),
                         blur_radius: SHADOW / 2.,
                         spread_radius: px(0.),
+                        inset: false,
                     }])
                 })
                 .child(titlebar(window, cx, title.into(), tiling, colors))

@@ -74,7 +74,7 @@ impl SettingsWindow {
         );
         if self.settings.language_list_open {
             let mut menu = div()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);

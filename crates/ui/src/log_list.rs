@@ -259,7 +259,7 @@ impl LogList {
     pub fn is_behind_latest(&self) -> bool {
         /// Less than this is rounding of the measured heights.
         const TOLERANCE: f32 = 1.;
-        let max = f32::from(self.state.max_offset_for_scrollbar().height);
+        let max = f32::from(self.state.max_offset_for_scrollbar().y);
         let offset = f32::from(-self.state.scroll_px_offset_for_scrollbar().y);
         offset < max - TOLERANCE
     }
@@ -267,14 +267,14 @@ impl LogList {
     /// Where the rows end, measured from the top of the list, when they end
     /// above its bottom edge (a short or empty log); `None` when the rows
     /// reach the bottom. Whole pixels, from the previous frame's layout, so a
-    /// caller can compare it across frames. A list that cannot scroll is
-    /// following its bottom, where the scroll offset is the height of all rows.
+    /// caller can compare it across frames.
     pub fn unfilled_from(&self) -> Option<Pixels> {
         let viewport = self.state.viewport_bounds().size.height;
-        if self.state.max_offset_for_scrollbar().height > px(0.) {
+        if self.state.max_offset_for_scrollbar().y > px(0.) {
             return None;
         }
-        let from = (-self.state.scroll_px_offset_for_scrollbar().y).round();
+        // A list that cannot scroll shows every row from the top.
+        let from = self.state.content_height().round();
         (from < viewport).then_some(from)
     }
 

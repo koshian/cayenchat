@@ -81,6 +81,7 @@ fn stop(chat: &mut ChatWindow) {
         session.generation += 1;
         if let Some(connection) = session.irc.take() {
             let _ = connection.disconnect();
+            connection.wait_closed(std::time::Duration::from_secs(5));
         }
     }
 }

@@ -106,7 +106,7 @@ pub fn open(i18n: &Localizer, cx: &mut App) {
             window.os_set_title(&title);
             cx.new(|cx| {
                 let focus = cx.focus_handle();
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 AboutWindow {
                     info: BuildInfo::current(),
                     i18n,
