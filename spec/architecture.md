@@ -2497,6 +2497,25 @@ The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
 
+## Declared settings items (#262)
+
+`ui::settings_items` declares a settings tab as a table of `Item`s: a switch,
+a text field or a note, with its id, label key, platform visibility, an optional
+"usable only while" condition, and, for the control, how the value is read from
+and written to `Settings`. A text item's `store` parses the typed text and
+returns the validation error, so the rule exists once. The shared code builds
+the text fields (`SettingsForm::item_fields`), reads and validates them for the
+autosave snapshot (`read_item_fields`, called by `snapshot`), includes them in
+`text_fields` (autosave trigger, IME check), re-translates their placeholders
+on a language change, restores their defaults and draws the rows
+(`SettingsWindow::render_items`). Autosave, secrets and server drafts are
+unchanged (D021); secret values and screens with their own behaviour
+(auto-join list, avatar editor, color picker, shortcut recorder) are not
+declared and stay separate widgets. Rows use the existing settings palette and
+`TextInput`; no `gpui-component::setting` widget is drawn yet, so the adapter to
+that API (rows with descriptions, #622; search, #623) is a later step.
+The Notifications tab is the first table; other tabs move over one by one.
+
 ## Conversation logs (D044)
 
 `storage::chatlog` knows nothing of IRC: it takes `Record`s (network, scope,

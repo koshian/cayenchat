@@ -11,13 +11,13 @@ use crate::{
     removed_secret_keys, scrollbar, secrets, settings_file, settings_theme, shortcut_settings,
     theme,
 };
-use cayenchat_app::{attachments::AttachmentFlow, notifications};
+use cayenchat_app::attachments::AttachmentFlow;
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, FontSet,
-    Language, NickCollision, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
-    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Language, NickCollision, NoticeKey, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 
@@ -131,10 +131,8 @@ pub(crate) struct SettingsForm {
     /// The theme whose fonts the inputs above show while the light and dark
     /// fonts are separate (`values.appearance.split_fonts`).
     pub(crate) font_side_dark: bool,
-    /// Comma-separated notification keywords.
-    pub(crate) keywords: Entity<TextInput>,
-    /// Comma-separated text that cancels the matches overlapping it.
-    pub(crate) exclude_keywords: Entity<TextInput>,
+    /// Text fields of the items declared in `settings_items`, by item id.
+    pub(crate) item_fields: Vec<(&'static str, Entity<TextInput>)>,
     /// Draft URL of our own avatar for the selected server (IRCv3 tab).
     /// Editing it saves the draft; only Publish sends it.
     pub(crate) avatar_url: Entity<TextInput>,
@@ -413,18 +411,7 @@ impl SettingsForm {
             font_sizes: font_size_texts(values.appearance.fonts(false))
                 .map(|text| field(&i18n.text("font_size_placeholder"), &text, false, cx)),
             font_side_dark: false,
-            keywords: field(
-                &i18n.text("keywords_placeholder"),
-                &values.notifications.keywords.join(", "),
-                false,
-                cx,
-            ),
-            exclude_keywords: field(
-                &i18n.text("exclude_keywords_placeholder"),
-                &values.notifications.exclude_keywords.join(", "),
-                false,
-                cx,
-            ),
+            item_fields: Self::item_fields(&values, i18n, cx),
             avatar_url: {
                 let input = field(
                     &i18n.text("ircv3_avatar_url_placeholder"),
@@ -595,10 +582,7 @@ impl SettingsForm {
             channel_looks: self.values.appearance.channel_looks.clone(),
         };
         settings.appearance.validate()?;
-        settings.notifications.keywords =
-            notifications::parse_keywords(self.keywords.read(cx).text());
-        settings.notifications.exclude_keywords =
-            notifications::parse_keywords(self.exclude_keywords.read(cx).text());
+        self.read_item_fields(&mut settings, cx)?;
         Ok(settings)
     }
 
@@ -730,7 +714,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 57] {
+    fn text_fields(&self) -> Vec<&Entity<TextInput>> {
         [
             &self.custom_host,
             &self.port,
@@ -786,10 +770,11 @@ impl SettingsForm {
             &self.font_sizes[3],
             &self.font_sizes[4],
             &self.font_sizes[5],
-            &self.keywords,
-            &self.exclude_keywords,
             &self.avatar_url,
         ]
+        .into_iter()
+        .chain(self.item_fields.iter().map(|(_, field)| field))
+        .collect()
     }
 
     /// Moves the typed passwords of the shown server into `drafts`. A value
@@ -1556,6 +1541,7 @@ impl SettingsWindow {
             field.update(cx, |field, cx| field.set_placeholder(&placeholder, cx));
         }
         let placeholder = self.i18n.text("font_size_placeholder");
+        self.translate_item_fields(cx);
         for field in &self.settings.font_sizes {
             field.update(cx, |field, cx| field.set_placeholder(&placeholder, cx));
         }
@@ -5867,108 +5853,14 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Keyboard, cx))
     }
 
-    fn notification_toggle(
-        &self,
-        id: &'static str,
-        label_key: &str,
-        get: fn(&Notifications) -> bool,
-        toggle: fn(&mut Notifications),
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let theme = settings_theme::palette(cx);
-        div()
-            .id(id)
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .items_center()
-            .gap_2()
-            .when(!enabled, |d| d.text_color(theme.text_secondary))
-            .when(enabled, |d| d.cursor_pointer())
-            .child(settings_theme::checkbox(
-                get(&self.settings.values.notifications),
-                enabled,
-                cx,
-            ))
-            .child(self.i18n.text(label_key))
-            .when(enabled, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    toggle(&mut this.settings.values.notifications);
-                    cx.notify();
-                }))
-            })
-    }
-
     /// Desktop notification preferences, shown through the operating
-    /// system's notification service.
+    /// system's notification service. The rows come from
+    /// `settings_items::NOTIFICATIONS`.
     fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let enabled = self.settings.values.notifications.enabled;
-        let hint = |key: &str| {
-            div()
-                .ml(settings_theme::LABEL_INDENT)
-                .text_color(theme.text_secondary)
-                .child(self.i18n.text(key))
-        };
         account_settings::panel(cx)
             .child(self.tab_heading("notifications_tab"))
-            .child(self.notification_toggle(
-                "notifications-enabled",
-                "notifications_enabled",
-                |n| n.enabled,
-                |n| n.enabled = !n.enabled,
-                true,
-                cx,
-            ))
-            .child(self.notification_toggle(
-                "notify-mentions",
-                "notify_mentions",
-                |n| n.mentions,
-                |n| n.mentions = !n.mentions,
-                enabled,
-                cx,
-            ))
-            .child(self.notification_toggle(
-                "notify-private-messages",
-                "notify_private_messages",
-                |n| n.private_messages,
-                |n| n.private_messages = !n.private_messages,
-                enabled,
-                cx,
-            ))
-            .child(self.notification_toggle(
-                "notify-keywords",
-                "notify_keywords",
-                |n| n.keyword_alerts,
-                |n| n.keyword_alerts = !n.keyword_alerts,
-                enabled,
-                cx,
-            ))
-            .child(settings_field(
-                &self.i18n.text("keywords"),
-                self.settings.keywords.clone(),
-            ))
-            .child(hint("keywords_hint"))
-            .child(settings_field(
-                &self.i18n.text("exclude_keywords"),
-                self.settings.exclude_keywords.clone(),
-            ))
-            .child(hint("exclude_keywords_hint"))
-            .when(cfg!(target_os = "windows"), |d| {
-                d.child(self.notification_toggle(
-                    "notify-sound",
-                    "notify_sound",
-                    |n| n.sound,
-                    |n| n.sound = !n.sound,
-                    enabled,
-                    cx,
-                ))
-            })
-            .child(hint(if cfg!(target_os = "macos") {
-                "notifications_hint_macos"
-            } else {
-                "notifications_hint"
-            }))
+            .children(self.render_items(crate::settings_items::NOTIFICATIONS, cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
