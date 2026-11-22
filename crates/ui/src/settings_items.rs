@@ -15,7 +15,7 @@
 
 use cayenchat_app::notifications;
 use cayenchat_storage::{
-    ChannelNumberModifier, LinuxDisplay, NoticeKey, SendKey, Settings, TextKeyTheme,
+    ChannelNumberModifier, LinuxDisplay, NoticeKey, SendKey, Settings, TextKeyTheme, ThemeMode,
     UnreadLogPosition,
 };
 use gpui::{prelude::*, *};
@@ -414,8 +414,30 @@ pub(crate) const EXPERIMENTAL: &[Item] = &[
     Item::note("auto-phrase-hint", "auto_phrase_hint"),
 ];
 
+/// The theme mode row at the top of the Appearance tab. The color, opacity,
+/// font and wallpaper rows are their own widgets.
+pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::choice(
+    "theme",
+    "theme",
+    &[
+        option!("theme_system", theme = ThemeMode::System),
+        option!("theme_light", theme = ThemeMode::Light),
+        option!("theme_dark", theme = ThemeMode::Dark),
+    ],
+)];
+
+/// The alternate rows switch of the Appearance tab, drawn after the colors.
+pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
+    "alternate-rows",
+    "alternate_rows",
+    |s| s.appearance.alternate_rows,
+    |s, on| s.appearance.alternate_rows = on,
+)];
+
 /// Every table; the shared code visits the text fields of all of them.
 const TABLES: &[&[Item]] = &[
+    APPEARANCE_THEME,
+    APPEARANCE_ROWS,
     NOTIFICATIONS,
     EXPERIMENTAL,
     APPLICATION_WINDOW,

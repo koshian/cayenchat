@@ -16,8 +16,7 @@ use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, CredentialBackendKind, DarkColors, FontSet, Language, NickCollision,
-    SaslMechanism, Secret, SecretKey, ServerProfile, Settings, TextEncoding, ThemeMode,
-    color_value,
+    SaslMechanism, Secret, SecretKey, ServerProfile, Settings, TextEncoding, color_value,
 };
 use gpui::{prelude::*, *};
 
@@ -1453,32 +1452,8 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
 pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
 
 impl SettingsWindow {
-    /// A labelled row of mutually exclusive choices stored in the settings.
-    pub(crate) fn option_row<T: Copy + PartialEq + 'static, const N: usize>(
-        &self,
-        label_key: &'static str,
-        options: [(T, &'static str); N],
-        current: T,
-        set: fn(&mut Settings, T),
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let options = options
-            .into_iter()
-            .map(|(value, key)| {
-                (
-                    key,
-                    current == value,
-                    Box::new(move |settings: &mut Settings| set(settings, value))
-                        as Box<dyn Fn(&mut Settings)>,
-                )
-            })
-            .collect();
-        self.choice_row(label_key, options, cx)
-    }
-
-    /// The row behind [`Self::option_row`] and declared `Choice` items: each
-    /// option is its label key, whether it is selected and what selecting it
-    /// writes to the settings.
+    /// The row of a declared `Choice` item: each option is its label key,
+    /// whether it is selected and what selecting it writes to the settings.
     pub(crate) fn choice_row(
         &self,
         label_key: &'static str,
@@ -5647,17 +5622,7 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("appearance_intro")),
             )
-            .child(self.option_row(
-                "theme",
-                [
-                    (ThemeMode::System, "theme_system"),
-                    (ThemeMode::Light, "theme_light"),
-                    (ThemeMode::Dark, "theme_dark"),
-                ],
-                self.settings.values.theme,
-                |settings, mode| settings.theme = mode,
-                cx,
-            ))
+            .children(self.render_items(crate::settings_items::APPEARANCE_THEME, cx))
             .child(self.render_theme_settings(cx))
             .child(
                 div()
@@ -5757,25 +5722,7 @@ impl SettingsWindow {
             ))
             .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
             .child(self.render_background_blur(cx))
-            .child(
-                div()
-                    .id("alternate-rows")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.alternate_rows,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("alternate_rows"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.alternate_rows;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
+            .children(self.render_items(crate::settings_items::APPEARANCE_ROWS, cx))
             .child(self.render_wallpaper_settings(window, cx))
             .child(self.render_font_mode(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
