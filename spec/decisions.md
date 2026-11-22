@@ -4482,6 +4482,8 @@ creates, reads, validates, resets, translates and draws them (see
 `architecture.md`, "Declared settings items"). The validation, autosave (D021)
 and secret handling stay as they were. Tabs move over one pull request each:
 Notifications first; Appearance (shared with #622) and Connection/Credentials
-(secrets) last. Widgets of `gpui-component::setting` are not drawn in this
-step: the table is plain data a thin adapter can map to `SettingItem` when
-#622 and #623 need it, and `TextInput` (IME, direct input) stays the field.
+(secrets) last. A thin adapter (`kit_items`) maps a table to
+`gpui-component::setting` `SettingItem`s, with tests. The Kit draws a whole
+`Settings` (sidebar and search) only, so the screen keeps `render_items` until
+#622 and #623 move rendering to the Kit; `TextInput` (IME, direct input) stays
+the field.

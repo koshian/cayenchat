@@ -2512,8 +2512,14 @@ on a language change, restores their defaults and draws the rows
 unchanged (D021); secret values and screens with their own behaviour
 (auto-join list, avatar editor, color picker, shortcut recorder) are not
 declared and stay separate widgets. Rows use the existing settings palette and
-`TextInput`; no `gpui-component::setting` widget is drawn yet, so the adapter to
-that API (rows with descriptions, #622; search, #623) is a later step.
+`TextInput`. `settings_items::kit_items` is the thin adapter to
+`gpui-component::setting`: it converts a table into Kit `SettingItem`s (a switch
+becomes `SettingField::switch`, a text item wraps its `TextInput` in
+`SettingField::render`, a note becomes the description of the item above, an
+unmet condition becomes `disabled`) and is covered by conversion tests. Kit 0.9.1
+exposes no standalone item renderer (`Settings` always draws its sidebar and
+search), so the screen still draws through `render_items`; switching to the Kit
+render path belongs to #622 (rows with descriptions) and #623 (search).
 The Notifications tab is the first table; other tabs move over one by one.
 
 ## Conversation logs (D044)

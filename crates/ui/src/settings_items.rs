@@ -329,9 +329,117 @@ impl SettingsWindow {
     }
 }
 
+/// Converts the visible items of `table` into Kit `setting` items (the thin
+/// adapter to `gpui-component::setting`).
+///
+/// A switch becomes `SettingField::switch`, a text item wraps the existing
+/// `TextInput` (found by `field`; an item without one is skipped) in
+/// `SettingField::render`, and a note becomes the description of the item
+/// above it. `on_toggle` receives the item and the new value when the Kit
+/// switch is flipped. Kit offers no standalone item renderer (`Settings`
+/// always draws its sidebar and search), so the screen still draws through
+/// `render_items`; the Kit render path is taken when #622/#623 need it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn kit_items(
+    table: &'static [Item],
+    values: &Settings,
+    i18n: &crate::localization::Localizer,
+    field: impl Fn(&str) -> Option<Entity<TextInput>>,
+    on_toggle: std::rc::Rc<dyn Fn(&'static Item, bool, &mut App)>,
+) -> Vec<gpui_component::setting::SettingItem> {
+    use gpui_component::setting::{SettingField, SettingItem};
+
+    let mut out: Vec<SettingItem> = Vec::new();
+    for item in table.iter().filter(|item| item.visible) {
+        let disabled = !item.enabled(values);
+        match &item.control {
+            Control::Toggle { get, .. } => {
+                let checked = get(values);
+                let on_toggle = on_toggle.clone();
+                out.push(
+                    SettingItem::new(
+                        i18n.text(item.label_key),
+                        SettingField::switch(
+                            move |_| checked,
+                            move |on, cx| on_toggle(item, on, cx),
+                        ),
+                    )
+                    .disabled(disabled),
+                );
+            }
+            Control::Text { .. } => {
+                let Some(input) = field(item.id) else {
+                    continue;
+                };
+                out.push(
+                    SettingItem::new(
+                        i18n.text(item.label_key),
+                        SettingField::render(move |_, _, _| input.clone()),
+                    )
+                    .disabled(disabled),
+                );
+            }
+            Control::Note => {
+                if let Some(SettingItem::Item { description, .. }) = out.last_mut() {
+                    *description = Some(i18n.text(item.label_key).into());
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Control, NOTIFICATIONS, Settings, TABLES};
+    use super::{Control, NOTIFICATIONS, Settings, TABLES, kit_items};
+    use gpui_component::setting::SettingItem;
+    use std::rc::Rc;
+
+    fn convert(settings: &Settings) -> Vec<SettingItem> {
+        let i18n = crate::localization::Localizer::new(Default::default());
+        kit_items(
+            NOTIFICATIONS,
+            settings,
+            &i18n,
+            |_| None,
+            Rc::new(|_, _, _| {}),
+        )
+    }
+
+    #[test]
+    fn kit_items_follow_the_declared_toggles() {
+        // Text fields need an app context and are skipped here.
+        let settings = Settings::default();
+        let items = convert(&settings);
+        let toggles = NOTIFICATIONS
+            .iter()
+            .filter(|item| item.visible && matches!(item.control, Control::Toggle { .. }))
+            .count();
+        assert_eq!(items.len(), toggles);
+    }
+
+    #[test]
+    fn kit_items_disable_dependent_toggles() {
+        let mut settings = Settings::default();
+        settings.notifications.enabled = false;
+        let disabled: Vec<bool> = convert(&settings)
+            .iter()
+            .map(|item| matches!(item, SettingItem::Item { disabled: true, .. }))
+            .collect();
+        // The master switch stays usable; the dependent ones are disabled.
+        assert_eq!(disabled.first(), Some(&false));
+        assert!(disabled.iter().skip(1).all(|d| *d));
+    }
+
+    #[test]
+    fn notes_become_descriptions_of_the_item_above() {
+        let items = convert(&Settings::default());
+        // The trailing platform hint attaches to the last toggle.
+        let Some(SettingItem::Item { description, .. }) = items.last() else {
+            panic!("an item");
+        };
+        assert!(description.is_some());
+    }
 
     #[test]
     fn ids_are_unique_across_tables() {
