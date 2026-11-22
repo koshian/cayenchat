@@ -14,7 +14,10 @@
 //! placeholders all go through the same table.
 
 use cayenchat_app::notifications;
-use cayenchat_storage::Settings;
+use cayenchat_storage::{
+    ChannelNumberModifier, LinuxDisplay, NoticeKey, SendKey, Settings, TextKeyTheme,
+    UnreadLogPosition,
+};
 use gpui::{prelude::*, *};
 
 use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::SettingsForm};
@@ -34,8 +37,30 @@ pub(crate) enum Control {
         show: fn(&Settings) -> String,
         store: fn(&mut Settings, &str) -> Result<(), String>,
     },
+    /// A row of mutually exclusive choices (an enum setting).
+    Choice(&'static [ChoiceOption]),
     /// Explanatory text under the row above.
     Note,
+}
+
+/// One choice of a [`Control::Choice`]: its label and how it is read from
+/// and written to [`Settings`].
+pub(crate) struct ChoiceOption {
+    pub label_key: &'static str,
+    pub is_selected: fn(&Settings) -> bool,
+    pub select: fn(&mut Settings),
+}
+
+/// `option!("label_key", field.path = Value)` declares a [`ChoiceOption`]
+/// that is selected while the field equals the value.
+macro_rules! option {
+    ($key:literal, $($field:ident).+ = $value:expr) => {
+        ChoiceOption {
+            label_key: $key,
+            is_selected: |s| s.$($field).+ == $value,
+            select: |s| s.$($field).+ = $value,
+        }
+    };
 }
 
 /// One declared item.
@@ -87,6 +112,14 @@ impl Item {
                 store,
             },
         )
+    }
+
+    const fn choice(
+        id: &'static str,
+        label_key: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self::new(id, label_key, Control::Choice(options))
     }
 
     const fn note(id: &'static str, text_key: &'static str) -> Self {
@@ -229,16 +262,116 @@ pub(crate) const APPLICATION_WINDOW: &[Item] = &[
         |s| s.confirm_channel_dblclick_part,
         |s, on| s.confirm_channel_dblclick_part = on,
     ),
+    Item::choice(
+        "unread_log_position",
+        "unread_log_position",
+        &[
+            option!(
+                "unread_log_position_previous",
+                unread_log_position = UnreadLogPosition::Previous
+            ),
+            option!(
+                "unread_log_position_latest",
+                unread_log_position = UnreadLogPosition::Latest
+            ),
+        ],
+    ),
+    Item::note("unread-log-position-hint", "unread_log_position_hint"),
 ];
 
-/// The menu bar row of the Application tab (macOS has its own menu bar).
-pub(crate) const APPLICATION_MENU: &[Item] = &[Item::toggle(
-    "menu-bar-auto-hide",
-    "menu_bar_auto_hide",
-    |s| s.menu_bar_auto_hide,
-    |s, on| s.menu_bar_auto_hide = on,
-)
-.only_if(!cfg!(target_os = "macos"))];
+/// The menu bar row (macOS has its own menu bar that is always shown) and
+/// the display server row (Linux) of the Application tab.
+pub(crate) const APPLICATION_MENU: &[Item] = &[
+    Item::toggle(
+        "menu-bar-auto-hide",
+        "menu_bar_auto_hide",
+        |s| s.menu_bar_auto_hide,
+        |s, on| s.menu_bar_auto_hide = on,
+    )
+    .only_if(!cfg!(target_os = "macos")),
+    Item::choice(
+        "linux_display",
+        "linux_display",
+        &[
+            option!(
+                "linux_display_wayland",
+                linux_display = LinuxDisplay::Wayland
+            ),
+            option!("linux_display_x11", linux_display = LinuxDisplay::X11),
+        ],
+    )
+    .only_if(cfg!(unix_desktop)),
+    Item::note("linux-display-hint", "linux_display_hint").only_if(cfg!(unix_desktop)),
+];
+
+/// The send and notice key rows of the Keyboard tab. The clash warning
+/// depends on both and is drawn between this table and `KEYBOARD_MODIFIERS`.
+pub(crate) const KEYBOARD_SEND: &[Item] = &[
+    Item::choice(
+        "send_key",
+        "send_key",
+        &[
+            option!("send_key_enter", send_key = SendKey::Enter),
+            option!("send_key_ctrl_enter", send_key = SendKey::CtrlEnter),
+            option!("send_key_double_enter", send_key = SendKey::DoubleEnter),
+        ],
+    ),
+    Item::note("send-key-hint", "send_key_hint"),
+    Item::choice(
+        "notice_key",
+        "notice_key",
+        &[
+            option!("notice_key_off", notice_key = NoticeKey::Off),
+            option!("notice_key_ctrl_enter", notice_key = NoticeKey::CtrlEnter),
+            option!("notice_key_alt_enter", notice_key = NoticeKey::AltEnter),
+        ],
+    ),
+    Item::note("notice-key-hint", "notice_key_hint"),
+];
+
+/// The channel number modifier (not macOS) and text key theme (Linux and
+/// other Unix desktops) rows of the Keyboard tab. The shortcut recorder
+/// rows below are their own widgets.
+pub(crate) const KEYBOARD_MODIFIERS: &[Item] = &[
+    Item::choice(
+        "channel_number_modifier",
+        "channel_number_modifier",
+        &[
+            option!(
+                "channel_number_modifier_ctrl",
+                channel_number_modifier = ChannelNumberModifier::Ctrl
+            ),
+            option!(
+                "channel_number_modifier_alt",
+                channel_number_modifier = ChannelNumberModifier::Alt
+            ),
+            option!(
+                "channel_number_modifier_super",
+                channel_number_modifier = ChannelNumberModifier::Super
+            ),
+        ],
+    )
+    .only_if(!cfg!(target_os = "macos")),
+    Item::note(
+        "channel-number-modifier-hint",
+        "channel_number_modifier_hint",
+    )
+    .only_if(!cfg!(target_os = "macos")),
+    Item::choice(
+        "text_key_theme",
+        "text_key_theme",
+        &[
+            option!("text_key_theme_auto", text_key_theme = TextKeyTheme::Auto),
+            option!(
+                "text_key_theme_standard",
+                text_key_theme = TextKeyTheme::Standard
+            ),
+            option!("text_key_theme_emacs", text_key_theme = TextKeyTheme::Emacs),
+        ],
+    )
+    .only_if(cfg!(unix_desktop)),
+    Item::note("text-key-theme-hint", "text_key_theme_hint").only_if(cfg!(unix_desktop)),
+];
 
 /// The image preview row of the Application tab.
 pub(crate) const APPLICATION_PREVIEWS: &[Item] = &[
@@ -289,6 +422,8 @@ const TABLES: &[&[Item]] = &[
     APPLICATION_MENU,
     APPLICATION_PREVIEWS,
     APPLICATION_TEXT,
+    KEYBOARD_SEND,
+    KEYBOARD_MODIFIERS,
 ];
 
 /// The text items of every table, in declaration order.
@@ -428,6 +563,22 @@ impl SettingsWindow {
                         .into_any_element(),
                     )
                 }
+                Control::Choice(options) => {
+                    let options = options
+                        .iter()
+                        .map(|option| {
+                            (
+                                option.label_key,
+                                (option.is_selected)(&self.settings.values),
+                                Box::new(option.select) as Box<dyn Fn(&mut Settings)>,
+                            )
+                        })
+                        .collect();
+                    Some(
+                        self.choice_row(item.label_key, options, cx)
+                            .into_any_element(),
+                    )
+                }
                 Control::Note => Some(
                     div()
                         .ml(settings_theme::LABEL_INDENT)
@@ -443,6 +594,9 @@ impl SettingsWindow {
 /// Called with the item and its new value when a Kit switch is flipped.
 pub(crate) type ToggleHandler = std::rc::Rc<dyn Fn(&'static Item, bool, &mut App)>;
 
+/// Called with the item and the index of the option when a Kit dropdown changes.
+pub(crate) type ChoiceHandler = std::rc::Rc<dyn Fn(&'static Item, usize, &mut App)>;
+
 /// Converts the visible items of `table` into Kit `setting` items (the thin
 /// adapter to `gpui-component::setting`).
 ///
@@ -450,7 +604,8 @@ pub(crate) type ToggleHandler = std::rc::Rc<dyn Fn(&'static Item, bool, &mut App
 /// `TextInput` (found by `field`; an item without one is skipped) in
 /// `SettingField::render`, and a note becomes the description of the item
 /// above it. `on_toggle` receives the item and the new value when the Kit
-/// switch is flipped. Kit offers no standalone item renderer (`Settings`
+/// switch is flipped, `on_choose` the item and option index when a choice
+/// (a dropdown) changes. Kit offers no standalone item renderer (`Settings`
 /// always draws its sidebar and search), so the screen still draws through
 /// `render_items`; the Kit render path is taken when #622/#623 need it.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -460,6 +615,7 @@ pub(crate) fn kit_items(
     i18n: &crate::localization::Localizer,
     field: impl Fn(&str) -> Option<Entity<TextInput>>,
     on_toggle: ToggleHandler,
+    on_choose: ChoiceHandler,
 ) -> Vec<gpui_component::setting::SettingItem> {
     use gpui_component::setting::{SettingField, SettingItem};
 
@@ -493,6 +649,37 @@ pub(crate) fn kit_items(
                     .disabled(disabled),
                 );
             }
+            Control::Choice(options) => {
+                // The dropdown's values are the option indexes.
+                let labels = options
+                    .iter()
+                    .enumerate()
+                    .map(|(index, option)| {
+                        (index.to_string().into(), i18n.text(option.label_key).into())
+                    })
+                    .collect();
+                let selected = options
+                    .iter()
+                    .position(|option| (option.is_selected)(values))
+                    .unwrap_or(0)
+                    .to_string();
+                let on_choose = on_choose.clone();
+                out.push(
+                    SettingItem::new(
+                        i18n.text(item.label_key),
+                        SettingField::dropdown(
+                            labels,
+                            move |_| selected.clone().into(),
+                            move |value, cx| {
+                                if let Ok(index) = value.parse() {
+                                    on_choose(item, index, cx);
+                                }
+                            },
+                        ),
+                    )
+                    .disabled(disabled),
+                );
+            }
             Control::Note => {
                 if let Some(SettingItem::Item { description, .. }) = out.last_mut() {
                     *description = Some(i18n.text(item.label_key).into());
@@ -505,7 +692,7 @@ pub(crate) fn kit_items(
 
 #[cfg(test)]
 mod tests {
-    use super::{Control, NOTIFICATIONS, Settings, TABLES, kit_items};
+    use super::{Control, KEYBOARD_SEND, NOTIFICATIONS, Settings, TABLES, kit_items};
     use gpui_component::setting::SettingItem;
     use std::rc::Rc;
 
@@ -516,6 +703,7 @@ mod tests {
             settings,
             &i18n,
             |_| None,
+            Rc::new(|_, _, _| {}),
             Rc::new(|_, _, _| {}),
         )
     }
@@ -605,5 +793,46 @@ mod tests {
         assert!(!mentions.enabled(&settings));
         settings.notifications.enabled = true;
         assert!(mentions.enabled(&settings));
+    }
+
+    #[test]
+    fn choices_select_exactly_one_option_and_write_what_they_read() {
+        for item in TABLES.iter().flat_map(|table| table.iter()) {
+            let Control::Choice(options) = &item.control else {
+                continue;
+            };
+            for (index, option) in options.iter().enumerate() {
+                let mut settings = Settings::default();
+                (option.select)(&mut settings);
+                let selected: Vec<usize> = options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, other)| (other.is_selected)(&settings))
+                    .map(|(i, _)| i)
+                    .collect();
+                assert_eq!(selected, [index], "{} option {index}", item.id);
+            }
+        }
+    }
+
+    #[test]
+    fn kit_items_turn_choices_into_dropdowns() {
+        let items = kit_items(
+            KEYBOARD_SEND,
+            &Settings::default(),
+            &crate::localization::Localizer::new(Default::default()),
+            |_| None,
+            Rc::new(|_, _, _| {}),
+            Rc::new(|_, _, _| {}),
+        );
+        // Two choices; their hints become descriptions.
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| matches!(
+            item,
+            SettingItem::Item {
+                description: Some(_),
+                ..
+            }
+        )));
     }
 }

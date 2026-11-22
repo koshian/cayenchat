@@ -15,9 +15,9 @@ use cayenchat_app::attachments::AttachmentFlow;
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_model::display;
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, DarkColors, FontSet,
-    Language, NickCollision, NoticeKey, SaslMechanism, Secret, SecretKey, SendKey, ServerProfile,
-    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Appearance, AutoJoinEntry, CredentialBackendKind, DarkColors, FontSet, Language, NickCollision,
+    SaslMechanism, Secret, SecretKey, ServerProfile, Settings, TextEncoding, ThemeMode,
+    color_value,
 };
 use gpui::{prelude::*, *};
 
@@ -1448,6 +1448,10 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .child(div().flex_1().min_w_0().child(input))
 }
 
+/// One button of a choice row: its label key, whether it is selected and what
+/// selecting it writes to the settings.
+pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
+
 impl SettingsWindow {
     /// A labelled row of mutually exclusive choices stored in the settings.
     pub(crate) fn option_row<T: Copy + PartialEq + 'static, const N: usize>(
@@ -1458,9 +1462,32 @@ impl SettingsWindow {
         set: fn(&mut Settings, T),
         cx: &mut Context<Self>,
     ) -> Div {
+        let options = options
+            .into_iter()
+            .map(|(value, key)| {
+                (
+                    key,
+                    current == value,
+                    Box::new(move |settings: &mut Settings| set(settings, value))
+                        as Box<dyn Fn(&mut Settings)>,
+                )
+            })
+            .collect();
+        self.choice_row(label_key, options, cx)
+    }
+
+    /// The row behind [`Self::option_row`] and declared `Choice` items: each
+    /// option is its label key, whether it is selected and what selecting it
+    /// writes to the settings.
+    pub(crate) fn choice_row(
+        &self,
+        label_key: &'static str,
+        options: Vec<ChoiceButton>,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = theme::current(cx);
         let mut choices = div().flex().gap_1();
-        for (index, (value, key)) in options.into_iter().enumerate() {
+        for (index, (key, selected, select)) in options.into_iter().enumerate() {
             choices = choices.child(
                 div()
                     .id((label_key, index))
@@ -1469,10 +1496,10 @@ impl SettingsWindow {
                     .border_1()
                     .border_color(theme.border)
                     .cursor_pointer()
-                    .when(current == value, |d| d.bg(theme.selected))
+                    .when(selected, |d| d.bg(theme.selected))
                     .child(self.i18n.text(key))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        set(&mut this.settings.values, value);
+                        select(&mut this.settings.values);
                         this.feedback = None;
                         cx.notify();
                     })),
@@ -5769,83 +5796,23 @@ impl SettingsWindow {
     /// (only Windows and Linux have choices there), then the shortcut list.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let hint = |key: &str| {
-            div()
-                .ml(settings_theme::LABEL_INDENT)
-                .text_color(theme.text_secondary)
-                .child(self.i18n.text(key))
-        };
+        let clash = self
+            .settings
+            .values
+            .notice_key
+            .clashes_with(self.settings.values.send_key);
         account_settings::panel(cx)
             .child(self.tab_heading("keyboard"))
-            .child(self.option_row(
-                "send_key",
-                [
-                    (SendKey::Enter, "send_key_enter"),
-                    (SendKey::CtrlEnter, "send_key_ctrl_enter"),
-                    (SendKey::DoubleEnter, "send_key_double_enter"),
-                ],
-                self.settings.values.send_key,
-                |settings, key| settings.send_key = key,
-                cx,
-            ))
-            .child(hint("send_key_hint"))
-            .child(self.option_row(
-                "notice_key",
-                [
-                    (NoticeKey::Off, "notice_key_off"),
-                    (NoticeKey::CtrlEnter, "notice_key_ctrl_enter"),
-                    (NoticeKey::AltEnter, "notice_key_alt_enter"),
-                ],
-                self.settings.values.notice_key,
-                |settings, key| settings.notice_key = key,
-                cx,
-            ))
-            .child(hint("notice_key_hint"))
-            .when(
-                self.settings
-                    .values
-                    .notice_key
-                    .clashes_with(self.settings.values.send_key),
-                |d| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(self.i18n.text("notice_key_clash")),
-                    )
-                },
-            )
-            .when(!cfg!(target_os = "macos"), |d| {
-                d.child(self.option_row(
-                    "channel_number_modifier",
-                    [
-                        (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
-                        (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
-                        (
-                            ChannelNumberModifier::Super,
-                            "channel_number_modifier_super",
-                        ),
-                    ],
-                    self.settings.values.channel_number_modifier,
-                    |settings, modifier| settings.channel_number_modifier = modifier,
-                    cx,
-                ))
-                .child(hint("channel_number_modifier_hint"))
+            .children(self.render_items(crate::settings_items::KEYBOARD_SEND, cx))
+            .when(clash, |d| {
+                d.child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(theme.warning)
+                        .child(self.i18n.text("notice_key_clash")),
+                )
             })
-            .when(cfg!(unix_desktop), |d| {
-                d.child(self.option_row(
-                    "text_key_theme",
-                    [
-                        (TextKeyTheme::Auto, "text_key_theme_auto"),
-                        (TextKeyTheme::Standard, "text_key_theme_standard"),
-                        (TextKeyTheme::Emacs, "text_key_theme_emacs"),
-                    ],
-                    self.settings.values.text_key_theme,
-                    |settings, keys| settings.text_key_theme = keys,
-                    cx,
-                ))
-                .child(hint("text_key_theme_hint"))
-            })
+            .children(self.render_items(crate::settings_items::KEYBOARD_MODIFIERS, cx))
             .children(self.shortcut_rows(cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))

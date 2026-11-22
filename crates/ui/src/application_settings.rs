@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The Application page: how the app itself behaves, apart from any server.
 
-use cayenchat_storage::{Language, LinuxDisplay, UnreadLogPosition};
+use cayenchat_storage::Language;
 use gpui::{prelude::*, *};
 
 use crate::{
@@ -159,42 +159,8 @@ impl SettingsWindow {
             )
             .child(autostart_toggle)
             .children(self.render_items(settings_items::APPLICATION_WINDOW, cx))
-            .child(self.option_row(
-                "unread_log_position",
-                [
-                    (UnreadLogPosition::Previous, "unread_log_position_previous"),
-                    (UnreadLogPosition::Latest, "unread_log_position_latest"),
-                ],
-                self.settings.values.unread_log_position,
-                |settings, position| settings.unread_log_position = position,
-                cx,
-            ))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("unread_log_position_hint")),
-            )
-            // macOS has its own menu bar that is always shown.
+            // The menu bar and display server rows: macOS has its own menu bar.
             .children(self.render_items(settings_items::APPLICATION_MENU, cx))
-            .when(cfg!(unix_desktop), |d| {
-                d.child(self.option_row(
-                    "linux_display",
-                    [
-                        (LinuxDisplay::Wayland, "linux_display_wayland"),
-                        (LinuxDisplay::X11, "linux_display_x11"),
-                    ],
-                    self.settings.values.linux_display,
-                    |settings, display| settings.linux_display = display,
-                    cx,
-                ))
-                .child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("linux_display_hint")),
-                )
-            })
             .children(self.render_items(settings_items::APPLICATION_PREVIEWS, cx))
             .child(self.reiwa_mode_row("reiwa-mode", cx))
             .children(self.render_items(settings_items::APPLICATION_TEXT, cx))
