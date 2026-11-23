@@ -60,7 +60,9 @@ pub fn setting_row(
                 .flex()
                 .flex_col()
                 .items_end()
-                .flex_shrink_0()
+                // Never wider than the row, so controls that can wrap do.
+                .min_w_0()
+                .max_w_full()
                 .child(control),
         )
 }

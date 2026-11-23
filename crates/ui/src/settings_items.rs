@@ -55,6 +55,33 @@ impl SliderState {
     }
 }
 
+/// Keyboard focus of a declared select box (#622): Tab reaches it, Enter,
+/// Space and Down open it, Up/Down move the highlight, Enter chooses.
+pub(crate) struct SelectState {
+    id: &'static str,
+    focus: FocusHandle,
+}
+
+impl SelectState {
+    #[cfg(test)]
+    pub(crate) fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
+    }
+
+    /// The state of every declared select box.
+    pub(crate) fn all(cx: &mut App) -> Vec<Self> {
+        TABLES
+            .iter()
+            .flat_map(|table| table.iter())
+            .filter(|item| matches!(item.control, Control::Select(_)))
+            .map(|item| Self {
+                id: item.id,
+                focus: cx.focus_handle().tab_stop(true),
+            })
+            .collect()
+    }
+}
+
 /// How an item reads and writes its value.
 pub(crate) enum Control {
     /// A checkbox row.
@@ -704,6 +731,44 @@ impl SettingsForm {
 }
 
 impl SettingsWindow {
+    /// Keys on a focused select box (#622). Escape is left to the window's
+    /// handler, which closes the list.
+    fn select_key_down(
+        &mut self,
+        id: &'static str,
+        options: &'static [ChoiceOption],
+        current: usize,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.modified() || stroke.is_ime_in_progress() {
+            return;
+        }
+        let open = self.open_select == Some(id);
+        let last = options.len().saturating_sub(1);
+        match stroke.key.as_str() {
+            "enter" | "space" if open => {
+                if let Some(option) = options.get(self.select_cursor) {
+                    (option.select)(&mut self.settings.values);
+                }
+                self.open_select = None;
+                self.feedback = None;
+            }
+            "enter" | "space" | "down" | "up" if !open => {
+                self.select_cursor = current;
+                self.open_select = Some(id);
+            }
+            "down" => self.select_cursor = (self.select_cursor + 1).min(last),
+            "up" => self.select_cursor = self.select_cursor.saturating_sub(1),
+            "home" if open => self.select_cursor = 0,
+            "end" if open => self.select_cursor = last,
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// Shows the values of `table`'s text fields again, from `values` (used
     /// by "Restore Defaults").
     pub(crate) fn show_item_fields(
@@ -829,22 +894,40 @@ impl SettingsWindow {
                         .find(|option| (option.is_selected)(&self.settings.values));
                     let open = self.open_select == Some(item.id);
                     let id = item.id;
+                    let focus = self.selects.iter().find(|s| s.id == id)?.focus.clone();
+                    let ring = settings_theme::primary_color(cx);
+                    let current_index = options
+                        .iter()
+                        .position(|option| (option.is_selected)(&self.settings.values))
+                        .unwrap_or(0);
+                    let options_ref: &'static [ChoiceOption] = options;
                     let button = div()
                         .id(id)
+                        .track_focus(&focus)
                         .flex()
                         .justify_between()
                         .gap_2()
                         .w(px(SELECT_WIDTH))
+                        .max_w_full()
                         .px_2()
                         .py_1()
                         .border_1()
                         .border_color(theme.border)
+                        .focus_visible(move |s| s.border_color(ring))
                         .cursor_pointer()
                         .child(current.map_or_else(String::new, |o| self.i18n.text(o.label_key)))
                         .child("▾")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_select = (this.open_select != Some(id)).then_some(id);
-                            cx.notify();
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            this.select_key_down(id, options_ref, current_index, event, cx);
+                        }))
+                        .on_click(cx.listener({
+                            let focus = focus.clone();
+                            move |this, _, window, cx| {
+                                window.focus(&focus, cx);
+                                this.select_cursor = current_index;
+                                this.open_select = (this.open_select != Some(id)).then_some(id);
+                                cx.notify();
+                            }
                         }));
                     let menu = open.then(|| {
                         let mut menu = div()
@@ -865,6 +948,7 @@ impl SettingsWindow {
                                     .when((option.is_selected)(&self.settings.values), |d| {
                                         d.bg(theme.selected)
                                     })
+                                    .when(index == self.select_cursor, |d| d.bg(theme.hover))
                                     .child(self.i18n.text(option.label_key))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         select(&mut this.settings.values);
@@ -930,6 +1014,7 @@ impl SettingsWindow {
                     });
                     let control = div()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))

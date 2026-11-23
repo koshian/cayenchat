@@ -1301,6 +1301,10 @@ pub(crate) struct SettingsWindow {
     pub(crate) sliders: Vec<crate::settings_items::SliderState>,
     /// The id of the declared select box whose list is open (#622).
     pub(crate) open_select: Option<&'static str>,
+    /// Keyboard focus of the declared select boxes, and the highlighted
+    /// option of the open list.
+    pub(crate) selects: Vec<crate::settings_items::SelectState>,
+    pub(crate) select_cursor: usize,
     /// Whether this window's platform can blur what lies behind it, read
     /// from the window on each render (#1018).
     blur_supported: bool,
@@ -1601,6 +1605,8 @@ impl SettingsWindow {
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
             open_select: None,
+            selects: crate::settings_items::SelectState::all(cx),
+            select_cursor: 0,
             blur_supported: true,
             blur_radius_supported: false,
             color_picker: None,
@@ -3780,6 +3786,8 @@ impl SettingsWindow {
         } else {
             window.focus_prev(cx);
         }
+        // Tab leaves an open select list behind.
+        self.open_select = None;
         // The dialog covers the panes; nothing behind it needs to follow.
         if self.auto_join.is_none() {
             if self.nav_focus.is_focused(window) {
@@ -5217,6 +5225,7 @@ impl SettingsWindow {
         }
         let control = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_4()
             .child(tabs)
@@ -5237,6 +5246,8 @@ impl SettingsWindow {
         let input = self.font_input(target);
         let control = div()
             .flex()
+            .flex_wrap()
+            .justify_end()
             .items_center()
             .gap_2()
             .child(div().w(px(FONT_FIELD_WIDTH)).child(input.clone()))

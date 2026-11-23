@@ -900,6 +900,7 @@ impl SettingsWindow {
             let delete_id = entry.id.clone();
             let buttons = div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap_2()
                 .child(
@@ -1081,10 +1082,11 @@ impl SettingsWindow {
         let [log, combined, members, tree] =
             AREAS.map(|(region, key)| area(region, key, layers.next().flatten(), cx));
         let preview = div()
-            .ml(settings_theme::LABEL_INDENT)
+            .py_2()
             .flex()
             .gap_1()
             .w(px(520.))
+            .max_w_full()
             .h(px(280.))
             .child(
                 div()
@@ -1092,6 +1094,7 @@ impl SettingsWindow {
                     .flex_col()
                     .gap_1()
                     .flex_1()
+                    .min_w_0()
                     .child(log)
                     .child(combined),
             )
@@ -1135,7 +1138,6 @@ impl SettingsWindow {
                 }))
         };
         let controls = div()
-            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_wrap()
             .items_center()
@@ -1330,38 +1332,35 @@ impl SettingsWindow {
             .flex_col()
             .gap_2()
             .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("wallpaper_heading")),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(palette.text_secondary)
-                    .child(self.i18n.text("wallpaper_hint")),
-            )
-            .child(
-                div()
-                    .id("split-wallpapers")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(split, true, cx))
-                    .child(self.i18n.text("wallpaper_shared"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.wallpaper_set_shared(cx);
-                    })),
+                settings_theme::setting_row(
+                    self.i18n.text("wallpaper_heading"),
+                    Some(self.i18n.text("wallpaper_hint").into()),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(settings_theme::checkbox(split, true, cx))
+                        .child(self.i18n.text("wallpaper_shared")),
+                    cx,
+                )
+                .id("split-wallpapers")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.wallpaper_set_shared(cx);
+                })),
             )
             .when(split, |d| {
-                d.child(
+                d.child(settings_theme::setting_row(
+                    String::new(),
+                    None,
                     div()
-                        .ml(settings_theme::LABEL_INDENT)
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .child(mode_button(false, cx))
                         .child(mode_button(true, cx)),
-                )
+                    cx,
+                ))
             })
             .child(preview)
             .child(controls)
@@ -1458,6 +1457,40 @@ mod tests {
         dark: bool,
     ) -> (String, bool) {
         form.read_with(cx, |form, cx| form.shown_appearance(cx).theme_status(dark))
+    }
+
+    #[gpui::test]
+    fn the_theme_select_works_from_the_keyboard(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
+        form.update_in(cx, |form, window, cx| {
+            form.tab = crate::settings_window::SettingsTab::Appearance;
+            let focus = form.selects[0].focus_handle().clone();
+            window.focus(&focus, cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let state = |cx: &mut VisualTestContext| {
+            form.read_with(cx, |f, _| (f.open_select, f.settings.values.theme, f.tab))
+        };
+        // Down opens the list without moving the navigation.
+        cx.simulate_keystrokes("down");
+        let (open, mode, tab) = state(cx);
+        assert_eq!(open, Some("theme"));
+        assert_eq!(mode, ThemeMode::Light);
+        assert!(tab == crate::settings_window::SettingsTab::Appearance);
+        // Down moves the highlight, Enter chooses it.
+        cx.simulate_keystrokes("down enter");
+        let (open, mode, tab) = state(cx);
+        assert_eq!(open, None);
+        assert_eq!(mode, ThemeMode::Dark);
+        assert!(tab == crate::settings_window::SettingsTab::Appearance);
+        // Escape closes the list and keeps the value.
+        cx.simulate_keystrokes("enter up escape");
+        let (open, mode, _) = state(cx);
+        assert_eq!(open, None);
+        assert_eq!(mode, ThemeMode::Dark);
     }
 
     #[gpui::test]
