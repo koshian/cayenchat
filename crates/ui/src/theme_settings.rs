@@ -1474,6 +1474,17 @@ mod tests {
         let state = |cx: &mut VisualTestContext| {
             form.read_with(cx, |f, _| (f.open_select, f.settings.values.theme, f.tab))
         };
+        // A full key press: GPUI turns Enter/Space into a click on the release.
+        let press = |cx: &mut VisualTestContext, key: &'static str| {
+            cx.simulate_keystrokes(key);
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+            });
+        };
+        // Space on the closed list opens it, once.
+        press(cx, "space");
+        assert_eq!(state(cx).0, Some("theme"));
+        cx.simulate_keystrokes("escape");
         // Down opens the list without moving the navigation.
         cx.simulate_keystrokes("down");
         let (open, mode, tab) = state(cx);
@@ -1481,13 +1492,15 @@ mod tests {
         assert_eq!(mode, ThemeMode::Light);
         assert!(tab == crate::settings_window::SettingsTab::Appearance);
         // Down moves the highlight, Enter chooses it.
-        cx.simulate_keystrokes("down enter");
+        cx.simulate_keystrokes("down");
+        press(cx, "enter");
         let (open, mode, tab) = state(cx);
         assert_eq!(open, None);
         assert_eq!(mode, ThemeMode::Dark);
         assert!(tab == crate::settings_window::SettingsTab::Appearance);
         // Escape closes the list and keeps the value.
-        cx.simulate_keystrokes("enter up escape");
+        press(cx, "enter");
+        cx.simulate_keystrokes("up escape");
         let (open, mode, _) = state(cx);
         assert_eq!(open, None);
         assert_eq!(mode, ThemeMode::Dark);

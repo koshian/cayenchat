@@ -748,14 +748,11 @@ impl SettingsWindow {
         let open = self.open_select == Some(id);
         let last = options.len().saturating_sub(1);
         match stroke.key.as_str() {
-            "enter" | "space" if open => {
-                if let Some(option) = options.get(self.select_cursor) {
-                    (option.select)(&mut self.settings.values);
-                }
-                self.open_select = None;
-                self.feedback = None;
-            }
-            "enter" | "space" | "down" | "up" if !open => {
+            // Opening and choosing happen in the button's click handler, which
+            // GPUI also calls for Enter/Space (on key release), so the key is
+            // only kept from the navigation here.
+            "enter" | "space" => {}
+            "down" | "up" if !open => {
                 self.select_cursor = current;
                 self.open_select = Some(id);
             }
@@ -904,6 +901,7 @@ impl SettingsWindow {
                     let button = div()
                         .id(id)
                         .track_focus(&focus)
+                        .relative()
                         .flex()
                         .justify_between()
                         .gap_2()
@@ -917,15 +915,37 @@ impl SettingsWindow {
                         .cursor_pointer()
                         .child(current.map_or_else(String::new, |o| self.i18n.text(o.label_key)))
                         .child("▾")
+                        .child({
+                            // Tells the settings pane where the select is, so
+                            // Shift+Tab back to it scrolls it into view.
+                            let focus = focus.clone();
+                            canvas(
+                                move |bounds, window, cx| {
+                                    crate::focus_reveal::note(&focus, bounds, window, cx)
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full()
+                        })
                         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                             this.select_key_down(id, options_ref, current_index, event, cx);
                         }))
                         .on_click(cx.listener({
                             let focus = focus.clone();
-                            move |this, _, window, cx| {
+                            move |this, event: &ClickEvent, window, cx| {
                                 window.focus(&focus, cx);
-                                this.select_cursor = current_index;
-                                this.open_select = (this.open_select != Some(id)).then_some(id);
+                                if event.is_keyboard() && this.open_select == Some(id) {
+                                    // Enter/Space on an open list chooses.
+                                    if let Some(option) = options_ref.get(this.select_cursor) {
+                                        (option.select)(&mut this.settings.values);
+                                    }
+                                    this.open_select = None;
+                                    this.feedback = None;
+                                } else {
+                                    this.select_cursor = current_index;
+                                    this.open_select = (this.open_select != Some(id)).then_some(id);
+                                }
                                 cx.notify();
                             }
                         }));
