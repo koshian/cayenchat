@@ -1945,7 +1945,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(4000.)));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(8000.)));
         cx.run_until_parked();
         // The channel tree is the fourth area; the click also reaches the
         // area's own card, which must not close the editor again.
