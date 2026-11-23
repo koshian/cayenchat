@@ -27,6 +27,9 @@ use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::S
 /// Width of a slider's track.
 const SLIDER_WIDTH: f32 = 220.;
 
+/// Width of a select box.
+const SELECT_WIDTH: f32 = 160.;
+
 /// What a declared slider needs between renders: where its track was last
 /// painted (to turn the pointer position into a value) and its keyboard
 /// focus. Keyed by the item id.
@@ -52,6 +55,33 @@ impl SliderState {
     }
 }
 
+/// Keyboard focus of a declared select box (#622): Tab reaches it, Enter,
+/// Space and Down open it, Up/Down move the highlight, Enter chooses.
+pub(crate) struct SelectState {
+    id: &'static str,
+    focus: FocusHandle,
+}
+
+impl SelectState {
+    #[cfg(test)]
+    pub(crate) fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
+    }
+
+    /// The state of every declared select box.
+    pub(crate) fn all(cx: &mut App) -> Vec<Self> {
+        TABLES
+            .iter()
+            .flat_map(|table| table.iter())
+            .filter(|item| matches!(item.control, Control::Select(_)))
+            .map(|item| Self {
+                id: item.id,
+                focus: cx.focus_handle().tab_stop(true),
+            })
+            .collect()
+    }
+}
+
 /// How an item reads and writes its value.
 pub(crate) enum Control {
     /// A checkbox row.
@@ -69,6 +99,9 @@ pub(crate) enum Control {
     },
     /// A row of mutually exclusive choices (an enum setting).
     Choice(&'static [ChoiceOption]),
+    /// The same choices as a select box: the current one on a button that
+    /// opens the list (#622).
+    Select(&'static [ChoiceOption]),
     /// A whole number from `min` to `max` set on a slider (the shared
     /// [`crate::slider`]); the value is shown with `suffix` after it.
     /// `get` is clamped to the range for display. `reset`, when set, adds a
@@ -116,6 +149,9 @@ pub(crate) struct Item {
     pub visible: bool,
     /// When set, the row is usable only while this holds.
     pub enabled_when: Option<fn(&Settings) -> bool>,
+    /// Draw a switch in the shared setting row (name left, control right)
+    /// instead of the older checkbox line (#622).
+    pub row: bool,
 }
 
 impl Item {
@@ -126,7 +162,22 @@ impl Item {
             control,
             visible: true,
             enabled_when: None,
+            row: false,
         }
+    }
+
+    /// Draws a toggle in the shared setting row.
+    const fn in_row(mut self) -> Self {
+        self.row = true;
+        self
+    }
+
+    const fn select(
+        id: &'static str,
+        label_key: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self::new(id, label_key, Control::Select(options))
     }
 
     const fn toggle(
@@ -488,7 +539,7 @@ pub(crate) const EXPERIMENTAL: &[Item] = &[
 
 /// The theme mode row at the top of the Appearance tab. The color, opacity,
 /// font and wallpaper rows are their own widgets.
-pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::choice(
+pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::select(
     "theme",
     "theme",
     &[
@@ -504,7 +555,8 @@ pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
     "alternate_rows",
     |s| s.appearance.alternate_rows,
     |s, on| s.appearance.alternate_rows = on,
-)];
+)
+.in_row()];
 
 /// A pane background opacity slider of the Appearance tab (a percentage from
 /// the pane minimum to 100), drawn after the pane's colors.
@@ -679,6 +731,41 @@ impl SettingsForm {
 }
 
 impl SettingsWindow {
+    /// Keys on a focused select box (#622). Escape is left to the window's
+    /// handler, which closes the list.
+    fn select_key_down(
+        &mut self,
+        id: &'static str,
+        options: &'static [ChoiceOption],
+        current: usize,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.modified() || stroke.is_ime_in_progress() {
+            return;
+        }
+        let open = self.open_select == Some(id);
+        let last = options.len().saturating_sub(1);
+        match stroke.key.as_str() {
+            // Opening and choosing happen in the button's click handler, which
+            // GPUI also calls for Enter/Space (on key release), so the key is
+            // only kept from the navigation here.
+            "enter" | "space" => {}
+            "down" | "up" if !open => {
+                self.select_cursor = current;
+                self.open_select = Some(id);
+            }
+            "down" => self.select_cursor = (self.select_cursor + 1).min(last),
+            "up" => self.select_cursor = self.select_cursor.saturating_sub(1),
+            "home" if open => self.select_cursor = 0,
+            "end" if open => self.select_cursor = last,
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// Shows the values of `table`'s text fields again, from `values` (used
     /// by "Restore Defaults").
     pub(crate) fn show_item_fields(
@@ -729,6 +816,28 @@ impl SettingsWindow {
                     let enabled = item.enabled(&self.settings.values);
                     let checked = get(&self.settings.values);
                     let set = *set;
+                    if item.row {
+                        // The whole row is the click target.
+                        return Some(
+                            settings_theme::setting_row(
+                                self.i18n.text(item.label_key),
+                                None,
+                                settings_theme::checkbox(checked, enabled, cx),
+                                cx,
+                            )
+                            .id(item.id)
+                            .when(!enabled, |d| d.text_color(theme.text_secondary))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let on = !get(&this.settings.values);
+                                        set(&mut this.settings.values, on);
+                                        cx.notify();
+                                    }))
+                            })
+                            .into_any_element(),
+                        );
+                    }
                     Some(
                         div()
                             .id(item.id)
@@ -776,6 +885,111 @@ impl SettingsWindow {
                             .into_any_element(),
                     )
                 }
+                Control::Select(options) => {
+                    let current = options
+                        .iter()
+                        .find(|option| (option.is_selected)(&self.settings.values));
+                    let open = self.open_select == Some(item.id);
+                    let id = item.id;
+                    let focus = self.selects.iter().find(|s| s.id == id)?.focus.clone();
+                    let ring = settings_theme::primary_color(cx);
+                    let current_index = options
+                        .iter()
+                        .position(|option| (option.is_selected)(&self.settings.values))
+                        .unwrap_or(0);
+                    let options_ref: &'static [ChoiceOption] = options;
+                    let button = div()
+                        .id(id)
+                        .track_focus(&focus)
+                        .relative()
+                        .flex()
+                        .justify_between()
+                        .gap_2()
+                        .w(px(SELECT_WIDTH))
+                        .max_w_full()
+                        .px_2()
+                        .py_1()
+                        .border_1()
+                        .border_color(theme.border)
+                        .focus_visible(move |s| s.border_color(ring))
+                        .cursor_pointer()
+                        .child(current.map_or_else(String::new, |o| self.i18n.text(o.label_key)))
+                        .child("▾")
+                        .child({
+                            // Tells the settings pane where the select is, so
+                            // Shift+Tab back to it scrolls it into view.
+                            let focus = focus.clone();
+                            canvas(
+                                move |bounds, window, cx| {
+                                    crate::focus_reveal::note(&focus, bounds, window, cx)
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full()
+                        })
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            this.select_key_down(id, options_ref, current_index, event, cx);
+                        }))
+                        .on_click(cx.listener({
+                            let focus = focus.clone();
+                            move |this, event: &ClickEvent, window, cx| {
+                                window.focus(&focus, cx);
+                                if event.is_keyboard() && this.open_select == Some(id) {
+                                    // Enter/Space on an open list chooses.
+                                    if let Some(option) = options_ref.get(this.select_cursor) {
+                                        (option.select)(&mut this.settings.values);
+                                    }
+                                    this.open_select = None;
+                                    this.feedback = None;
+                                } else {
+                                    this.select_cursor = current_index;
+                                    this.open_select = (this.open_select != Some(id)).then_some(id);
+                                }
+                                cx.notify();
+                            }
+                        }));
+                    let menu = open.then(|| {
+                        let mut menu = div()
+                            .w(px(SELECT_WIDTH))
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.surface);
+                        for (index, option) in options.iter().enumerate() {
+                            let select = option.select;
+                            menu = menu.child(
+                                div()
+                                    .id((id, index))
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover))
+                                    .when((option.is_selected)(&self.settings.values), |d| {
+                                        d.bg(theme.selected)
+                                    })
+                                    .when(index == self.select_cursor, |d| d.bg(theme.hover))
+                                    .child(self.i18n.text(option.label_key))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        select(&mut this.settings.values);
+                                        this.open_select = None;
+                                        this.feedback = None;
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        menu
+                    });
+                    Some(
+                        settings_theme::setting_row(
+                            self.i18n.text(item.label_key),
+                            None,
+                            div().flex().flex_col().child(button).children(menu),
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                }
                 Control::Slider {
                     min,
                     max,
@@ -818,24 +1032,27 @@ impl SettingsWindow {
                                 cx.notify();
                             }))
                     });
+                    let control = div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
+                        .child(
+                            div()
+                                .w(px(48.))
+                                .flex_shrink_0()
+                                .child(format!("{value}{suffix}")),
+                        )
+                        .children(reset);
                     Some(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                settings_theme::label_column()
-                                    .child(self.i18n.text(item.label_key)),
-                            )
-                            .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
-                            .child(
-                                div()
-                                    .w(px(48.))
-                                    .flex_shrink_0()
-                                    .child(format!("{value}{suffix}")),
-                            )
-                            .children(reset)
-                            .into_any_element(),
+                        settings_theme::setting_row(
+                            self.i18n.text(item.label_key),
+                            None,
+                            control,
+                            cx,
+                        )
+                        .into_any_element(),
                     )
                 }
                 Control::Note => Some(
@@ -908,7 +1125,7 @@ pub(crate) fn kit_items(
                     .disabled(disabled),
                 );
             }
-            Control::Choice(options) => {
+            Control::Choice(options) | Control::Select(options) => {
                 // The dropdown's values are the option indexes.
                 let labels = options
                     .iter()
@@ -1060,7 +1277,7 @@ mod tests {
     #[test]
     fn choices_select_exactly_one_option_and_write_what_they_read() {
         for item in TABLES.iter().flat_map(|table| table.iter()) {
-            let Control::Choice(options) = &item.control else {
+            let (Control::Choice(options) | Control::Select(options)) = &item.control else {
                 continue;
             };
             for (index, option) in options.iter().enumerate() {

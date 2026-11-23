@@ -792,14 +792,14 @@ impl SettingsWindow {
         let appearance = self.shown_appearance(cx);
         let hint = |key: &str| {
             div()
-                .ml(settings_theme::LABEL_INDENT)
+                .text_sm()
                 .text_color(palette.text_secondary)
                 .child(self.i18n.text(key))
         };
         let mut section = div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)
@@ -809,44 +809,45 @@ impl SettingsWindow {
         for dark in [false, true] {
             let (name, modified) = appearance.theme_status(dark);
             let id = if dark { "dark" } else { "light" };
-            section =
-                section.child(
+            let control = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
                     div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(settings_theme::label_column().child(self.theme_kind_label(dark)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .debug_selector(move || format!("theme-source-{id}"))
-                                .child(self.i18n.format("theme_source", &[("name", &name)]))
-                                .when(modified, |d| {
-                                    d.child(
-                                        div()
-                                            .ml_2()
-                                            .text_color(palette.warning)
-                                            .child(self.i18n.text("theme_modified")),
-                                    )
-                                }),
-                        )
-                        .child(
-                            settings_theme::button(("theme-default", usize::from(dark)), false, cx)
-                                .child(self.i18n.text("theme_use_default"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_use_default(dark, cx)
-                                })),
-                        )
-                        .child(
-                            settings_theme::button(("theme-export", usize::from(dark)), false, cx)
-                                .child(self.i18n.text("theme_export"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_begin_export(dark, cx)
-                                })),
+                        .max_w(px(260.))
+                        .debug_selector(move || format!("theme-source-{id}"))
+                        .child(self.i18n.format("theme_source", &[("name", &name)]))
+                        .when(modified, |d| {
+                            d.child(
+                                div()
+                                    .ml_2()
+                                    .text_color(palette.warning)
+                                    .child(self.i18n.text("theme_modified")),
+                            )
+                        }),
+                )
+                .child(
+                    settings_theme::button(("theme-default", usize::from(dark)), false, cx)
+                        .child(self.i18n.text("theme_use_default"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_use_default(dark, cx)),
+                        ),
+                )
+                .child(
+                    settings_theme::button(("theme-export", usize::from(dark)), false, cx)
+                        .child(self.i18n.text("theme_export"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_begin_export(dark, cx)),
                         ),
                 );
+            section = section.child(settings_theme::setting_row(
+                self.theme_kind_label(dark),
+                None,
+                control,
+                cx,
+            ));
         }
         if let Some(prompt) = &self.themes.export {
             section = section.child(
@@ -883,56 +884,52 @@ impl SettingsWindow {
                     ),
             );
         }
-        section = section.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    settings_theme::label_column().child(self.i18n.text("theme_library_heading")),
-                )
-                .child(
-                    settings_theme::button("theme-import", false, cx)
-                        .child(self.i18n.text("theme_import"))
-                        .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
-                ),
-        );
+        section = section.child(settings_theme::setting_row(
+            self.i18n.text("theme_library_heading"),
+            None,
+            settings_theme::button("theme-import", false, cx)
+                .child(self.i18n.text("theme_import"))
+                .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
+            cx,
+        ));
         if self.themes.library.is_empty() {
             section = section.child(hint("theme_library_empty"));
         }
         for (index, entry) in self.themes.library.iter().enumerate() {
             let apply_id = entry.id.clone();
             let delete_id = entry.id.clone();
-            section =
-                section.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .child(div().flex_1().min_w_0().child(format!(
-                            "{} ({})",
-                            cayenchat_model::display::neutralize_bidi(&entry.name),
-                            self.theme_kind_label(entry.mode == ThemeKind::Dark)
-                        )))
-                        .child(
-                            settings_theme::button(("theme-apply", index), false, cx)
-                                .child(self.i18n.text("theme_apply"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_apply(apply_id.clone(), cx)
-                                })),
-                        )
-                        .child(
-                            settings_theme::button(("theme-delete", index), false, cx)
-                                .child(self.i18n.text("theme_delete"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_delete(&delete_id, cx)
-                                })),
+            let buttons = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
+                    settings_theme::button(("theme-apply", index), false, cx)
+                        .child(self.i18n.text("theme_apply"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.theme_apply(apply_id.clone(), cx)
+                        })),
+                )
+                .child(
+                    settings_theme::button(("theme-delete", index), false, cx)
+                        .child(self.i18n.text("theme_delete"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_delete(&delete_id, cx)),
                         ),
                 );
+            section = section.child(settings_theme::setting_row(
+                format!(
+                    "{} ({})",
+                    cayenchat_model::display::neutralize_bidi(&entry.name),
+                    self.theme_kind_label(entry.mode == ThemeKind::Dark)
+                ),
+                None,
+                buttons,
+                cx,
+            ));
         }
         section.when_some(self.themes.message.clone(), |d, message| {
-            d.child(div().ml(settings_theme::LABEL_INDENT).child(message))
+            d.child(div().py_1().child(message))
         })
     }
 
@@ -1085,10 +1082,11 @@ impl SettingsWindow {
         let [log, combined, members, tree] =
             AREAS.map(|(region, key)| area(region, key, layers.next().flatten(), cx));
         let preview = div()
-            .ml(settings_theme::LABEL_INDENT)
+            .py_2()
             .flex()
             .gap_1()
             .w(px(520.))
+            .max_w_full()
             .h(px(280.))
             .child(
                 div()
@@ -1096,6 +1094,7 @@ impl SettingsWindow {
                     .flex_col()
                     .gap_1()
                     .flex_1()
+                    .min_w_0()
                     .child(log)
                     .child(combined),
             )
@@ -1139,7 +1138,6 @@ impl SettingsWindow {
                 }))
         };
         let controls = div()
-            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_wrap()
             .items_center()
@@ -1334,38 +1332,35 @@ impl SettingsWindow {
             .flex_col()
             .gap_2()
             .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("wallpaper_heading")),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(palette.text_secondary)
-                    .child(self.i18n.text("wallpaper_hint")),
-            )
-            .child(
-                div()
-                    .id("split-wallpapers")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(split, true, cx))
-                    .child(self.i18n.text("wallpaper_shared"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.wallpaper_set_shared(cx);
-                    })),
+                settings_theme::setting_row(
+                    self.i18n.text("wallpaper_heading"),
+                    Some(self.i18n.text("wallpaper_hint").into()),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(settings_theme::checkbox(split, true, cx))
+                        .child(self.i18n.text("wallpaper_shared")),
+                    cx,
+                )
+                .id("split-wallpapers")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.wallpaper_set_shared(cx);
+                })),
             )
             .when(split, |d| {
-                d.child(
+                d.child(settings_theme::setting_row(
+                    String::new(),
+                    None,
                     div()
-                        .ml(settings_theme::LABEL_INDENT)
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .child(mode_button(false, cx))
                         .child(mode_button(true, cx)),
-                )
+                    cx,
+                ))
             })
             .child(preview)
             .child(controls)
@@ -1462,6 +1457,53 @@ mod tests {
         dark: bool,
     ) -> (String, bool) {
         form.read_with(cx, |form, cx| form.shown_appearance(cx).theme_status(dark))
+    }
+
+    #[gpui::test]
+    fn the_theme_select_works_from_the_keyboard(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let _file = TestFile::with(&settings);
+        let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
+        form.update_in(cx, |form, window, cx| {
+            form.tab = crate::settings_window::SettingsTab::Appearance;
+            let focus = form.selects[0].focus_handle().clone();
+            window.focus(&focus, cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let state = |cx: &mut VisualTestContext| {
+            form.read_with(cx, |f, _| (f.open_select, f.settings.values.theme, f.tab))
+        };
+        // A full key press: GPUI turns Enter/Space into a click on the release.
+        let press = |cx: &mut VisualTestContext, key: &'static str| {
+            cx.simulate_keystrokes(key);
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+            });
+        };
+        // Space on the closed list opens it, once.
+        press(cx, "space");
+        assert_eq!(state(cx).0, Some("theme"));
+        cx.simulate_keystrokes("escape");
+        // Down opens the list without moving the navigation.
+        cx.simulate_keystrokes("down");
+        let (open, mode, tab) = state(cx);
+        assert_eq!(open, Some("theme"));
+        assert_eq!(mode, ThemeMode::Light);
+        assert!(tab == crate::settings_window::SettingsTab::Appearance);
+        // Down moves the highlight, Enter chooses it.
+        cx.simulate_keystrokes("down");
+        press(cx, "enter");
+        let (open, mode, tab) = state(cx);
+        assert_eq!(open, None);
+        assert_eq!(mode, ThemeMode::Dark);
+        assert!(tab == crate::settings_window::SettingsTab::Appearance);
+        // Escape closes the list and keeps the value.
+        press(cx, "enter");
+        cx.simulate_keystrokes("up escape");
+        let (open, mode, _) = state(cx);
+        assert_eq!(open, None);
+        assert_eq!(mode, ThemeMode::Dark);
     }
 
     #[gpui::test]

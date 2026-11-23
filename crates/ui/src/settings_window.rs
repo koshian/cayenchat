@@ -1299,6 +1299,12 @@ pub(crate) struct SettingsWindow {
     /// Painted track and keyboard focus of the declared sliders (opacity,
     /// line height, blur strength).
     pub(crate) sliders: Vec<crate::settings_items::SliderState>,
+    /// The id of the declared select box whose list is open (#622).
+    pub(crate) open_select: Option<&'static str>,
+    /// Keyboard focus of the declared select boxes, and the highlighted
+    /// option of the open list.
+    pub(crate) selects: Vec<crate::settings_items::SelectState>,
+    pub(crate) select_cursor: usize,
     /// Whether this window's platform can blur what lies behind it, read
     /// from the window on each render (#1018).
     blur_supported: bool,
@@ -1420,6 +1426,13 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
 /// One button of a choice row: its label key, whether it is selected and what
 /// selecting it writes to the settings.
 pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
+
+/// Width of the `#RRGGBB` field of a color row: seven characters and padding.
+const COLOR_FIELD_WIDTH: f32 = 96.;
+/// Width of a font name field.
+const FONT_FIELD_WIDTH: f32 = 200.;
+/// Width of one color cell: the swatch, the gap and the field.
+const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
 
 impl SettingsWindow {
     /// The row of a declared `Choice` item: each option is its label key,
@@ -1591,6 +1604,9 @@ impl SettingsWindow {
             font_picker: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
+            open_select: None,
+            selects: crate::settings_items::SelectState::all(cx),
+            select_cursor: 0,
             blur_supported: true,
             blur_radius_supported: false,
             color_picker: None,
@@ -1872,6 +1888,7 @@ impl SettingsWindow {
         // with `saved`, does not find nothing to apply (#147).
         self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
         self.font_picker = None;
+        self.open_select = None;
         self.color_picker = None;
         self.auto_join = None;
         self.shortcut_recording = None;
@@ -2704,6 +2721,9 @@ impl SettingsWindow {
             cx.notify();
         } else if self.font_picker.is_some() {
             self.font_picker = None;
+            cx.notify();
+        } else if self.open_select.is_some() {
+            self.open_select = None;
             cx.notify();
         } else if self.settings.server_list_open
             || self.settings.ircv3_server_list_open
@@ -3766,6 +3786,8 @@ impl SettingsWindow {
         } else {
             window.focus_prev(cx);
         }
+        // Tab leaves an open select list behind.
+        self.open_select = None;
         // The dialog covers the panes; nothing behind it needs to follow.
         if self.auto_join.is_none() {
             if self.nav_focus.is_focused(window) {
@@ -4910,7 +4932,24 @@ impl SettingsWindow {
         }
     }
 
-    /// One `#RRGGBB` field with a swatch that opens the color picker for it.
+    /// The Light/Dark column headings above the color rows, lined up with the
+    /// two cells of `color_pair`.
+    fn color_headings(&self, cx: &mut Context<Self>) -> Div {
+        let heading = |key: &str| {
+            div()
+                .w(px(COLOR_CELL_WIDTH))
+                .flex_shrink_0()
+                .child(self.i18n.text(key))
+        };
+        let pair = div()
+            .flex()
+            .gap_4()
+            .child(heading("colors_light"))
+            .child(heading("colors_dark"));
+        settings_theme::setting_row(String::new(), None, pair, cx)
+    }
+
+    /// One swatch that opens the color picker, and a `#RRGGBB` field.
     fn color_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) -> Div {
         let theme = theme::current(cx);
         let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
@@ -4921,11 +4960,10 @@ impl SettingsWindow {
         let target = input.clone();
         div()
             .flex()
-            .flex_1()
-            .min_w_0()
+            .w(px(COLOR_CELL_WIDTH))
+            .flex_shrink_0()
             .items_center()
             .gap_2()
-            .child(div().flex_1().min_w_0().child(input.clone()))
             .child(
                 div()
                     .id(("color-swatch", input.entity_id().as_u64() as usize))
@@ -4940,6 +4978,7 @@ impl SettingsWindow {
                         this.toggle_color_picker(&target, cx);
                     })),
             )
+            .child(div().w(px(COLOR_FIELD_WIDTH)).child(input.clone()))
     }
 
     /// A color setting with its light-theme and dark-theme values side by
@@ -4955,20 +4994,23 @@ impl SettingsWindow {
             .color_picker
             .as_ref()
             .is_some_and(|open| open.field == *light || open.field == *dark);
+        let pair = div()
+            .flex()
+            .gap_4()
+            .child(self.color_input(light, cx))
+            .child(self.color_input(dark, cx));
         div()
             .flex()
             .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(settings_theme::label_column().child(label.to_owned()))
-                    .child(self.color_input(light, cx))
-                    .child(self.color_input(dark, cx)),
-            )
-            .when(picker_here, |d| d.child(self.render_color_panel(cx)))
+            .child(settings_theme::setting_row(
+                label.to_owned(),
+                None,
+                pair,
+                cx,
+            ))
+            .when(picker_here, |d| {
+                d.child(div().py_2().child(self.render_color_panel(cx)))
+            })
     }
 
     /// Opens the color picker for `field`, or closes it when it is open for
@@ -5152,26 +5194,11 @@ impl SettingsWindow {
 
     /// The switch for separate light and dark fonts and, while it is on,
     /// the choice of the theme whose fonts the rows below show.
-    fn render_font_mode(&self, cx: &mut Context<Self>) -> Div {
+    fn render_font_mode(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = settings_theme::palette(cx);
         let split = self.settings.values.appearance.split_fonts;
         let side = self.settings.font_side_dark;
-        let mut block = div().flex().flex_col().gap_1().child(
-            div()
-                .id("split-fonts")
-                .ml(settings_theme::LABEL_INDENT)
-                .flex()
-                .gap_2()
-                .cursor_pointer()
-                .child(settings_theme::checkbox(split, true, cx))
-                .child(self.i18n.text("split_fonts"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let on = !this.settings.values.appearance.split_fonts;
-                    this.settings.set_split_fonts(on, cx);
-                    this.font_picker = None;
-                    cx.notify();
-                })),
-        );
+        let mut tabs = div().flex().gap_2();
         if split {
             let tab = |id: &'static str, key: &str, dark: bool| {
                 div()
@@ -5184,68 +5211,86 @@ impl SettingsWindow {
                     .when(side == dark, |d| d.bg(theme.hover))
                     .child(self.i18n.text(key))
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // The row around it switches the split; this click
+                        // is only the side.
+                        cx.stop_propagation();
                         this.settings.select_font_side(dark, cx);
                         this.font_picker = None;
                         cx.notify();
                     }))
             };
-            block = block.child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .child(tab("font-side-light", "theme_kind_light", false))
-                    .child(tab("font-side-dark", "theme_kind_dark", true)),
-            );
+            tabs = tabs
+                .child(tab("font-side-light", "theme_kind_light", false))
+                .child(tab("font-side-dark", "theme_kind_dark", true));
         }
-        block
+        let control = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_4()
+            .child(tabs)
+            .child(settings_theme::checkbox(split, true, cx));
+        settings_theme::setting_row(self.i18n.text("split_fonts"), None, control, cx)
+            .id("split-fonts")
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let on = !this.settings.values.appearance.split_fonts;
+                this.settings.set_split_fonts(on, cx);
+                this.font_picker = None;
+                cx.notify();
+            }))
     }
 
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
-        let mut field = div().flex().flex_col().child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(settings_theme::label_column().child(label.to_owned()))
-                .child(div().flex_1().min_w_0().child(input.clone()))
-                .child(self.font_size_stepper(target, cx))
-                .child(
-                    div()
-                        .id(("font-picker", target as u32))
-                        .px_2()
-                        .py_1()
-                        .border_1()
-                        .border_color(theme.border)
-                        .cursor_pointer()
-                        .child(self.i18n.text("choose_font"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.font_picker = if this.font_picker == Some(target) {
-                                None
-                            } else {
-                                Some(target)
-                            };
-                            // Listing the system's fonts takes a while (many
-                            // seconds in a debug build), so it waits until a
-                            // list is wanted instead of slowing every opening
-                            // of the settings window.
-                            if this.font_picker.is_some() && this.fonts.is_empty() {
-                                let mut fonts = window.text_system().all_font_names();
-                                fonts.sort_unstable();
-                                fonts.dedup();
-                                this.fonts = fonts;
-                            }
-                            cx.notify();
-                        })),
-                ),
-        );
+        let control = div()
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .items_center()
+            .gap_2()
+            .child(div().w(px(FONT_FIELD_WIDTH)).child(input.clone()))
+            .child(self.font_size_stepper(target, cx))
+            .child(
+                div()
+                    .id(("font-picker", target as u32))
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .child(self.i18n.text("choose_font"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.font_picker = if this.font_picker == Some(target) {
+                            None
+                        } else {
+                            Some(target)
+                        };
+                        // Listing the system's fonts takes a while (many
+                        // seconds in a debug build), so it waits until a
+                        // list is wanted instead of slowing every opening
+                        // of the settings window.
+                        if this.font_picker.is_some() && this.fonts.is_empty() {
+                            let mut fonts = window.text_system().all_font_names();
+                            fonts.sort_unstable();
+                            fonts.dedup();
+                            this.fonts = fonts;
+                        }
+                        cx.notify();
+                    })),
+            );
+        let mut field = div().flex().flex_col().child(settings_theme::setting_row(
+            label.to_owned(),
+            None,
+            control,
+            cx,
+        ));
         if self.font_picker == Some(target) {
             let query = input.read(cx).text().trim().to_lowercase();
             let mut choices = div()
                 .id(("font-choices", target as u32))
-                .ml(settings_theme::LABEL_INDENT)
+                .my_2()
                 .max_h(px(170.))
                 .overflow_y_scroll()
                 .on_scroll(|_, _, cx| cx.stop_propagation())
@@ -5304,17 +5349,24 @@ impl SettingsWindow {
     fn render_background_blur(&self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let supported = self.blur_supported;
-        let mut row = div()
-            .id("background-blur")
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .gap_2()
-            .child(settings_theme::checkbox(
+        let hint = if supported && self.blur_radius_supported {
+            "background_blur_hint_adjustable"
+        } else if supported {
+            "background_blur_hint"
+        } else {
+            "background_blur_unsupported"
+        };
+        let mut row = settings_theme::setting_row(
+            self.i18n.text("background_blur"),
+            Some(self.i18n.text(hint).into()),
+            settings_theme::checkbox(
                 self.settings.values.appearance.background_blur,
                 supported,
                 cx,
-            ))
-            .child(self.i18n.text("background_blur"));
+            ),
+            cx,
+        )
+        .id("background-blur");
         if supported {
             row = row.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
                 let value = &mut this.settings.values.appearance.background_blur;
@@ -5324,27 +5376,13 @@ impl SettingsWindow {
         } else {
             row = row.text_color(theme.text_muted);
         }
-        let hint = if supported && self.blur_radius_supported {
-            "background_blur_hint_adjustable"
-        } else if supported {
-            "background_blur_hint"
-        } else {
-            "background_blur_unsupported"
-        };
         div()
             .flex()
             .flex_col()
-            .gap_1()
             .child(row)
             .when(supported && self.blur_radius_supported, |d| {
                 d.children(self.render_items(crate::settings_items::BLUR_RADIUS, cx))
             })
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text(hint)),
-            )
     }
 
     fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -5358,14 +5396,7 @@ impl SettingsWindow {
             )
             .children(self.render_items(crate::settings_items::APPEARANCE_THEME, cx))
             .child(self.render_theme_settings(cx))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(settings_theme::label_column())
-                    .child(div().flex_1().child(self.i18n.text("colors_light")))
-                    .child(div().flex_1().child(self.i18n.text("colors_dark"))),
-            )
+            .child(self.color_headings(cx))
             .child(self.color_pair(
                 &self.i18n.text("member_list_background"),
                 &self.settings.member_list_background,
@@ -5557,6 +5588,7 @@ impl SettingsWindow {
     fn select_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
         self.show_tab(tab, cx);
         self.font_picker = None;
+        self.open_select = None;
         window.focus(&self.nav_focus, cx);
         cx.notify();
     }
