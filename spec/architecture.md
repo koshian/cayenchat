@@ -2539,9 +2539,14 @@ theme rows (`KEYBOARD_MODIFIERS`) with the clash warning drawn between them
 widgets. The Application tab's unread log position and display server rows
 joined `APPLICATION_WINDOW` and `APPLICATION_MENU`. The Appearance tab
 declares its theme mode row (`APPEARANCE_THEME`) and alternate rows switch
-(`APPEARANCE_ROWS`); the color pairs, opacity and line height sliders, fonts,
-background blur and wallpaper stay their own widgets (#622 reworks the
-layout).
+(`APPEARANCE_ROWS`). `Item::slider` declares a whole number on the shared
+slider (`ui::slider`: pointer, drag and keys): its range, a suffix, a reset
+button when wanted, and how the value is read and written. The five pane
+opacities, the background blur strength and the two log line heights are
+sliders; each keeps its painted track and keyboard focus in
+`SettingsWindow::sliders`, keyed by item id. `kit_items` skips sliders (the
+Kit has no field with this behaviour). The color pairs, fonts, the blur switch
+and wallpaper stay their own widgets (#622 reworks the layout further).
 
 ## Conversation logs (D044)
 
