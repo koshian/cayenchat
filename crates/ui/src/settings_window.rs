@@ -4986,6 +4986,7 @@ impl SettingsWindow {
     fn color_pair(
         &self,
         label: &str,
+        hint: &str,
         light: &Entity<TextInput>,
         dark: &Entity<TextInput>,
         cx: &mut Context<Self>,
@@ -5004,7 +5005,7 @@ impl SettingsWindow {
             .flex_col()
             .child(settings_theme::setting_row(
                 label.to_owned(),
-                None,
+                Some(hint.to_owned().into()),
                 pair,
                 cx,
             ))
@@ -5230,18 +5231,29 @@ impl SettingsWindow {
             .gap_4()
             .child(tabs)
             .child(settings_theme::checkbox(split, true, cx));
-        settings_theme::setting_row(self.i18n.text("split_fonts"), None, control, cx)
-            .id("split-fonts")
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let on = !this.settings.values.appearance.split_fonts;
-                this.settings.set_split_fonts(on, cx);
-                this.font_picker = None;
-                cx.notify();
-            }))
+        settings_theme::setting_row(
+            self.i18n.text("split_fonts"),
+            Some(self.i18n.text("split_fonts_hint").into()),
+            control,
+            cx,
+        )
+        .id("split-fonts")
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let on = !this.settings.values.appearance.split_fonts;
+            this.settings.set_split_fonts(on, cx);
+            this.font_picker = None;
+            cx.notify();
+        }))
     }
 
-    fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
+    fn font_field(
+        &self,
+        target: FontTarget,
+        label_key: &str,
+        hint_key: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
         let control = div()
@@ -5281,8 +5293,8 @@ impl SettingsWindow {
                     })),
             );
         let mut field = div().flex().flex_col().child(settings_theme::setting_row(
-            label.to_owned(),
-            None,
+            self.i18n.text(label_key),
+            Some(self.i18n.text(hint_key).into()),
             control,
             cx,
         ));
@@ -5387,117 +5399,190 @@ impl SettingsWindow {
 
     fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
+        // Rows are grouped under headings (#622): kinds of rows are not
+        // interleaved, so every group is all colors, all sliders, and so on.
         account_settings::panel(cx)
             .child(self.tab_heading("appearance"))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("appearance_intro")),
-            )
+            .child(settings_theme::group_heading(
+                self.i18n.text("theme_heading"),
+                Some(self.i18n.text("theme_hint").into()),
+                cx,
+            ))
             .children(self.render_items(crate::settings_items::APPEARANCE_THEME, cx))
             .child(self.render_theme_settings(cx))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_pane_colors"),
+                Some(self.i18n.text("colors_note").into()),
+                cx,
+            ))
             .child(self.color_headings(cx))
             .child(self.color_pair(
                 &self.i18n.text("member_list_background"),
+                &self.i18n.text("member_list_background_hint"),
                 &self.settings.member_list_background,
                 &self.settings.dark_member_list_background,
                 cx,
             ))
-            .children(self.render_items(crate::settings_items::OPACITY_MEMBER_LIST, cx))
             .child(self.color_pair(
                 &self.i18n.text("channel_tree_background"),
+                &self.i18n.text("channel_tree_background_hint"),
                 &self.settings.channel_tree_background,
                 &self.settings.dark_channel_tree_background,
                 cx,
             ))
-            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_TREE, cx))
             .child(self.color_pair(
                 &self.i18n.text("channel_log"),
+                &self.i18n.text("channel_log_hint"),
                 &self.settings.channel_log_background,
                 &self.settings.dark_channel_log_background,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("channel_log_alternate"),
+                &self.i18n.text("channel_log_alternate_hint"),
                 &self.settings.channel_log_alternate,
                 &self.settings.dark_channel_log_alternate,
                 cx,
             ))
-            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_LOG, cx))
-            .child(self.color_pair(
-                &self.i18n.text("channel_event_color"),
-                &self.settings.channel_event_color,
-                &self.settings.dark_channel_event_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("notice_color"),
-                &self.settings.notice_color,
-                &self.settings.dark_notice_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("highlight_color"),
-                &self.settings.highlight_color,
-                &self.settings.dark_highlight_color,
-                cx,
-            ))
             .child(self.color_pair(
                 &self.i18n.text("combined_log"),
+                &self.i18n.text("combined_log_hint"),
                 &self.settings.combined_log_background,
                 &self.settings.dark_combined_log_background,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("combined_log_alternate"),
+                &self.i18n.text("combined_log_alternate_hint"),
                 &self.settings.combined_log_alternate,
                 &self.settings.dark_combined_log_alternate,
                 cx,
             ))
-            .children(self.render_items(crate::settings_items::OPACITY_COMBINED_LOG, cx))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_text_colors"),
+                None,
+                cx,
+            ))
+            .child(self.color_headings(cx))
+            .child(self.color_pair(
+                &self.i18n.text("channel_event_color"),
+                &self.i18n.text("channel_event_color_hint"),
+                &self.settings.channel_event_color,
+                &self.settings.dark_channel_event_color,
+                cx,
+            ))
+            .child(self.color_pair(
+                &self.i18n.text("notice_color"),
+                &self.i18n.text("notice_color_hint"),
+                &self.settings.notice_color,
+                &self.settings.dark_notice_color,
+                cx,
+            ))
+            .child(self.color_pair(
+                &self.i18n.text("highlight_color"),
+                &self.i18n.text("highlight_color_hint"),
+                &self.settings.highlight_color,
+                &self.settings.dark_highlight_color,
+                cx,
+            ))
             .child(self.color_pair(
                 &self.i18n.text("link_color"),
+                &self.i18n.text("link_color_hint"),
                 &self.settings.link_color,
                 &self.settings.dark_link_color,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("link_background"),
+                &self.i18n.text("link_background_hint"),
                 &self.settings.link_background,
                 &self.settings.dark_link_background,
                 cx,
             ))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_popup_colors"),
+                None,
+                cx,
+            ))
+            .child(self.color_headings(cx))
             .child(self.color_pair(
                 &self.i18n.text("url_tooltip_color"),
+                &self.i18n.text("url_tooltip_color_hint"),
                 &self.settings.url_tooltip_color,
                 &self.settings.dark_url_tooltip_color,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("url_tooltip_link_color"),
+                &self.i18n.text("url_tooltip_link_color_hint"),
                 &self.settings.url_tooltip_link_color,
                 &self.settings.dark_url_tooltip_link_color,
                 cx,
             ))
             .child(self.color_pair(
                 &self.i18n.text("url_tooltip_text_color"),
+                &self.i18n.text("url_tooltip_text_color_hint"),
                 &self.settings.url_tooltip_text_color,
                 &self.settings.dark_url_tooltip_text_color,
                 cx,
             ))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_transparency"),
+                None,
+                cx,
+            ))
+            .children(self.render_items(crate::settings_items::OPACITY_MEMBER_LIST, cx))
+            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_TREE, cx))
+            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_LOG, cx))
+            .children(self.render_items(crate::settings_items::OPACITY_COMBINED_LOG, cx))
             .children(self.render_items(crate::settings_items::OPACITY_URL_TOOLTIP, cx))
             .child(self.render_background_blur(cx))
-            .children(self.render_items(crate::settings_items::APPEARANCE_ROWS, cx))
-            .child(self.render_wallpaper_settings(window, cx))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_fonts"),
+                Some(self.i18n.text("fonts_note").into()),
+                cx,
+            ))
             .child(self.render_font_mode(cx))
-            .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
+            .child(self.font_field(
+                FontTarget::ChannelLog,
+                "channel_log",
+                "font_hint_channel_log",
+                cx,
+            ))
+            .child(self.font_field(
+                FontTarget::CombinedLog,
+                "combined_log",
+                "font_hint_combined_log",
+                cx,
+            ))
+            .child(self.font_field(
+                FontTarget::MemberList,
+                "member_list",
+                "font_hint_member_list",
+                cx,
+            ))
+            .child(self.font_field(
+                FontTarget::ChannelTree,
+                "channel_tree",
+                "font_hint_channel_tree",
+                cx,
+            ))
+            .child(self.font_field(FontTarget::Input, "draft_input", "font_hint_input", cx))
+            .child(self.font_field(
+                FontTarget::Time,
+                "timestamp_monospace",
+                "font_hint_time",
+                cx,
+            ))
             .children(self.render_items(crate::settings_items::LINE_HEIGHT_CHANNEL_LOG, cx))
-            .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
             .children(self.render_items(crate::settings_items::LINE_HEIGHT_COMBINED_LOG, cx))
-            .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
-            .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
-            .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
-            .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
+            .child(self.render_wallpaper_settings(window, cx))
+            .child(settings_theme::group_heading(
+                self.i18n.text("group_display"),
+                None,
+                cx,
+            ))
+            .children(self.render_items(crate::settings_items::APPEARANCE_ROWS, cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })

@@ -2564,11 +2564,23 @@ handles do not reach the category list. Two-valued
 settings are checkboxes (`Item::in_row` draws a declared toggle as a row whose
 whole width is the click target); sliders, fonts and color pairs are rows with
 their own control. A color pair is two cells (swatch, then a 7-character
-`#RRGGBB` field) under shared Light/Dark headings. Only the Appearance tab uses
-this layout so far (the wallpaper section's name, hint and switches are rows; its
-miniature and per-area controls stay a composite block below them);
-other tabs move over one by one. `Control::Choice` (a button row) remains for
-the tabs not moved yet.
+`#RRGGBB` field) under Light/Dark headings repeated at the top of each color
+group.
+
+Every row has a gray one-sentence description under its name (`Item::hint`
+for declared items, the `hint` argument elsewhere); a long explanation is
+shortened to one sentence without dropping what it said. A tab is divided
+into groups under headings (`settings_theme::group_heading`, with an optional
+short note for the whole group), and one group holds one kind of row: the
+Appearance tab has Theme, Pane colors, Text and link colors, Hover popup,
+Transparency and blur, Fonts and spacing, Wallpapers and Display, so colors
+and sliders are not interleaved. A row's name is not repeated by its group's
+heading. Where the left side has a value (the source theme of the light or the
+dark side), it is the description and the actions are on the right. Only the
+Appearance tab uses this layout so far (the wallpaper miniature and its
+per-area detail panel stay a composite block between rows); other tabs move
+over one by one. `Control::Choice` (a button row) remains for the tabs not
+moved yet.
 
 ## Conversation logs (D044)
 
