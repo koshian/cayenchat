@@ -20,7 +20,7 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 
-use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 /// What was typed for a server that is not shown: its unsaved passwords and
 /// whether each is to be saved with the settings.
@@ -906,30 +906,6 @@ enum KeyFileError {
 /// bytes, so anything near this size is not one.
 const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
 
-const LINE_HEIGHT_TRACK_WIDTH: f32 = 220.;
-const LINE_HEIGHT_THUMB: f32 = 14.;
-
-/// Where along the slider (`0..=1`) a saved line height sits; the ends are
-/// the smallest and the largest allowed height.
-fn line_height_fraction(percent: u16) -> f32 {
-    let percent = cayenchat_storage::clamp_line_height_percent(percent);
-    f32::from(percent - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT)
-        / f32::from(
-            cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT,
-        )
-}
-
-/// The line height at a slider fraction (`0..=1`), in whole percents.
-fn line_height_at(fraction: f32) -> u16 {
-    let span =
-        cayenchat_storage::MAX_LINE_HEIGHT_PERCENT - cayenchat_storage::MIN_LINE_HEIGHT_PERCENT;
-    cayenchat_storage::MIN_LINE_HEIGHT_PERCENT
-        + (fraction.clamp(0., 1.) * f32::from(span)).round() as u16
-}
-
-/// Marks a drag as the line height slider's own.
-struct LineHeightDrag(EntityId, usize);
-
 /// The pane font sizes as shown in their fields, in [`FontTarget`] order.
 pub(crate) fn font_size_texts(fonts: &FontSet) -> [String; 6] {
     [
@@ -1320,21 +1296,15 @@ pub(crate) struct SettingsWindow {
     pub(crate) font_picker: Option<FontTarget>,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
-    /// Where the log line height slider's track was last painted, to turn
-    /// the pointer position into a value (#953).
-    line_height_tracks: [Rc<Cell<Bounds<Pixels>>>; 2],
-    /// The opacity sliders (member list, channel tree, channel log,
-    /// combined log, hover popup): their painted tracks and keyboard focus.
-    opacity_tracks: [crate::slider::TrackBounds; 5],
-    opacity_focus: [FocusHandle; 5],
+    /// Painted track and keyboard focus of the declared sliders (opacity,
+    /// line height, blur strength).
+    pub(crate) sliders: Vec<crate::settings_items::SliderState>,
     /// Whether this window's platform can blur what lies behind it, read
     /// from the window on each render (#1018).
     blur_supported: bool,
     /// Whether the blur strength can be chosen there (macOS only), with the
     /// strength slider's painted track and keyboard focus (#1018).
     blur_radius_supported: bool,
-    blur_radius_track: crate::slider::TrackBounds,
-    blur_radius_focus: FocusHandle,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
@@ -1620,13 +1590,9 @@ impl SettingsWindow {
             reveal_focus: 0,
             font_picker: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
-            line_height_tracks: Default::default(),
-            opacity_tracks: Default::default(),
-            opacity_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            sliders: crate::settings_items::SliderState::all(cx),
             blur_supported: true,
             blur_radius_supported: false,
-            blur_radius_track: Default::default(),
-            blur_radius_focus: cx.focus_handle().tab_stop(true),
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
@@ -5131,193 +5097,6 @@ impl SettingsWindow {
             )
     }
 
-    /// The saved line height of the channel log (0) or combined log (1).
-    fn line_height_mut(&mut self, log: usize) -> &mut u16 {
-        let appearance = &mut self.settings.values.appearance;
-        if log == 0 {
-            &mut appearance.channel_log_line_height
-        } else {
-            &mut appearance.combined_log_line_height
-        }
-    }
-
-    /// Sets a log's line height from a pointer position over its slider.
-    fn pick_line_height(&mut self, log: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let track = self.line_height_tracks[log].get();
-        // The thumb's center travels from half a thumb in to half a thumb
-        // before the end, so the value follows the thumb under the pointer.
-        let travel = f32::from(track.size.width) - LINE_HEIGHT_THUMB;
-        if travel <= 0. {
-            return;
-        }
-        let fraction = (f32::from(position.x - track.origin.x) - LINE_HEIGHT_THUMB / 2.) / travel;
-        let percent = line_height_at(fraction);
-        let current = self.line_height_mut(log);
-        if *current != percent {
-            *current = percent;
-            cx.notify();
-        }
-    }
-
-    /// A labelled slider for a background opacity, `index` in the order
-    /// member list, channel tree, channel log, combined log, hover popup.
-    fn opacity_slider(&self, index: usize, label_key: &str, cx: &mut Context<Self>) -> Div {
-        use cayenchat_storage::{MIN_PANE_OPACITY, MIN_URL_TOOLTIP_OPACITY};
-        // The hover popup has its own lower limit.
-        let min = if index == 4 {
-            MIN_URL_TOOLTIP_OPACITY
-        } else {
-            MIN_PANE_OPACITY
-        };
-        let theme = settings_theme::palette(cx);
-        let primary = settings_theme::primary_color(cx);
-        let appearance = &self.settings.values.appearance;
-        let percent = [
-            appearance.member_list_opacity,
-            appearance.channel_tree_opacity,
-            appearance.channel_log_opacity,
-            appearance.combined_log_opacity,
-            appearance.url_tooltip_opacity,
-        ][index]
-            .clamp(min, 100);
-        let colors = crate::slider::SliderColors {
-            track: theme.border,
-            fill: primary.into(),
-            knob: theme.surface,
-            ring: primary.into(),
-        };
-        let slider = crate::slider::slider(
-            ("pane-opacity", index),
-            u32::from(percent - min),
-            u32::from(100 - min),
-            &self.opacity_tracks[index],
-            &self.opacity_focus[index],
-            colors,
-            cx,
-            move |this, value, _, _| {
-                let appearance = &mut this.settings.values.appearance;
-                let value = min + value as u8;
-                match index {
-                    0 => appearance.member_list_opacity = value,
-                    1 => appearance.channel_tree_opacity = value,
-                    2 => appearance.channel_log_opacity = value,
-                    3 => appearance.combined_log_opacity = value,
-                    _ => appearance.url_tooltip_opacity = value,
-                }
-            },
-        );
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(settings_theme::label_column().child(self.i18n.text(label_key)))
-            .child(
-                div()
-                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
-                    .flex_shrink_0()
-                    .child(slider),
-            )
-            .child(
-                div()
-                    .w(px(48.))
-                    .flex_shrink_0()
-                    .child(format!("{percent}%")),
-            )
-    }
-
-    /// The line height slider of the channel log (0) or combined log (1)
-    /// (#953), with a button back to the default.
-    fn line_height_slider(&self, log: usize, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let primary = settings_theme::primary_color(cx);
-        let appearance = &self.settings.values.appearance;
-        let percent = if log == 0 {
-            appearance.channel_log_line_height
-        } else {
-            appearance.combined_log_line_height
-        };
-        let fraction = line_height_fraction(percent);
-        let owner = cx.entity_id();
-        let track = self.line_height_tracks[log].clone();
-        let travel = LINE_HEIGHT_TRACK_WIDTH - LINE_HEIGHT_THUMB;
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(settings_theme::label_column().child(self.i18n.text("log_line_height")))
-            .child(
-                div()
-                    .id(("log-line-height", log))
-                    .relative()
-                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
-                    .h(px(20.))
-                    .flex_shrink_0()
-                    .cursor_pointer()
-                    .child(
-                        canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
-                            .absolute()
-                            .size_full(),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top(px(9.))
-                            .w_full()
-                            .h(px(2.))
-                            .bg(theme.border),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(fraction * travel))
-                            .top(px(3.))
-                            .size(px(LINE_HEIGHT_THUMB))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(primary)
-                            .bg(primary),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.pick_line_height(log, event.position, cx)
-                        }),
-                    )
-                    .on_drag(LineHeightDrag(owner, log), |_, _, _, cx| {
-                        cx.new(|_| crate::splitter::NoGhost)
-                    })
-                    .on_drag_move(cx.listener(
-                        move |this, event: &DragMoveEvent<LineHeightDrag>, _, cx| {
-                            let drag = event.drag(cx);
-                            if drag.0 == owner && drag.1 == log {
-                                this.pick_line_height(log, event.event.position, cx);
-                            }
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .w(px(48.))
-                    .flex_shrink_0()
-                    .child(format!("{percent}%")),
-            )
-            .child(
-                div()
-                    .id(("log-line-height-reset", log))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .child(self.i18n.text("line_height_reset"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        *this.line_height_mut(log) = cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT;
-                        cx.notify();
-                    })),
-            )
-    }
-
     /// The size input with a button on each side that steps it by 1 px; a
     /// button is disabled (dimmed) at the end of the allowed range.
     fn font_size_stepper(&self, target: FontTarget, cx: &mut Context<Self>) -> Div {
@@ -5558,7 +5337,7 @@ impl SettingsWindow {
             .gap_1()
             .child(row)
             .when(supported && self.blur_radius_supported, |d| {
-                d.child(self.blur_radius_slider(cx))
+                d.children(self.render_items(crate::settings_items::BLUR_RADIUS, cx))
             })
             .child(
                 div()
@@ -5566,51 +5345,6 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text(hint)),
             )
-    }
-
-    /// The strength slider of the background blur (#1018), shown where the
-    /// platform lets the app choose it. The value is the blur radius.
-    fn blur_radius_slider(&self, cx: &mut Context<Self>) -> Div {
-        use cayenchat_storage::{MAX_BACKGROUND_BLUR_RADIUS, MIN_BACKGROUND_BLUR_RADIUS};
-        let theme = settings_theme::palette(cx);
-        let primary = settings_theme::primary_color(cx);
-        let radius = self
-            .settings
-            .values
-            .appearance
-            .background_blur_radius
-            .clamp(MIN_BACKGROUND_BLUR_RADIUS, MAX_BACKGROUND_BLUR_RADIUS);
-        let colors = crate::slider::SliderColors {
-            track: theme.border,
-            fill: primary.into(),
-            knob: theme.surface,
-            ring: primary.into(),
-        };
-        let slider = crate::slider::slider(
-            "background-blur-radius",
-            u32::from(radius - MIN_BACKGROUND_BLUR_RADIUS),
-            u32::from(MAX_BACKGROUND_BLUR_RADIUS - MIN_BACKGROUND_BLUR_RADIUS),
-            &self.blur_radius_track,
-            &self.blur_radius_focus,
-            colors,
-            cx,
-            |this, value, _, _| {
-                this.settings.values.appearance.background_blur_radius =
-                    MIN_BACKGROUND_BLUR_RADIUS + value as u8;
-            },
-        );
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(settings_theme::label_column().child(self.i18n.text("background_blur_radius")))
-            .child(
-                div()
-                    .w(px(LINE_HEIGHT_TRACK_WIDTH))
-                    .flex_shrink_0()
-                    .child(slider),
-            )
-            .child(div().w(px(48.)).flex_shrink_0().child(radius.to_string()))
     }
 
     fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -5638,14 +5372,14 @@ impl SettingsWindow {
                 &self.settings.dark_member_list_background,
                 cx,
             ))
-            .child(self.opacity_slider(0, "member_list_opacity", cx))
+            .children(self.render_items(crate::settings_items::OPACITY_MEMBER_LIST, cx))
             .child(self.color_pair(
                 &self.i18n.text("channel_tree_background"),
                 &self.settings.channel_tree_background,
                 &self.settings.dark_channel_tree_background,
                 cx,
             ))
-            .child(self.opacity_slider(1, "channel_tree_opacity", cx))
+            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_TREE, cx))
             .child(self.color_pair(
                 &self.i18n.text("channel_log"),
                 &self.settings.channel_log_background,
@@ -5658,7 +5392,7 @@ impl SettingsWindow {
                 &self.settings.dark_channel_log_alternate,
                 cx,
             ))
-            .child(self.opacity_slider(2, "channel_log_opacity", cx))
+            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_LOG, cx))
             .child(self.color_pair(
                 &self.i18n.text("channel_event_color"),
                 &self.settings.channel_event_color,
@@ -5689,7 +5423,7 @@ impl SettingsWindow {
                 &self.settings.dark_combined_log_alternate,
                 cx,
             ))
-            .child(self.opacity_slider(3, "combined_log_opacity", cx))
+            .children(self.render_items(crate::settings_items::OPACITY_COMBINED_LOG, cx))
             .child(self.color_pair(
                 &self.i18n.text("link_color"),
                 &self.settings.link_color,
@@ -5720,15 +5454,15 @@ impl SettingsWindow {
                 &self.settings.dark_url_tooltip_text_color,
                 cx,
             ))
-            .child(self.opacity_slider(4, "url_tooltip_opacity", cx))
+            .children(self.render_items(crate::settings_items::OPACITY_URL_TOOLTIP, cx))
             .child(self.render_background_blur(cx))
             .children(self.render_items(crate::settings_items::APPEARANCE_ROWS, cx))
             .child(self.render_wallpaper_settings(window, cx))
             .child(self.render_font_mode(cx))
             .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
-            .child(self.line_height_slider(0, cx))
+            .children(self.render_items(crate::settings_items::LINE_HEIGHT_CHANNEL_LOG, cx))
             .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
-            .child(self.line_height_slider(1, cx))
+            .children(self.render_items(crate::settings_items::LINE_HEIGHT_COMBINED_LOG, cx))
             .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
             .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
@@ -6229,34 +5963,6 @@ mod join_summary_tests {
         assert_eq!(join_summary(&names(&["#a", "#b"]), String::new()), "#a, #b");
         let many = names(&["#1", "#2", "#3", "#4", "#5", "#6"]);
         assert_eq!(join_summary(&many, String::new()), "#1, #2, #3, #4, #5, …");
-    }
-}
-
-#[cfg(test)]
-mod line_height_slider_tests {
-    use super::{line_height_at, line_height_fraction};
-
-    #[test]
-    fn the_ends_are_the_minimum_and_the_maximum() {
-        assert_eq!(line_height_at(0.), 100);
-        assert_eq!(line_height_at(1.), 200);
-        assert_eq!(line_height_at(-3.), 100);
-        assert_eq!(line_height_at(9.), 200);
-        assert_eq!(line_height_fraction(100), 0.);
-        assert_eq!(line_height_fraction(200), 1.);
-    }
-
-    #[test]
-    fn every_percent_round_trips_including_the_default() {
-        for percent in 100..=200 {
-            assert_eq!(line_height_at(line_height_fraction(percent)), percent);
-        }
-        assert_eq!(
-            line_height_at(line_height_fraction(
-                cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
-            )),
-            cayenchat_storage::DEFAULT_LINE_HEIGHT_PERCENT
-        );
     }
 }
 

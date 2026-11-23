@@ -15,12 +15,42 @@
 
 use cayenchat_app::notifications;
 use cayenchat_storage::{
-    ChannelNumberModifier, LinuxDisplay, NoticeKey, SendKey, Settings, TextKeyTheme, ThemeMode,
+    ChannelNumberModifier, DEFAULT_LINE_HEIGHT_PERCENT, LinuxDisplay, MAX_BACKGROUND_BLUR_RADIUS,
+    MAX_LINE_HEIGHT_PERCENT, MIN_BACKGROUND_BLUR_RADIUS, MIN_LINE_HEIGHT_PERCENT, MIN_PANE_OPACITY,
+    MIN_URL_TOOLTIP_OPACITY, NoticeKey, SendKey, Settings, TextKeyTheme, ThemeMode,
     UnreadLogPosition,
 };
 use gpui::{prelude::*, *};
 
 use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::SettingsForm};
+
+/// Width of a slider's track.
+const SLIDER_WIDTH: f32 = 220.;
+
+/// What a declared slider needs between renders: where its track was last
+/// painted (to turn the pointer position into a value) and its keyboard
+/// focus. Keyed by the item id.
+pub(crate) struct SliderState {
+    id: &'static str,
+    track: crate::slider::TrackBounds,
+    focus: FocusHandle,
+}
+
+impl SliderState {
+    /// The state of every declared slider.
+    pub(crate) fn all(cx: &mut App) -> Vec<Self> {
+        TABLES
+            .iter()
+            .flat_map(|table| table.iter())
+            .filter(|item| matches!(item.control, Control::Slider { .. }))
+            .map(|item| Self {
+                id: item.id,
+                track: Default::default(),
+                focus: cx.focus_handle().tab_stop(true),
+            })
+            .collect()
+    }
+}
 
 /// How an item reads and writes its value.
 pub(crate) enum Control {
@@ -39,6 +69,18 @@ pub(crate) enum Control {
     },
     /// A row of mutually exclusive choices (an enum setting).
     Choice(&'static [ChoiceOption]),
+    /// A whole number from `min` to `max` set on a slider (the shared
+    /// [`crate::slider`]); the value is shown with `suffix` after it.
+    /// `get` is clamped to the range for display. `reset`, when set, adds a
+    /// button (its label key) that writes the given value.
+    Slider {
+        min: u32,
+        max: u32,
+        suffix: &'static str,
+        get: fn(&Settings) -> u32,
+        set: fn(&mut Settings, u32),
+        reset: Option<(&'static str, u32)>,
+    },
     /// Explanatory text under the row above.
     Note,
 }
@@ -120,6 +162,36 @@ impl Item {
         options: &'static [ChoiceOption],
     ) -> Self {
         Self::new(id, label_key, Control::Choice(options))
+    }
+
+    const fn slider(
+        id: &'static str,
+        label_key: &'static str,
+        range: (u32, u32),
+        suffix: &'static str,
+        get: fn(&Settings) -> u32,
+        set: fn(&mut Settings, u32),
+    ) -> Self {
+        Self::new(
+            id,
+            label_key,
+            Control::Slider {
+                min: range.0,
+                max: range.1,
+                suffix,
+                get,
+                set,
+                reset: None,
+            },
+        )
+    }
+
+    /// Adds a button to a slider that writes `value` (labelled `label_key`).
+    const fn with_reset(mut self, label_key: &'static str, value: u32) -> Self {
+        if let Control::Slider { reset, .. } = &mut self.control {
+            *reset = Some((label_key, value));
+        }
+        self
     }
 
     const fn note(id: &'static str, text_key: &'static str) -> Self {
@@ -434,10 +506,113 @@ pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
     |s, on| s.appearance.alternate_rows = on,
 )];
 
-/// Every table; the shared code visits the text fields of all of them.
+/// A pane background opacity slider of the Appearance tab (a percentage from
+/// the pane minimum to 100), drawn after the pane's colors.
+macro_rules! opacity_table {
+    ($name:ident, $id:literal, $key:literal, $min:expr, $field:ident) => {
+        pub(crate) const $name: &[Item] = &[Item::slider(
+            $id,
+            $key,
+            ($min as u32, 100),
+            "%",
+            |s| u32::from(s.appearance.$field),
+            |s, v| s.appearance.$field = v as u8,
+        )];
+    };
+}
+
+opacity_table!(
+    OPACITY_MEMBER_LIST,
+    "member-list-opacity",
+    "member_list_opacity",
+    MIN_PANE_OPACITY,
+    member_list_opacity
+);
+opacity_table!(
+    OPACITY_CHANNEL_TREE,
+    "channel-tree-opacity",
+    "channel_tree_opacity",
+    MIN_PANE_OPACITY,
+    channel_tree_opacity
+);
+opacity_table!(
+    OPACITY_CHANNEL_LOG,
+    "channel-log-opacity",
+    "channel_log_opacity",
+    MIN_PANE_OPACITY,
+    channel_log_opacity
+);
+opacity_table!(
+    OPACITY_COMBINED_LOG,
+    "combined-log-opacity",
+    "combined_log_opacity",
+    MIN_PANE_OPACITY,
+    combined_log_opacity
+);
+// The hover popup has its own lower limit.
+opacity_table!(
+    OPACITY_URL_TOOLTIP,
+    "url-tooltip-opacity",
+    "url_tooltip_opacity",
+    MIN_URL_TOOLTIP_OPACITY,
+    url_tooltip_opacity
+);
+
+/// The strength of the background blur (the blur radius), shown only where
+/// the platform lets the app choose it.
+pub(crate) const BLUR_RADIUS: &[Item] = &[Item::slider(
+    "background-blur-radius",
+    "background_blur_radius",
+    (
+        MIN_BACKGROUND_BLUR_RADIUS as u32,
+        MAX_BACKGROUND_BLUR_RADIUS as u32,
+    ),
+    "",
+    |s| u32::from(s.appearance.background_blur_radius),
+    |s, v| s.appearance.background_blur_radius = v as u8,
+)];
+
+/// The line height of the channel log and of the combined log (#953), each
+/// with a button back to the default.
+pub(crate) const LINE_HEIGHT_CHANNEL_LOG: &[Item] = &[Item::slider(
+    "channel-log-line-height",
+    "log_line_height",
+    (
+        MIN_LINE_HEIGHT_PERCENT as u32,
+        MAX_LINE_HEIGHT_PERCENT as u32,
+    ),
+    "%",
+    |s| u32::from(s.appearance.channel_log_line_height),
+    |s, v| s.appearance.channel_log_line_height = v as u16,
+)
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
+
+pub(crate) const LINE_HEIGHT_COMBINED_LOG: &[Item] = &[Item::slider(
+    "combined-log-line-height",
+    "log_line_height",
+    (
+        MIN_LINE_HEIGHT_PERCENT as u32,
+        MAX_LINE_HEIGHT_PERCENT as u32,
+    ),
+    "%",
+    |s| u32::from(s.appearance.combined_log_line_height),
+    |s, v| s.appearance.combined_log_line_height = v as u16,
+)
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
+
+/// Every table; the shared code visits the text fields and sliders of all of
+/// them.
 const TABLES: &[&[Item]] = &[
     APPEARANCE_THEME,
     APPEARANCE_ROWS,
+    OPACITY_MEMBER_LIST,
+    OPACITY_CHANNEL_TREE,
+    OPACITY_CHANNEL_LOG,
+    OPACITY_COMBINED_LOG,
+    OPACITY_URL_TOOLTIP,
+    BLUR_RADIUS,
+    LINE_HEIGHT_CHANNEL_LOG,
+    LINE_HEIGHT_COMBINED_LOG,
     NOTIFICATIONS,
     EXPERIMENTAL,
     APPLICATION_WINDOW,
@@ -601,6 +776,68 @@ impl SettingsWindow {
                             .into_any_element(),
                     )
                 }
+                Control::Slider {
+                    min,
+                    max,
+                    suffix,
+                    get,
+                    set,
+                    reset,
+                } => {
+                    let state = self.sliders.iter().find(|state| state.id == item.id)?;
+                    let (min, max, set) = (*min, *max, *set);
+                    let value = get(&self.settings.values).clamp(min, max);
+                    let primary = settings_theme::primary_color(cx);
+                    let colors = crate::slider::SliderColors {
+                        track: theme.border,
+                        fill: primary.into(),
+                        knob: theme.surface,
+                        ring: primary.into(),
+                    };
+                    let slider = crate::slider::slider(
+                        item.id,
+                        value - min,
+                        max - min,
+                        &state.track,
+                        &state.focus,
+                        colors,
+                        cx,
+                        move |this, new, _, _| set(&mut this.settings.values, min + new),
+                    );
+                    let reset = reset.map(|(label_key, default)| {
+                        div()
+                            .id((ElementId::from(item.id), "reset"))
+                            .px_2()
+                            .py_1()
+                            .border_1()
+                            .border_color(theme.border)
+                            .cursor_pointer()
+                            .child(self.i18n.text(label_key))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                set(&mut this.settings.values, default);
+                                cx.notify();
+                            }))
+                    });
+                    Some(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                settings_theme::label_column()
+                                    .child(self.i18n.text(item.label_key)),
+                            )
+                            .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
+                            .child(
+                                div()
+                                    .w(px(48.))
+                                    .flex_shrink_0()
+                                    .child(format!("{value}{suffix}")),
+                            )
+                            .children(reset)
+                            .into_any_element(),
+                    )
+                }
                 Control::Note => Some(
                     div()
                         .ml(settings_theme::LABEL_INDENT)
@@ -702,6 +939,9 @@ pub(crate) fn kit_items(
                     .disabled(disabled),
                 );
             }
+            // The Kit has no slider field that keeps the shared slider's
+            // pointer and key behaviour, so sliders are drawn by `render_items`.
+            Control::Slider { .. } => {}
             Control::Note => {
                 if let Some(SettingItem::Item { description, .. }) = out.last_mut() {
                     *description = Some(i18n.text(item.label_key).into());
@@ -835,6 +1075,38 @@ mod tests {
                 assert_eq!(selected, [index], "{} option {index}", item.id);
             }
         }
+    }
+
+    #[test]
+    fn sliders_stay_in_their_range_and_write_what_they_read() {
+        let mut count = 0;
+        for item in TABLES.iter().flat_map(|table| table.iter()) {
+            let Control::Slider {
+                min,
+                max,
+                get,
+                set,
+                reset,
+                ..
+            } = &item.control
+            else {
+                continue;
+            };
+            count += 1;
+            assert!(min < max, "{}", item.id);
+            let mut settings = Settings::default();
+            // The saved default is inside the range the slider can show.
+            assert!((*min..=*max).contains(&get(&settings)), "{}", item.id);
+            for value in [*min, *max, (min + max) / 2] {
+                set(&mut settings, value);
+                assert_eq!(get(&settings), value, "{}", item.id);
+            }
+            if let Some((_, value)) = reset {
+                assert!((*min..=*max).contains(value), "{}", item.id);
+            }
+        }
+        // Five opacities, the blur strength and two line heights.
+        assert_eq!(count, 8);
     }
 
     #[test]
