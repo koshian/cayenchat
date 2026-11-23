@@ -27,6 +27,9 @@ use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::S
 /// Width of a slider's track.
 const SLIDER_WIDTH: f32 = 220.;
 
+/// Width of a select box.
+const SELECT_WIDTH: f32 = 160.;
+
 /// What a declared slider needs between renders: where its track was last
 /// painted (to turn the pointer position into a value) and its keyboard
 /// focus. Keyed by the item id.
@@ -69,6 +72,9 @@ pub(crate) enum Control {
     },
     /// A row of mutually exclusive choices (an enum setting).
     Choice(&'static [ChoiceOption]),
+    /// The same choices as a select box: the current one on a button that
+    /// opens the list (#622).
+    Select(&'static [ChoiceOption]),
     /// A whole number from `min` to `max` set on a slider (the shared
     /// [`crate::slider`]); the value is shown with `suffix` after it.
     /// `get` is clamped to the range for display. `reset`, when set, adds a
@@ -116,6 +122,9 @@ pub(crate) struct Item {
     pub visible: bool,
     /// When set, the row is usable only while this holds.
     pub enabled_when: Option<fn(&Settings) -> bool>,
+    /// Draw a switch in the shared setting row (name left, control right)
+    /// instead of the older checkbox line (#622).
+    pub row: bool,
 }
 
 impl Item {
@@ -126,7 +135,22 @@ impl Item {
             control,
             visible: true,
             enabled_when: None,
+            row: false,
         }
+    }
+
+    /// Draws a toggle in the shared setting row.
+    const fn in_row(mut self) -> Self {
+        self.row = true;
+        self
+    }
+
+    const fn select(
+        id: &'static str,
+        label_key: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self::new(id, label_key, Control::Select(options))
     }
 
     const fn toggle(
@@ -488,7 +512,7 @@ pub(crate) const EXPERIMENTAL: &[Item] = &[
 
 /// The theme mode row at the top of the Appearance tab. The color, opacity,
 /// font and wallpaper rows are their own widgets.
-pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::choice(
+pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::select(
     "theme",
     "theme",
     &[
@@ -504,7 +528,8 @@ pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
     "alternate_rows",
     |s| s.appearance.alternate_rows,
     |s, on| s.appearance.alternate_rows = on,
-)];
+)
+.in_row()];
 
 /// A pane background opacity slider of the Appearance tab (a percentage from
 /// the pane minimum to 100), drawn after the pane's colors.
@@ -729,6 +754,28 @@ impl SettingsWindow {
                     let enabled = item.enabled(&self.settings.values);
                     let checked = get(&self.settings.values);
                     let set = *set;
+                    if item.row {
+                        // The whole row is the click target.
+                        return Some(
+                            settings_theme::setting_row(
+                                self.i18n.text(item.label_key),
+                                None,
+                                settings_theme::checkbox(checked, enabled, cx),
+                                cx,
+                            )
+                            .id(item.id)
+                            .when(!enabled, |d| d.text_color(theme.text_secondary))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let on = !get(&this.settings.values);
+                                        set(&mut this.settings.values, on);
+                                        cx.notify();
+                                    }))
+                            })
+                            .into_any_element(),
+                        );
+                    }
                     Some(
                         div()
                             .id(item.id)
@@ -776,6 +823,69 @@ impl SettingsWindow {
                             .into_any_element(),
                     )
                 }
+                Control::Select(options) => {
+                    let current = options
+                        .iter()
+                        .find(|option| (option.is_selected)(&self.settings.values));
+                    let open = self.open_select == Some(item.id);
+                    let id = item.id;
+                    let button = div()
+                        .id(id)
+                        .flex()
+                        .justify_between()
+                        .gap_2()
+                        .w(px(SELECT_WIDTH))
+                        .px_2()
+                        .py_1()
+                        .border_1()
+                        .border_color(theme.border)
+                        .cursor_pointer()
+                        .child(current.map_or_else(String::new, |o| self.i18n.text(o.label_key)))
+                        .child("▾")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_select = (this.open_select != Some(id)).then_some(id);
+                            cx.notify();
+                        }));
+                    let menu = open.then(|| {
+                        let mut menu = div()
+                            .w(px(SELECT_WIDTH))
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.surface);
+                        for (index, option) in options.iter().enumerate() {
+                            let select = option.select;
+                            menu = menu.child(
+                                div()
+                                    .id((id, index))
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover))
+                                    .when((option.is_selected)(&self.settings.values), |d| {
+                                        d.bg(theme.selected)
+                                    })
+                                    .child(self.i18n.text(option.label_key))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        select(&mut this.settings.values);
+                                        this.open_select = None;
+                                        this.feedback = None;
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        menu
+                    });
+                    Some(
+                        settings_theme::setting_row(
+                            self.i18n.text(item.label_key),
+                            None,
+                            div().flex().flex_col().child(button).children(menu),
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                }
                 Control::Slider {
                     min,
                     max,
@@ -818,24 +928,26 @@ impl SettingsWindow {
                                 cx.notify();
                             }))
                     });
+                    let control = div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
+                        .child(
+                            div()
+                                .w(px(48.))
+                                .flex_shrink_0()
+                                .child(format!("{value}{suffix}")),
+                        )
+                        .children(reset);
                     Some(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                settings_theme::label_column()
-                                    .child(self.i18n.text(item.label_key)),
-                            )
-                            .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
-                            .child(
-                                div()
-                                    .w(px(48.))
-                                    .flex_shrink_0()
-                                    .child(format!("{value}{suffix}")),
-                            )
-                            .children(reset)
-                            .into_any_element(),
+                        settings_theme::setting_row(
+                            self.i18n.text(item.label_key),
+                            None,
+                            control,
+                            cx,
+                        )
+                        .into_any_element(),
                     )
                 }
                 Control::Note => Some(
@@ -908,7 +1020,7 @@ pub(crate) fn kit_items(
                     .disabled(disabled),
                 );
             }
-            Control::Choice(options) => {
+            Control::Choice(options) | Control::Select(options) => {
                 // The dropdown's values are the option indexes.
                 let labels = options
                     .iter()
@@ -1060,7 +1172,7 @@ mod tests {
     #[test]
     fn choices_select_exactly_one_option_and_write_what_they_read() {
         for item in TABLES.iter().flat_map(|table| table.iter()) {
-            let Control::Choice(options) = &item.control else {
+            let (Control::Choice(options) | Control::Select(options)) = &item.control else {
                 continue;
             };
             for (index, option) in options.iter().enumerate() {

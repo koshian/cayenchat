@@ -23,6 +23,48 @@ pub fn label_column() -> Div {
     div().w(LABEL_WIDTH).flex_shrink_0()
 }
 
+/// A settings row (#622): the name, and a short description only where the
+/// name is not enough, on the left; the control on the right; a thin rule
+/// below. The control moves under the text when the pane is narrow.
+pub fn setting_row(
+    label: impl Into<SharedString>,
+    hint: Option<SharedString>,
+    control: impl IntoElement,
+    cx: &App,
+) -> Div {
+    let theme = palette(cx);
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap_x_4()
+        .gap_y_2()
+        .py_2()
+        .border_b_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(220.))
+                .gap_1()
+                .child(label.into())
+                .when_some(hint, |d, hint| {
+                    d.child(div().text_sm().text_color(theme.text_secondary).child(hint))
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .flex_shrink_0()
+                .child(control),
+        )
+}
+
 #[derive(Default)]
 struct NativeSettingsTheme {
     variants: Option<[Variant; 2]>,

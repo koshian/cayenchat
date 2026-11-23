@@ -2545,8 +2545,24 @@ button when wanted, and how the value is read and written. The five pane
 opacities, the background blur strength and the two log line heights are
 sliders; each keeps its painted track and keyboard focus in
 `SettingsWindow::sliders`, keyed by item id. `kit_items` skips sliders (the
-Kit has no field with this behaviour). The color pairs, fonts, the blur switch
-and wallpaper stay their own widgets (#622 reworks the layout further).
+Kit has no field with this behaviour). The color pairs, fonts and wallpaper
+stay their own widgets.
+
+### Setting row layout (#622)
+
+`settings_theme::setting_row(label, hint, control)` is the shared row: the
+name (and a short description only where the name is not enough) on the left,
+the control on the right, a thin rule below, no extra panel border. When the
+pane is narrow the control wraps under the text. Single choices are select
+boxes (`Control::Select`: a button with the current choice that opens a list;
+Escape or a tab change closes it, `SettingsWindow::open_select`); two-valued
+settings are checkboxes (`Item::in_row` draws a declared toggle as a row whose
+whole width is the click target); sliders, fonts and color pairs are rows with
+their own control. A color pair is two cells (swatch, then a 7-character
+`#RRGGBB` field) under shared Light/Dark headings. Only the Appearance tab uses
+this layout so far (its wallpaper editor is still the older composite block);
+other tabs move over one by one. `Control::Choice` (a button row) remains for
+the tabs not moved yet.
 
 ## Conversation logs (D044)
 

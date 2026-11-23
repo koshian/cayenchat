@@ -792,14 +792,14 @@ impl SettingsWindow {
         let appearance = self.shown_appearance(cx);
         let hint = |key: &str| {
             div()
-                .ml(settings_theme::LABEL_INDENT)
+                .text_sm()
                 .text_color(palette.text_secondary)
                 .child(self.i18n.text(key))
         };
         let mut section = div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)
@@ -809,44 +809,45 @@ impl SettingsWindow {
         for dark in [false, true] {
             let (name, modified) = appearance.theme_status(dark);
             let id = if dark { "dark" } else { "light" };
-            section =
-                section.child(
+            let control = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
                     div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(settings_theme::label_column().child(self.theme_kind_label(dark)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .debug_selector(move || format!("theme-source-{id}"))
-                                .child(self.i18n.format("theme_source", &[("name", &name)]))
-                                .when(modified, |d| {
-                                    d.child(
-                                        div()
-                                            .ml_2()
-                                            .text_color(palette.warning)
-                                            .child(self.i18n.text("theme_modified")),
-                                    )
-                                }),
-                        )
-                        .child(
-                            settings_theme::button(("theme-default", usize::from(dark)), false, cx)
-                                .child(self.i18n.text("theme_use_default"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_use_default(dark, cx)
-                                })),
-                        )
-                        .child(
-                            settings_theme::button(("theme-export", usize::from(dark)), false, cx)
-                                .child(self.i18n.text("theme_export"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_begin_export(dark, cx)
-                                })),
+                        .max_w(px(260.))
+                        .debug_selector(move || format!("theme-source-{id}"))
+                        .child(self.i18n.format("theme_source", &[("name", &name)]))
+                        .when(modified, |d| {
+                            d.child(
+                                div()
+                                    .ml_2()
+                                    .text_color(palette.warning)
+                                    .child(self.i18n.text("theme_modified")),
+                            )
+                        }),
+                )
+                .child(
+                    settings_theme::button(("theme-default", usize::from(dark)), false, cx)
+                        .child(self.i18n.text("theme_use_default"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_use_default(dark, cx)),
+                        ),
+                )
+                .child(
+                    settings_theme::button(("theme-export", usize::from(dark)), false, cx)
+                        .child(self.i18n.text("theme_export"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_begin_export(dark, cx)),
                         ),
                 );
+            section = section.child(settings_theme::setting_row(
+                self.theme_kind_label(dark),
+                None,
+                control,
+                cx,
+            ));
         }
         if let Some(prompt) = &self.themes.export {
             section = section.child(
@@ -883,56 +884,51 @@ impl SettingsWindow {
                     ),
             );
         }
-        section = section.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    settings_theme::label_column().child(self.i18n.text("theme_library_heading")),
-                )
-                .child(
-                    settings_theme::button("theme-import", false, cx)
-                        .child(self.i18n.text("theme_import"))
-                        .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
-                ),
-        );
+        section = section.child(settings_theme::setting_row(
+            self.i18n.text("theme_library_heading"),
+            None,
+            settings_theme::button("theme-import", false, cx)
+                .child(self.i18n.text("theme_import"))
+                .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
+            cx,
+        ));
         if self.themes.library.is_empty() {
             section = section.child(hint("theme_library_empty"));
         }
         for (index, entry) in self.themes.library.iter().enumerate() {
             let apply_id = entry.id.clone();
             let delete_id = entry.id.clone();
-            section =
-                section.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .child(div().flex_1().min_w_0().child(format!(
-                            "{} ({})",
-                            cayenchat_model::display::neutralize_bidi(&entry.name),
-                            self.theme_kind_label(entry.mode == ThemeKind::Dark)
-                        )))
-                        .child(
-                            settings_theme::button(("theme-apply", index), false, cx)
-                                .child(self.i18n.text("theme_apply"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_apply(apply_id.clone(), cx)
-                                })),
-                        )
-                        .child(
-                            settings_theme::button(("theme-delete", index), false, cx)
-                                .child(self.i18n.text("theme_delete"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.theme_delete(&delete_id, cx)
-                                })),
+            let buttons = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    settings_theme::button(("theme-apply", index), false, cx)
+                        .child(self.i18n.text("theme_apply"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.theme_apply(apply_id.clone(), cx)
+                        })),
+                )
+                .child(
+                    settings_theme::button(("theme-delete", index), false, cx)
+                        .child(self.i18n.text("theme_delete"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.theme_delete(&delete_id, cx)),
                         ),
                 );
+            section = section.child(settings_theme::setting_row(
+                format!(
+                    "{} ({})",
+                    cayenchat_model::display::neutralize_bidi(&entry.name),
+                    self.theme_kind_label(entry.mode == ThemeKind::Dark)
+                ),
+                None,
+                buttons,
+                cx,
+            ));
         }
         section.when_some(self.themes.message.clone(), |d, message| {
-            d.child(div().ml(settings_theme::LABEL_INDENT).child(message))
+            d.child(div().py_1().child(message))
         })
     }
 
