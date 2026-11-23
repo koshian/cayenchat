@@ -117,7 +117,7 @@
   "theme_deleted": "Deleted the imported theme. Appearance already applied from it is unchanged.",
   "theme_error": "Theme error: {error}",
   "wallpaper_heading": "Standard wallpapers",
-  "wallpaper_hint": "A miniature of the chat window: drop an image on an area or use its Choose image… button. A channel can use its own wallpaper in its channel settings.",
+  "wallpaper_hint": "A miniature of the chat window: drop an image on an area or use its Choose image… button. In its channel settings, a channel can use its own wallpaper or none.",
   "wallpaper_shared": "Use different wallpapers for light and dark",
   "wallpaper_none": "No wallpaper",
   "wallpaper_choose": "Choose image…",
