@@ -145,14 +145,16 @@ impl SettingsWindow {
         } else {
             "system_default"
         });
-        let choices = font_choices(default_label, &held, &self.fonts);
-        if let Some(select) = self.font_selects[target as usize].clone() {
-            // The field changed (Reset, the other theme's fonts): show it.
-            if select.read(cx).selected_value() != Some(&held_name) {
+        let choices = font_choices(default_label.clone(), &held, &self.fonts);
+        if let Some((select, label)) = self.font_selects[target as usize].clone() {
+            // The field changed (Reset, the other theme's fonts) or the
+            // language did (the default entry's label): show it.
+            if label != default_label || select.read(cx).selected_value() != Some(&held_name) {
                 select.update(cx, |select, cx| {
                     select.set_items(choices, window, cx);
                     select.set_selected_value(&held_name, window, cx);
                 });
+                self.font_selects[target as usize] = Some((select.clone(), default_label));
             }
             return select;
         }
@@ -170,7 +172,7 @@ impl SettingsWindow {
             },
         )
         .detach();
-        self.font_selects[target as usize] = Some(select.clone());
+        self.font_selects[target as usize] = Some((select.clone(), default_label));
         select
     }
 }

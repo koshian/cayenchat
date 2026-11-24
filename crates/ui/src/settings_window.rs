@@ -1328,8 +1328,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
     /// The system's font names, listed when a font dropdown is first drawn.
     pub(crate) fonts: Vec<SharedString>,
-    /// The dropdown of each font name; the form's text field holds the value.
-    pub(crate) font_selects: [Option<crate::settings_kit::FontSelect>; 6],
+    /// The dropdown of each font name with the default label it was built with
+    /// (the language may change); the form's text field holds the value.
+    pub(crate) font_selects: [Option<(crate::settings_kit::FontSelect, String)>; 6],
     pub(crate) i18n: Localizer,
     /// Result of probing the system credential store; `None` while checking.
     pub(crate) system_store: Option<Result<(), String>>,
@@ -6092,6 +6093,42 @@ mod escape_tests {
                 "shift-tab to stop {i} of {forward:?}"
             );
         }
+    }
+
+    /// A font dropdown already drawn follows a change of language: its
+    /// default entry is relabelled while the held font name stays.
+    #[gpui::test]
+    fn font_dropdown_follows_the_language(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(5000.)));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Appearance, cx)
+        });
+        cx.run_until_parked();
+        let label = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                form.font_selects[0]
+                    .as_ref()
+                    .map(|(_, label)| label.clone())
+            })
+        };
+        let before = form.read_with(cx, |form, _| form.i18n.text("system_default"));
+        assert_eq!(label(cx), Some(before.clone()));
+        let after = cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_language(cayenchat_storage::Language::English, window, cx);
+                form.i18n.text("system_default")
+            })
+        });
+        assert_ne!(before, after);
+        cx.run_until_parked();
+        assert_eq!(label(cx), Some(after));
+        let held = form.read_with(cx, |form, cx| {
+            form.font_selects[0]
+                .as_ref()
+                .and_then(|(select, _)| select.read(cx).selected_value().cloned())
+        });
+        assert_eq!(held, Some(gpui::SharedString::default()));
     }
 
     #[gpui::test]
