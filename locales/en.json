@@ -964,5 +964,6 @@
   "wallpaper_saturation_hint": "Color intensity of the picture.",
   "font_family_label": "{name} font",
   "font_size_label": "{name} font size",
-  "font_size_hint": "Text size in pixels, from 8 to 40; empty uses the standard size."
+  "font_size_hint": "Text size in pixels, from 8 to 40.",
+  "font_editing_hint": "Choose whether the font fields below set the light or the dark theme's fonts."
 }

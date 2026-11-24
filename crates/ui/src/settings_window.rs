@@ -1308,6 +1308,10 @@ pub(crate) struct SettingsWindow {
     /// Frames still allowed to scroll to the field Tab moved to: the first
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
+    /// Where the Kit's `Settings` was last painted, and the direction of the
+    /// Tab being followed there (see `reveal_focused`).
+    kit_bounds: Option<Bounds<Pixels>>,
+    reveal_forward: bool,
     pub(crate) font_picker: Option<FontTarget>,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
@@ -1419,6 +1423,15 @@ enum SaveMode {
 
 /// See `SettingsWindow::reveal_focus`.
 const REVEAL_FRAMES: u8 = 2;
+
+/// Frames the Kit's page may take to scroll to a field Tab moved to: the list
+/// paints only the rows near its view, so a far field is approached a view at
+/// a time.
+const KIT_REVEAL_FRAMES: u8 = 12;
+
+/// The top of the Kit's page that its title covers, which is not the view of
+/// the rows below it.
+const KIT_PAGE_HEADER: Pixels = px(72.);
 
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
@@ -1609,6 +1622,8 @@ impl SettingsWindow {
             nav_focus: cx.focus_handle(),
             kit_generation: 0,
             reveal_focus: 0,
+            kit_bounds: None,
+            reveal_forward: true,
             font_picker: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
@@ -3774,7 +3789,7 @@ impl SettingsWindow {
             window.focus(&dialog.focus, cx);
         }
         // Only the dialog's own list follows; the panes behind stay put.
-        focus_reveal::clear(cx);
+        focus_reveal::clear(window, cx);
         self.reveal_focus = REVEAL_FRAMES;
         cx.notify();
     }
@@ -3787,25 +3802,35 @@ impl SettingsWindow {
         } else {
             window.focus_prev(cx);
         }
+        focus_reveal::clear(window, cx);
+        self.reveal_focus = KIT_REVEAL_FRAMES;
+        self.reveal_forward = forward;
         cx.notify();
     }
 
-    /// While a Tab is being followed in the auto-join dialog, scrolls its
-    /// list to the field that has the focus unless it is already in view. The
-    /// bounds are those the field painted at its new place, so the frame
-    /// right after the Tab finds none and asks for one more. (The Kit's pages
-    /// scroll by themselves and give no way to follow the focus.)
-    fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+    /// While a Tab is being followed, scrolls to the field that has the focus
+    /// unless it is already in view. The bounds are those the field painted at
+    /// its new place, so the frame right after the Tab finds none and asks for
+    /// one more. The auto-join dialog's list is scrolled through its handle.
+    /// The Kit's pages give no handle, so they are scrolled by the wheel
+    /// events the page itself listens to; a field the list has not painted
+    /// yet is approached a view at a time.
+    fn reveal_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reveal_focus == 0 {
             return;
         }
         self.reveal_focus -= 1;
-        let Some(target) = focus_reveal::focused_bounds(window, cx) else {
-            if self.reveal_focus > 0 {
-                // Notifying while drawing does not schedule another frame.
-                let this = cx.entity();
-                window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
-            }
+        let target = focus_reveal::focused_bounds(window, cx);
+        if target.is_none() && self.reveal_focus > 0 {
+            // Notifying while drawing does not schedule another frame.
+            let this = cx.entity();
+            window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+        }
+        if self.auto_join.is_none() {
+            self.reveal_in_kit_page(target, window, cx);
+            return;
+        }
+        let Some(target) = target else {
             return;
         };
         self.reveal_focus = 0;
@@ -3823,6 +3848,46 @@ impl SettingsWindow {
         if y != offset.y {
             scroll.set_offset(point(offset.x, y));
         }
+    }
+
+    /// One step of `reveal_focused` on a Kit page: scrolls by what shows
+    /// `target`, or, while the field is not painted, by most of a view
+    /// towards where Tab is going.
+    fn reveal_in_kit_page(
+        &mut self,
+        target: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut view) = self.kit_bounds else {
+            self.reveal_focus = 0;
+            return;
+        };
+        view.origin.y += KIT_PAGE_HEADER;
+        view.size.height = (view.size.height - KIT_PAGE_HEADER).max(px(0.));
+        let delta = match target {
+            Some(target) => {
+                self.reveal_focus = 0;
+                focus_reveal::delta_to_reveal(view, target)
+            }
+            // The frame right after the Tab has not painted the field yet.
+            None if self.reveal_focus + 1 == KIT_REVEAL_FRAMES => return,
+            None if self.reveal_forward => -view.size.height * 0.8,
+            None => view.size.height * 0.8,
+        };
+        if delta == px(0.) {
+            return;
+        }
+        let event = ScrollEvent {
+            position: point(view.right() - px(24.), view.center().y),
+            delta: ScrollDelta::Pixels(point(px(0.), delta)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
+        };
+        window.defer(cx, move |window, cx| {
+            window.dispatch_event(PlatformInput::Scroll(event), cx);
+        });
     }
 
     /// Stores the dialog's rows in the `channels` field and in the shown
@@ -5464,7 +5529,20 @@ impl SettingsWindow {
                         .child(self.i18n.text("credential_store_waiting")),
                 )
             })
-            .child(div().flex_1().min_h_0().w_full().child(settings))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .on_children_prepainted({
+                        let this = cx.entity().downgrade();
+                        move |bounds, _, cx| {
+                            let _ = this
+                                .update(cx, |this, _| this.kit_bounds = bounds.first().copied());
+                        }
+                    })
+                    .child(settings),
+            )
             .children(auto_join)
             .on_action(cx.listener(Self::open_settings_action))
             .when(

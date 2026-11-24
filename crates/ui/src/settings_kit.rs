@@ -565,6 +565,6 @@ impl SettingsWindow {
                 },
             ),
         )
-        .description(self.i18n.text("wallpaper_editing_hint"))
+        .description(self.i18n.text("font_editing_hint"))
     }
 }

@@ -964,5 +964,6 @@
   "wallpaper_saturation_hint": "画像の色の鮮やかさ。",
   "font_family_label": "{name}のフォント",
   "font_size_label": "{name}のフォントサイズ",
-  "font_size_hint": "文字の大きさ（ピクセル、8〜40）。空欄は標準の大きさです。"
+  "font_size_hint": "文字の大きさ（ピクセル、8〜40）。",
+  "font_editing_hint": "下のフォント欄で設定するのを、ライトとダークのどちらのテーマにするか選びます。"
 }

@@ -30,7 +30,8 @@ pub(crate) fn note(handle: &FocusHandle, bounds: Bounds<Pixels>, window: &Window
 /// Forgets the recorded bounds, so that only bounds painted after this call
 /// can be used. A field the focus left and came back to would otherwise
 /// still report where it was painted before.
-pub(crate) fn clear(cx: &mut App) {
+pub(crate) fn clear(window: &mut Window, cx: &mut App) {
+    window.clear_focused_bounds();
     if cx
         .try_global::<FocusedBounds>()
         .is_some_and(|slot| slot.0.is_some())
@@ -41,8 +42,17 @@ pub(crate) fn clear(cx: &mut App) {
 
 /// The painted bounds of the focused field, when it is the one with the focus.
 pub(crate) fn focused_bounds(window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
-    let (handle, bounds) = cx.try_global::<FocusedBounds>()?.0.as_ref()?;
-    (window.focused(cx)? == *handle).then_some(*bounds)
+    let focused = window.focused(cx)?;
+    if let Some((handle, bounds)) = cx
+        .try_global::<FocusedBounds>()
+        .and_then(|slot| slot.0.as_ref())
+        && focused == *handle
+    {
+        return Some(*bounds);
+    }
+    // Fields that do not report (the Kit's own inputs) are found by the
+    // window, which notes the bounds of any focused element it painted.
+    window.focused_bounds()
 }
 
 /// The scroll offset (zero or negative, `max` the most it can scroll) that
@@ -54,16 +64,25 @@ pub(crate) fn offset_to_reveal(
     offset: Pixels,
     max: Pixels,
 ) -> Pixels {
+    let delta = delta_to_reveal(viewport, target);
+    if delta == px(0.) {
+        return offset;
+    }
+    (offset + delta).clamp(-max.max(px(0.)), px(0.))
+}
+
+/// How far the content has to move down (negative: up) to show `target`
+/// inside `viewport`; zero when it is already shown.
+pub(crate) fn delta_to_reveal(viewport: Bounds<Pixels>, target: Bounds<Pixels>) -> Pixels {
     let top = viewport.top() + MARGIN;
     let bottom = viewport.bottom() - MARGIN;
-    let delta = if target.top() < top {
+    if target.top() < top {
         top - target.top()
     } else if target.bottom() > bottom {
         (bottom - target.bottom()).max(top - target.top())
     } else {
-        return offset;
-    };
-    (offset + delta).clamp(-max.max(px(0.)), px(0.))
+        px(0.)
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +118,19 @@ mod tests {
         assert_eq!(offset, px(0.));
         let offset = offset_to_reveal(bounds(0., 400.), bounds(390., 30.), px(-490.), px(500.));
         assert_eq!(offset, px(-500.));
+    }
+
+    #[test]
+    fn delta_is_zero_when_shown_and_signed_otherwise() {
+        assert_eq!(delta_to_reveal(bounds(0., 400.), bounds(100., 30.)), px(0.));
+        assert_eq!(
+            delta_to_reveal(bounds(0., 400.), bounds(390., 30.)),
+            px(-28.)
+        );
+        assert_eq!(
+            delta_to_reveal(bounds(0., 400.), bounds(-20., 30.)),
+            px(28.)
+        );
     }
 
     #[test]

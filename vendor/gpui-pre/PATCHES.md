@@ -151,3 +151,13 @@ bottom; 0.3.12 reports the overflow (0 for a short list) and has no bounds for
 rows before the scroll top, so `LogList::unfilled_from` could not find where a
 short log ends (the filler above it is drawn from there). Candidate for an
 upstream proposal.
+
+## Bounds of the focused element (#622)
+
+`Window::focused_bounds()` returns the bounds the element holding the focus
+painted last, and `Window::clear_focused_bounds()` forgets them. `Div::paint`
+records them when its tracked focus handle is the focused one
+(`src/elements/div.rs`, `Window::focused_bounds` in `src/window.rs`). The
+settings window follows Tab inside the GPUI Kit's pages, whose inputs report
+nothing themselves and which give no scroll handle (`focus_reveal`). Candidate
+for an upstream proposal.

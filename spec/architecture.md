@@ -2582,9 +2582,17 @@ shows and does is unchanged; they move to groups tab by tab. The Kit's page is
 the tab being shown: a page found drawn calls `follow_kit_page`, and
 `show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
 
-Known limits: the Kit's pages scroll by themselves and give no way to scroll to
-the field Tab moved to, so Tab to a field out of view does not scroll (the
-auto-join dialog's own list still does); the Kit draws only the groups in view,
+Tab follows the focus in the Kit's pages: the Kit gives no scroll handle, so
+`reveal_in_kit_page` sends the page the wheel event it listens to, by the least
+amount that shows the field. The field's bounds come from the patched gpui's
+`Window::focused_bounds` (`vendor/gpui-pre/PATCHES.md`), since the Kit's inputs
+report none; a field the list has not painted is approached a view at a time
+(`KIT_REVEAL_FRAMES`). The page's own title is assumed to cover
+`KIT_PAGE_HEADER` of its top. The font size rows are the Kit's `number_input`:
+an empty box is left alone by the Kit (nothing is saved until a number is
+typed), so the description does not promise a default for it.
+
+Known limits: the Kit draws only the groups in view,
 so tests that look for a lower control enlarge the window. Up/Down on the old
 category list is the Kit sidebar's behaviour now. Experimental is no longer set
 apart at the bottom of the list.
