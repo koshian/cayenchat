@@ -5154,12 +5154,11 @@ impl SettingsWindow {
         let button = |id: &'static str, label: &'static str, delta: i32, enabled: bool| {
             let button = div()
                 .id((id, target as u32))
-                .w(px(24.))
-                .py_1()
+                .w(px(28.))
+                .self_stretch()
                 .flex()
+                .items_center()
                 .justify_center()
-                .border_1()
-                .border_color(theme.border)
                 .child(label);
             if enabled {
                 button
@@ -5173,18 +5172,29 @@ impl SettingsWindow {
                 button.text_color(theme.text_secondary).opacity(0.4)
             }
         };
+        // One joined control like Zed's: "−", the value and "+" share a
+        // single border, with a thin rule between the parts.
         div()
             .flex()
-            .items_center()
-            .gap_1()
+            .items_stretch()
             .flex_shrink_0()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(6.))
+            .overflow_hidden()
             .child(button(
                 "font-size-down",
                 "\u{2212}",
                 -1,
                 size > cayenchat_storage::MIN_FONT_SIZE,
             ))
-            .child(div().w(px(56.)).child(field))
+            .child(
+                div()
+                    .w(px(64.))
+                    .border_x_1()
+                    .border_color(theme.border)
+                    .child(field),
+            )
             .child(button(
                 "font-size-up",
                 "+",
@@ -5263,7 +5273,6 @@ impl SettingsWindow {
             .items_center()
             .gap_2()
             .child(div().w(px(FONT_FIELD_WIDTH)).child(input.clone()))
-            .child(self.font_size_stepper(target, cx))
             .child(
                 div()
                     .id(("font-picker", target as u32))
@@ -5292,8 +5301,10 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             );
+        // The font and its size are two rows, as in Zed, not one crowded row.
+        let name = self.i18n.text(label_key);
         let mut field = div().flex().flex_col().child(settings_theme::setting_row(
-            self.i18n.text(label_key),
+            self.i18n.format("font_family_label", &[("name", &name)]),
             Some(self.i18n.text(hint_key).into()),
             control,
             cx,
@@ -5352,7 +5363,12 @@ impl SettingsWindow {
             }
             field = field.child(choices);
         }
-        field
+        field.child(settings_theme::setting_row(
+            self.i18n.format("font_size_label", &[("name", &name)]),
+            Some(self.i18n.text("font_size_hint").into()),
+            self.font_size_stepper(target, cx),
+            cx,
+        ))
     }
 
     /// The window-wide background blur switch (#1018). It only does

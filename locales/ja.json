@@ -945,12 +945,12 @@
   "background_blur_radius_hint": "ウィンドウの背後のデスクトップをぼかす強さ。",
   "alternate_rows_hint": "チャンネルログと全体ログで、1行おきに背景色を変えます。",
   "split_fonts_hint": "ライトとダークで別々のフォントを選びます。オフのときは両方で共通です。",
-  "font_hint_channel_log": "チャンネルログのフォントと大きさ。空欄はシステムの既定です。",
-  "font_hint_combined_log": "全体ログのフォントと大きさ。空欄はシステムの既定です。",
-  "font_hint_member_list": "メンバーリストのフォントと大きさ。空欄はシステムの既定です。",
-  "font_hint_channel_tree": "チャンネルツリーのフォントと大きさ。空欄はシステムの既定です。",
-  "font_hint_input": "入力欄のフォントと大きさ。空欄はシステムの既定です。",
-  "font_hint_time": "時刻表示の等幅フォントと大きさ。空欄は既定の等幅フォントです。",
+  "font_hint_channel_log": "チャンネルログのフォント。空欄はシステムの既定です。",
+  "font_hint_combined_log": "全体ログのフォント。空欄はシステムの既定です。",
+  "font_hint_member_list": "メンバーリストのフォント。空欄はシステムの既定です。",
+  "font_hint_channel_tree": "チャンネルツリーのフォント。空欄はシステムの既定です。",
+  "font_hint_input": "入力欄のフォント。空欄はシステムの既定です。",
+  "font_hint_time": "時刻表示の等幅フォント。空欄は既定の等幅フォントです。",
   "channel_log_line_height": "チャンネルログの行間",
   "channel_log_line_height_hint": "チャンネルログの1行の高さを、フォントの大きさに対する割合で指定します。",
   "combined_log_line_height": "全体ログの行間",
@@ -961,5 +961,8 @@
   "wallpaper_strength_hint": "ペインの色に対して、画像をどれだけ濃く見せるか。",
   "wallpaper_blur_hint": "画像そのものをぼかします。",
   "wallpaper_brightness_hint": "画像を明るくまたは暗くします。",
-  "wallpaper_saturation_hint": "画像の色の鮮やかさ。"
+  "wallpaper_saturation_hint": "画像の色の鮮やかさ。",
+  "font_family_label": "{name}のフォント",
+  "font_size_label": "{name}のフォントサイズ",
+  "font_size_hint": "文字の大きさ（ピクセル、8〜40）。空欄は標準の大きさです。"
 }

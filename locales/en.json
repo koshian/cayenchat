@@ -945,12 +945,12 @@
   "background_blur_radius_hint": "How strongly the desktop behind the window is blurred.",
   "alternate_rows_hint": "Alternates the background of every other line in the channel and combined logs.",
   "split_fonts_hint": "Choose fonts separately for the light and dark themes; otherwise both share one set.",
-  "font_hint_channel_log": "Font and size of the channel log; empty uses the system default.",
-  "font_hint_combined_log": "Font and size of the combined log; empty uses the system default.",
-  "font_hint_member_list": "Font and size of the member list; empty uses the system default.",
-  "font_hint_channel_tree": "Font and size of the channel tree; empty uses the system default.",
-  "font_hint_input": "Font and size of the text input; empty uses the system default.",
-  "font_hint_time": "Monospace font and size of timestamps; empty uses the default monospace font.",
+  "font_hint_channel_log": "Font of the channel log; empty uses the system default.",
+  "font_hint_combined_log": "Font of the combined log; empty uses the system default.",
+  "font_hint_member_list": "Font of the member list; empty uses the system default.",
+  "font_hint_channel_tree": "Font of the channel tree; empty uses the system default.",
+  "font_hint_input": "Font of the text input; empty uses the system default.",
+  "font_hint_time": "Monospace font of timestamps; empty uses the default monospace font.",
   "channel_log_line_height": "Channel log line spacing",
   "channel_log_line_height_hint": "Height of each line in the channel log, as a percentage of the font size.",
   "combined_log_line_height": "Combined log line spacing",
@@ -961,5 +961,8 @@
   "wallpaper_strength_hint": "How strongly the picture shows over the pane color.",
   "wallpaper_blur_hint": "Blurs the picture itself.",
   "wallpaper_brightness_hint": "Brightens or darkens the picture.",
-  "wallpaper_saturation_hint": "Color intensity of the picture."
+  "wallpaper_saturation_hint": "Color intensity of the picture.",
+  "font_family_label": "{name} font",
+  "font_size_label": "{name} font size",
+  "font_size_hint": "Text size in pixels, from 8 to 40; empty uses the standard size."
 }

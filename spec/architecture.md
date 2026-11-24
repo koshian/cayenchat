@@ -2565,7 +2565,9 @@ settings are checkboxes (`Item::in_row` draws a declared toggle as a row whose
 whole width is the click target); sliders, fonts and color pairs are rows with
 their own control. A color pair is two cells (swatch, then a 7-character
 `#RRGGBB` field) under Light/Dark headings repeated at the top of each color
-group.
+group. A font is two rows, as in Zed: its family (field and Choose button) and
+its size, a joined "−", value, "+" control with one border; they are never
+packed into one row.
 
 Every row has a gray one-sentence description under its name (`Item::hint`
 for declared items, the `hint` argument elsewhere); a long explanation is
