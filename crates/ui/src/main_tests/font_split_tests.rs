@@ -146,3 +146,20 @@ fn a_font_dropdown_starts_with_the_default_and_keeps_an_unlisted_font() {
     let default = font_choices("Default".into(), "", &fonts);
     assert_eq!(names(&default), ["", "Alpha", "Beta"]);
 }
+
+#[test]
+fn a_held_font_name_is_shown_without_bidi_controls_but_kept_raw() {
+    use crate::settings_kit::font_choices;
+    use gpui_component::{
+        IndexPath,
+        select::{SelectDelegate, SelectItem},
+    };
+
+    let held = "Safe\u{202E}txt";
+    let choices = font_choices("Default".into(), held, &[]);
+    let choice = choices
+        .item(IndexPath::default().row(1))
+        .expect("held font");
+    assert_eq!(choice.name.as_ref(), held);
+    assert_eq!(choice.title().as_ref(), "Safe\u{200B}txt");
+}

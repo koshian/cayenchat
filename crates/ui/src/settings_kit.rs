@@ -99,9 +99,14 @@ pub(crate) fn font_choices(
     held: &str,
     fonts: &[SharedString],
 ) -> SearchableVec<FontChoice> {
+    // The name is kept as it is (it is the value saved); only the shown
+    // label is made safe, since a settings file may hold bidirectional
+    // controls that would reorder the text.
     let entry = |name: &SharedString| FontChoice {
         name: name.clone(),
-        label: name.clone(),
+        label: cayenchat_model::display::neutralize_bidi(name)
+            .into_owned()
+            .into(),
     };
     let mut choices = vec![FontChoice {
         name: SharedString::default(),
