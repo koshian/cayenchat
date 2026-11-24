@@ -54,6 +54,10 @@ native-theme-gpui = { version = "=0.7.1", default-features = false, features = [
 native-theme = { version = "=0.7.1", default-features = false }
 native-theme-derive = "=0.7.1"
 gpui-component = { version = "=0.9.1", default-features = false }
+# The Kit's icons (Apache-2.0): the minus and plus of its number input, the
+# magnifier of its search field, the carets of its selects. gpui-component
+# already depends on this exact crate.
+gpui-kit-assets = { version = "=0.9.1", default-features = false }
 unicode-segmentation = "1.12"
 serde_json.workspace = true
 jiff.workspace = true

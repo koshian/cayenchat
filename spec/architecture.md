@@ -2563,14 +2563,28 @@ validates and stores it. Saving, validation and secrets are unchanged.
 Parts the Kit has, and which are used as they are: `SettingField::switch`
 (toggles), `dropdown` (a choice of a few values: the color scheme, the theme
 being edited), `number_input` (font sizes). Kit-only look and behaviour is
-accepted; none of these is imitated by a CayenChat widget.
+accepted; none of these is imitated by a CayenChat widget. The font name is
+the Kit's searchable `Select` (`font_select`), one dropdown per font: the
+default font first ("System default", or the default monospace font for the
+timestamps), then the system's fonts, listed when the first one is drawn. A
+name held by the form that the system does not list is added to the list, so it
+is shown and never cleared. The form's text field stays the value (saving, Reset
+and the light/dark fonts read it): a pick is written to it, and the dropdown
+follows the field.
+
+The Kit draws its own icons (the minus and plus of the number input, the
+magnifier of the search field, the carets and checks of selects) from
+`gpui-kit-assets` (Apache-2.0, already a dependency of `gpui-component`, pinned
+alike). The application's `AssetSource` (`toolbar::Icons`) returns CayenChat's
+icons first and then the Kit's; a Kit part whose icon is missing draws an empty
+box, so check the assets before blaming the part. Only the settings window uses
+Kit parts, so no other screen lacked icons.
 
 Parts the Kit lacks, drawn inside a Kit row with `SettingField::render`
 (`field_item`: the Kit draws name and description, the control is ours) or
 `SettingItem::render` (`element_item`): the color swatches with the
 light/dark columns and the picker, the sliders (`ui::slider`, via
-`settings_items::kit_items`), the font name field with the list of system
-fonts, the theme library buttons, the wallpaper miniature and its controls and
+`settings_items::kit_items`), the theme library buttons, the wallpaper miniature and its controls and
 the tabs not rebuilt yet. Text fields stay `TextInput` (IME, direct input,
 validation at the sink); the Kit's `Input` has none of that.
 

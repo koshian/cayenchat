@@ -132,7 +132,6 @@ impl SettingsWindow {
                 let values = &mut self.settings.values;
                 values.appearance = appearance;
                 values.theme = defaults.theme;
-                self.font_picker = None;
                 self.color_picker = None;
             }
             SettingsTab::Keyboard => {

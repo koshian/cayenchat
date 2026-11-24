@@ -1312,7 +1312,6 @@ pub(crate) struct SettingsWindow {
     /// Tab being followed there (see `reveal_focused`).
     kit_bounds: Option<Bounds<Pixels>>,
     reveal_forward: bool,
-    pub(crate) font_picker: Option<FontTarget>,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Painted track and keyboard focus of the declared sliders (opacity,
@@ -1327,8 +1326,10 @@ pub(crate) struct SettingsWindow {
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
-    /// The system's font names, listed when the font list is first opened.
-    fonts: Vec<String>,
+    /// The system's font names, listed when a font dropdown is first drawn.
+    pub(crate) fonts: Vec<SharedString>,
+    /// The dropdown of each font name; the form's text field holds the value.
+    pub(crate) font_selects: [Option<crate::settings_kit::FontSelect>; 6],
     pub(crate) i18n: Localizer,
     /// Result of probing the system credential store; `None` while checking.
     pub(crate) system_store: Option<Result<(), String>>,
@@ -1452,7 +1453,7 @@ pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
 /// Width of the `#RRGGBB` field of a color row: seven characters and padding.
 const COLOR_FIELD_WIDTH: f32 = 96.;
 /// Width of a font name field.
-const FONT_FIELD_WIDTH: f32 = 200.;
+pub(crate) const FONT_FIELD_WIDTH: f32 = 200.;
 /// Width of one color cell: the swatch, the gap and the field.
 pub(crate) const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
 
@@ -1624,7 +1625,6 @@ impl SettingsWindow {
             reveal_focus: 0,
             kit_bounds: None,
             reveal_forward: true,
-            font_picker: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
             blur_supported: true,
@@ -1632,6 +1632,7 @@ impl SettingsWindow {
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
+            font_selects: Default::default(),
             i18n,
             system_store: None,
             upload_token,
@@ -1907,7 +1908,6 @@ impl SettingsWindow {
         // The chat window follows too, so that a later save, which compares
         // with `saved`, does not find nothing to apply (#147).
         self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
-        self.font_picker = None;
         self.color_picker = None;
         self.auto_join = None;
         self.shortcut_recording = None;
@@ -2737,9 +2737,6 @@ impl SettingsWindow {
             cx.notify();
         } else if self.color_picker.is_some() {
             self.color_picker = None;
-            cx.notify();
-        } else if self.font_picker.is_some() {
-            self.font_picker = None;
             cx.notify();
         } else if self.settings.server_list_open
             || self.settings.ircv3_server_list_open
@@ -4966,7 +4963,7 @@ impl SettingsWindow {
         )
     }
 
-    fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
+    pub(crate) fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
         match target {
             FontTarget::ChannelLog => self.settings.channel_log_font.clone(),
             FontTarget::CombinedLog => self.settings.combined_log_font.clone(),
@@ -5131,106 +5128,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The name field of a font with the button that lists the system's
-    /// fonts; the list opens under the field.
-    pub(crate) fn font_family_control(&self, target: FontTarget, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let input = self.font_input(target);
-        let control = div()
-            .flex()
-            .flex_wrap()
-            .justify_end()
-            .items_center()
-            .gap_2()
-            .child(div().w(px(FONT_FIELD_WIDTH)).child(input.clone()))
-            .child(
-                div()
-                    .id(("font-picker", target as u32))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .child(self.i18n.text("choose_font"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.font_picker = if this.font_picker == Some(target) {
-                            None
-                        } else {
-                            Some(target)
-                        };
-                        // Listing the system's fonts takes a while (many
-                        // seconds in a debug build), so it waits until a
-                        // list is wanted instead of slowing every opening
-                        // of the settings window.
-                        if this.font_picker.is_some() && this.fonts.is_empty() {
-                            let mut fonts = window.text_system().all_font_names();
-                            fonts.sort_unstable();
-                            fonts.dedup();
-                            this.fonts = fonts;
-                        }
-                        cx.notify();
-                    })),
-            );
-        let mut field = div().flex().flex_col().items_end().child(control);
-        if self.font_picker == Some(target) {
-            let query = input.read(cx).text().trim().to_lowercase();
-            let mut choices = div()
-                .id(("font-choices", target as u32))
-                .my_2()
-                .w(px(FONT_FIELD_WIDTH + 80.))
-                .max_w_full()
-                .max_h(px(170.))
-                .overflow_y_scroll()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            choices = choices.child(
-                div()
-                    .id(("font-system", target as u32))
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .child(self.i18n.text(if target == FontTarget::Time {
-                        "default_monospace"
-                    } else {
-                        "system_default"
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.font_input(target)
-                            .update(cx, |field, cx| field.set_text("", cx));
-                        this.font_picker = None;
-                        cx.notify();
-                    })),
-            );
-            for (index, name) in self
-                .fonts
-                .iter()
-                .filter(|name| name.to_lowercase().contains(&query))
-                .enumerate()
-            {
-                let name = name.clone();
-                choices = choices.child(
-                    div()
-                        .id(("font-choice", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .child(name.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.font_input(target)
-                                .update(cx, |field, cx| field.set_text(&name, cx));
-                            this.font_picker = None;
-                            cx.notify();
-                        })),
-                );
-            }
-            field = field.child(choices);
-        }
-        field
-    }
-
     /// The send and NOTICE keys, the channel-number and draft-editing keys
     /// (only Windows and Linux have choices there), then the shortcut list.
     pub(crate) fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
@@ -5339,7 +5236,6 @@ impl SettingsWindow {
             self.shortcut_recording = None;
             // A picker open under a color row does not wait for a return.
             self.color_picker = None;
-            self.font_picker = None;
         }
         // Server names on other tabs follow the connection tab's fields: a
         // registered server's text is committed (valid values only), a

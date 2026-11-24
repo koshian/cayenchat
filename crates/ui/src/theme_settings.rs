@@ -264,7 +264,6 @@ impl SettingsWindow {
     fn adopt_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
         self.show_appearance(&appearance, cx);
         self.settings.values.appearance = appearance;
-        self.font_picker = None;
         self.color_picker = None;
         cx.notify();
     }

@@ -18,8 +18,12 @@ use std::rc::Rc;
 
 use cayenchat_storage::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use gpui::{prelude::*, *};
-use gpui_component::setting::{
-    NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+use gpui_component::{
+    select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectItem, SelectState},
+    setting::{
+        NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
+        Settings,
+    },
 };
 
 use crate::{
@@ -62,6 +66,108 @@ pub(crate) fn element_item(
         this.update(cx, |this, cx| build(this, window, cx))
             .unwrap_or_else(|_| div().into_any_element())
     })
+}
+
+/// One entry of a font dropdown: a font name (empty for the default font) and
+/// the text shown for it.
+#[derive(Clone)]
+pub(crate) struct FontChoice {
+    pub(crate) name: SharedString,
+    label: SharedString,
+}
+
+impl SelectItem for FontChoice {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &SharedString {
+        &self.name
+    }
+}
+
+/// The Kit's searchable `Select` of the fonts (#622).
+pub(crate) type FontSelect = Entity<SelectState<SearchableVec<FontChoice>>>;
+
+/// The entries of a font dropdown: the default font first, the font held by
+/// the form when the system does not list it (so its name is shown and
+/// kept), then the system's fonts.
+pub(crate) fn font_choices(
+    default_label: String,
+    held: &str,
+    fonts: &[SharedString],
+) -> SearchableVec<FontChoice> {
+    let entry = |name: &SharedString| FontChoice {
+        name: name.clone(),
+        label: name.clone(),
+    };
+    let mut choices = vec![FontChoice {
+        name: SharedString::default(),
+        label: default_label.into(),
+    }];
+    if !held.is_empty() && !fonts.iter().any(|font| font == held) {
+        choices.push(entry(&SharedString::from(held.to_owned())));
+    }
+    choices.extend(fonts.iter().map(entry));
+    SearchableVec::new(choices)
+}
+
+impl SettingsWindow {
+    /// The dropdown of the font name of `target`, made when first drawn. The
+    /// form's text field keeps the value (saving and Reset read it), so the
+    /// dropdown follows the field and a pick is written to it.
+    fn font_select(
+        &mut self,
+        target: FontTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FontSelect {
+        let held = self.font_input(target).read(cx).text().trim().to_owned();
+        let held_name = SharedString::from(held.clone());
+        if self.fonts.is_empty() {
+            // Listing the system's fonts takes a while (many seconds in a
+            // debug build), so it waits until a list is drawn instead of
+            // slowing every opening of the settings window.
+            let mut fonts = window.text_system().all_font_names();
+            fonts.sort_unstable();
+            fonts.dedup();
+            self.fonts = fonts.into_iter().map(SharedString::from).collect();
+        }
+        let default_label = self.i18n.text(if target == FontTarget::Time {
+            "default_monospace"
+        } else {
+            "system_default"
+        });
+        let choices = font_choices(default_label, &held, &self.fonts);
+        if let Some(select) = self.font_selects[target as usize].clone() {
+            // The field changed (Reset, the other theme's fonts): show it.
+            if select.read(cx).selected_value() != Some(&held_name) {
+                select.update(cx, |select, cx| {
+                    select.set_items(choices, window, cx);
+                    select.set_selected_value(&held_name, window, cx);
+                });
+            }
+            return select;
+        }
+        let at = choices.position(&held_name);
+        let select = cx.new(|cx| SelectState::new(choices, at, window, cx).searchable(true));
+        cx.subscribe_in(
+            &select,
+            window,
+            move |this, _, event: &SelectEvent<SearchableVec<FontChoice>>, _, cx| {
+                let SelectEvent::Confirm(name) = event;
+                let name = name.clone().unwrap_or_default();
+                this.font_input(target)
+                    .update(cx, |field, cx| field.set_text(&name, cx));
+                cx.notify();
+            },
+        )
+        .detach();
+        self.font_selects[target as usize] = Some(select.clone());
+        select
+    }
 }
 
 /// A group of rows under a heading.
@@ -276,7 +382,13 @@ impl SettingsWindow {
                 this,
                 self.i18n.format("font_family_label", &[("name", &name)]),
                 self.i18n.text(hint_key),
-                move |this, _, cx| this.font_family_control(target, cx).into_any_element(),
+                move |this, window, cx| {
+                    let select = this.font_select(target, window, cx);
+                    Select::new(&select)
+                        .w(px(crate::settings_window::FONT_FIELD_WIDTH))
+                        .menu_width(px(crate::settings_window::FONT_FIELD_WIDTH + 80.))
+                        .into_any_element()
+                },
             ),
             SettingItem::new(
                 self.i18n.format("font_size_label", &[("name", &name)]),
@@ -526,7 +638,6 @@ impl SettingsWindow {
                 move |value, cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.settings.set_split_fonts(value, cx);
-                        this.font_picker = None;
                         cx.notify();
                     });
                 },
@@ -559,7 +670,6 @@ impl SettingsWindow {
                 move |value, cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.settings.select_font_side(value == "1", cx);
-                        this.font_picker = None;
                         cx.notify();
                     });
                 },

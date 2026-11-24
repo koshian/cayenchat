@@ -121,3 +121,28 @@ fn separate_fonts_keep_each_side_and_come_back(cx: &mut TestAppContext) {
         }
     );
 }
+
+#[test]
+fn a_font_dropdown_starts_with_the_default_and_keeps_an_unlisted_font() {
+    use crate::settings_kit::{FontChoice, font_choices};
+    use gpui::SharedString;
+    use gpui_component::{
+        IndexPath,
+        select::{SearchableVec, SelectDelegate},
+    };
+
+    let names = |choices: &SearchableVec<FontChoice>| -> Vec<String> {
+        (0..4)
+            .filter_map(|row| choices.item(IndexPath::default().row(row)))
+            .map(|choice| choice.name.to_string())
+            .collect()
+    };
+    let fonts = [SharedString::from("Alpha"), SharedString::from("Beta")];
+    let listed = font_choices("Default".into(), "Beta", &fonts);
+    assert_eq!(names(&listed), ["", "Alpha", "Beta"]);
+    let unlisted = font_choices("Default".into(), "Gone", &fonts);
+    assert_eq!(names(&unlisted), ["", "Gone", "Alpha", "Beta"]);
+    assert!(unlisted.position(&SharedString::from("Gone")).is_some());
+    let default = font_choices("Default".into(), "", &fonts);
+    assert_eq!(names(&default), ["", "Alpha", "Beta"]);
+}
