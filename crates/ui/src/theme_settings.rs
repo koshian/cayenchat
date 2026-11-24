@@ -796,22 +796,38 @@ impl SettingsWindow {
                 .text_color(palette.text_secondary)
                 .child(self.i18n.text(key))
         };
-        let mut section = div().flex().flex_col();
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("theme_heading")),
+            )
+            .child(hint("theme_hint"));
         for dark in [false, true] {
             let (name, modified) = appearance.theme_status(dark);
             let id = if dark { "dark" } else { "light" };
-            // The source theme is the row's description; "modified" is part of it.
-            let mut source = self.i18n.format("theme_source", &[("name", &name)]);
-            if modified {
-                source = format!("{source} {}", self.i18n.text("theme_modified"));
-            }
             let control = div()
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .justify_end()
                 .gap_2()
-                .debug_selector(move || format!("theme-source-{id}"))
+                .child(
+                    div()
+                        .max_w(px(260.))
+                        .debug_selector(move || format!("theme-source-{id}"))
+                        .child(self.i18n.format("theme_source", &[("name", &name)]))
+                        .when(modified, |d| {
+                            d.child(
+                                div()
+                                    .ml_2()
+                                    .text_color(palette.warning)
+                                    .child(self.i18n.text("theme_modified")),
+                            )
+                        }),
+                )
                 .child(
                     settings_theme::button(("theme-default", usize::from(dark)), false, cx)
                         .child(self.i18n.text("theme_use_default"))
@@ -827,9 +843,8 @@ impl SettingsWindow {
                         ),
                 );
             section = section.child(settings_theme::setting_row(
-                self.i18n
-                    .text(if dark { "colors_dark" } else { "colors_light" }),
-                Some(source.into()),
+                self.theme_kind_label(dark),
+                None,
                 control,
                 cx,
             ));
@@ -871,7 +886,7 @@ impl SettingsWindow {
         }
         section = section.child(settings_theme::setting_row(
             self.i18n.text("theme_library_heading"),
-            Some(self.i18n.text("theme_import_hint").into()),
+            None,
             settings_theme::button("theme-import", false, cx)
                 .child(self.i18n.text("theme_import"))
                 .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
@@ -908,7 +923,7 @@ impl SettingsWindow {
                     cayenchat_model::display::neutralize_bidi(&entry.name),
                     self.theme_kind_label(entry.mode == ThemeKind::Dark)
                 ),
-                Some(self.i18n.text("theme_entry_hint").into()),
+                None,
                 buttons,
                 cx,
             ));
@@ -1072,7 +1087,6 @@ impl SettingsWindow {
             .gap_1()
             .w(px(520.))
             .max_w_full()
-            .min_w_0()
             .h(px(280.))
             .child(
                 div()
@@ -1123,12 +1137,17 @@ impl SettingsWindow {
                     cx.notify();
                 }))
         };
-        let buttons = div()
+        let controls = div()
             .flex()
             .flex_wrap()
             .items_center()
-            .justify_end()
             .gap_2()
+            .child(format!(
+                "{}{}: {}",
+                self.i18n.text(area_name),
+                side_suffix,
+                shown
+            ))
             .child(
                 settings_theme::button("wallpaper-change", false, cx)
                     .child(self.i18n.text("wallpaper_change"))
@@ -1148,12 +1167,6 @@ impl SettingsWindow {
                         })),
                 )
             });
-        let controls = settings_theme::setting_row(
-            format!("{}{}", self.i18n.text(area_name), side_suffix),
-            Some(shown.into()),
-            buttons,
-            cx,
-        );
         let primary = settings_theme::primary_color(cx);
         let colors = crate::slider::SliderColors {
             track: palette.border,
@@ -1167,22 +1180,23 @@ impl SettingsWindow {
         let brightness = i32::from(wallpaper.brightness_value(dark));
         let saturation = wallpaper.saturation_percent(dark);
         let sliders = wallpaper.path.is_some().then(|| {
-            let row = |label: String, hint: &str, slider: Stateful<Div>, cx: &App| {
-                settings_theme::setting_row(
-                    label,
-                    Some(self.i18n.text(hint).into()),
-                    div().w(px(220.)).flex_shrink_0().child(slider),
-                    cx,
-                )
+            let row = |label: String, slider: Stateful<Div>| {
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(230.)).flex_shrink_0().child(label))
+                    .child(div().w(px(220.)).flex_shrink_0().child(slider))
             };
             let ui = &self.themes.wallpaper;
             div()
                 .flex()
                 .flex_col()
+                .gap_1()
                 .child(row(
                     self.i18n
                         .format("wallpaper_strength", &[("value", &strength.to_string())]),
-                    "wallpaper_strength_hint",
                     crate::slider::slider(
                         "wallpaper-strength",
                         u32::from(strength),
@@ -1196,14 +1210,12 @@ impl SettingsWindow {
                             this.wallpaper_set_strength(dark, region, value as u8, cx)
                         },
                     ),
-                    cx,
                 ))
                 .child(row(
                     self.i18n.format(
                         "wallpaper_blur",
                         &[("value", &format!("{}.{}", blur / 10, blur % 10))],
                     ),
-                    "wallpaper_blur_hint",
                     crate::slider::slider(
                         "wallpaper-blur",
                         u32::from(blur),
@@ -1217,14 +1229,12 @@ impl SettingsWindow {
                             this.wallpaper_set_blur(dark, region, value as u8, cx)
                         },
                     ),
-                    cx,
                 ))
                 .child(row(
                     self.i18n.format(
                         "wallpaper_brightness",
                         &[("value", &format!("{brightness:+}"))],
                     ),
-                    "wallpaper_brightness_hint",
                     crate::slider::slider(
                         "wallpaper-brightness",
                         (brightness + max_brightness) as u32,
@@ -1239,14 +1249,12 @@ impl SettingsWindow {
                             this.wallpaper_set_brightness(dark, region, brightness, cx)
                         },
                     ),
-                    cx,
                 ))
                 .child(row(
                     self.i18n.format(
                         "wallpaper_saturation",
                         &[("value", &saturation.to_string())],
                     ),
-                    "wallpaper_saturation_hint",
                     crate::slider::slider(
                         "wallpaper-saturation",
                         u32::from(saturation),
@@ -1260,7 +1268,6 @@ impl SettingsWindow {
                             this.wallpaper_set_saturation(dark, region, value as u8, cx)
                         },
                     ),
-                    cx,
                 ))
         });
         // The details of the selected area: the range editor and the fit,
@@ -1284,7 +1291,7 @@ impl SettingsWindow {
             }
             let [crop_use, crop_whole, crop_cancel] = &ui.crop_focus;
             div()
-                .my_2()
+                .ml(settings_theme::LABEL_INDENT)
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -1323,16 +1330,17 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .child(settings_theme::group_heading(
-                self.i18n.text("wallpaper_heading"),
-                Some(self.i18n.text("wallpaper_hint").into()),
-                cx,
-            ))
+            .gap_2()
             .child(
                 settings_theme::setting_row(
-                    self.i18n.text("wallpaper_shared"),
-                    Some(self.i18n.text("wallpaper_shared_hint").into()),
-                    settings_theme::checkbox(split, true, cx),
+                    self.i18n.text("wallpaper_heading"),
+                    Some(self.i18n.text("wallpaper_hint").into()),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(settings_theme::checkbox(split, true, cx))
+                        .child(self.i18n.text("wallpaper_shared")),
                     cx,
                 )
                 .id("split-wallpapers")
@@ -1343,8 +1351,8 @@ impl SettingsWindow {
             )
             .when(split, |d| {
                 d.child(settings_theme::setting_row(
-                    self.i18n.text("wallpaper_editing"),
-                    Some(self.i18n.text("wallpaper_editing_hint").into()),
+                    String::new(),
+                    None,
                     div()
                         .flex()
                         .flex_wrap()
@@ -1354,14 +1362,14 @@ impl SettingsWindow {
                     cx,
                 ))
             })
-            // Right-aligned like the controls of the rows around it.
-            .child(div().flex().justify_end().w_full().min_w_0().child(preview))
+            .child(preview)
             .child(controls)
             .children(sliders)
             .children(detail)
             .when_some(self.themes.wallpaper.status.clone(), |d, (text, failed)| {
                 d.child(
                     div()
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(if failed {
                             palette.warning
                         } else {
@@ -1947,7 +1955,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(8000.)));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(4000.)));
         cx.run_until_parked();
         // The channel tree is the fourth area; the click also reaches the
         // area's own card, which must not close the editor again.

@@ -152,8 +152,6 @@ pub(crate) struct Item {
     /// Draw a switch in the shared setting row (name left, control right)
     /// instead of the older checkbox line (#622).
     pub row: bool,
-    /// Localization key of the gray line under the label of a row (#622).
-    pub hint_key: Option<&'static str>,
 }
 
 impl Item {
@@ -165,14 +163,7 @@ impl Item {
             visible: true,
             enabled_when: None,
             row: false,
-            hint_key: None,
         }
-    }
-
-    /// Adds the gray description line under the row's label.
-    const fn hint(mut self, key: &'static str) -> Self {
-        self.hint_key = Some(key);
-        self
     }
 
     /// Draws a toggle in the shared setting row.
@@ -556,8 +547,7 @@ pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::select(
         option!("theme_light", theme = ThemeMode::Light),
         option!("theme_dark", theme = ThemeMode::Dark),
     ],
-)
-.hint("theme_hint_select")];
+)];
 
 /// The alternate rows switch of the Appearance tab, drawn after the colors.
 pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
@@ -566,13 +556,12 @@ pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
     |s| s.appearance.alternate_rows,
     |s, on| s.appearance.alternate_rows = on,
 )
-.in_row()
-.hint("alternate_rows_hint")];
+.in_row()];
 
 /// A pane background opacity slider of the Appearance tab (a percentage from
 /// the pane minimum to 100), drawn after the pane's colors.
 macro_rules! opacity_table {
-    ($name:ident, $id:literal, $key:literal, $hint:literal, $min:expr, $field:ident) => {
+    ($name:ident, $id:literal, $key:literal, $min:expr, $field:ident) => {
         pub(crate) const $name: &[Item] = &[Item::slider(
             $id,
             $key,
@@ -580,8 +569,7 @@ macro_rules! opacity_table {
             "%",
             |s| u32::from(s.appearance.$field),
             |s, v| s.appearance.$field = v as u8,
-        )
-        .hint($hint)];
+        )];
     };
 }
 
@@ -589,7 +577,6 @@ opacity_table!(
     OPACITY_MEMBER_LIST,
     "member-list-opacity",
     "member_list_opacity",
-    "member_list_opacity_hint",
     MIN_PANE_OPACITY,
     member_list_opacity
 );
@@ -597,7 +584,6 @@ opacity_table!(
     OPACITY_CHANNEL_TREE,
     "channel-tree-opacity",
     "channel_tree_opacity",
-    "channel_tree_opacity_hint",
     MIN_PANE_OPACITY,
     channel_tree_opacity
 );
@@ -605,7 +591,6 @@ opacity_table!(
     OPACITY_CHANNEL_LOG,
     "channel-log-opacity",
     "channel_log_opacity",
-    "channel_log_opacity_hint",
     MIN_PANE_OPACITY,
     channel_log_opacity
 );
@@ -613,7 +598,6 @@ opacity_table!(
     OPACITY_COMBINED_LOG,
     "combined-log-opacity",
     "combined_log_opacity",
-    "combined_log_opacity_hint",
     MIN_PANE_OPACITY,
     combined_log_opacity
 );
@@ -622,7 +606,6 @@ opacity_table!(
     OPACITY_URL_TOOLTIP,
     "url-tooltip-opacity",
     "url_tooltip_opacity",
-    "url_tooltip_opacity_hint",
     MIN_URL_TOOLTIP_OPACITY,
     url_tooltip_opacity
 );
@@ -639,14 +622,13 @@ pub(crate) const BLUR_RADIUS: &[Item] = &[Item::slider(
     "",
     |s| u32::from(s.appearance.background_blur_radius),
     |s, v| s.appearance.background_blur_radius = v as u8,
-)
-.hint("background_blur_radius_hint")];
+)];
 
 /// The line height of the channel log and of the combined log (#953), each
 /// with a button back to the default.
 pub(crate) const LINE_HEIGHT_CHANNEL_LOG: &[Item] = &[Item::slider(
     "channel-log-line-height",
-    "channel_log_line_height",
+    "log_line_height",
     (
         MIN_LINE_HEIGHT_PERCENT as u32,
         MAX_LINE_HEIGHT_PERCENT as u32,
@@ -655,12 +637,11 @@ pub(crate) const LINE_HEIGHT_CHANNEL_LOG: &[Item] = &[Item::slider(
     |s| u32::from(s.appearance.channel_log_line_height),
     |s, v| s.appearance.channel_log_line_height = v as u16,
 )
-.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)
-.hint("channel_log_line_height_hint")];
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
 
 pub(crate) const LINE_HEIGHT_COMBINED_LOG: &[Item] = &[Item::slider(
     "combined-log-line-height",
-    "combined_log_line_height",
+    "log_line_height",
     (
         MIN_LINE_HEIGHT_PERCENT as u32,
         MAX_LINE_HEIGHT_PERCENT as u32,
@@ -669,8 +650,7 @@ pub(crate) const LINE_HEIGHT_COMBINED_LOG: &[Item] = &[Item::slider(
     |s| u32::from(s.appearance.combined_log_line_height),
     |s, v| s.appearance.combined_log_line_height = v as u16,
 )
-.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)
-.hint("combined_log_line_height_hint")];
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
 
 /// Every table; the shared code visits the text fields and sliders of all of
 /// them.
@@ -841,7 +821,7 @@ impl SettingsWindow {
                         return Some(
                             settings_theme::setting_row(
                                 self.i18n.text(item.label_key),
-                                item.hint_key.map(|key| self.i18n.text(key).into()),
+                                None,
                                 settings_theme::checkbox(checked, enabled, cx),
                                 cx,
                             )
@@ -1003,7 +983,7 @@ impl SettingsWindow {
                     Some(
                         settings_theme::setting_row(
                             self.i18n.text(item.label_key),
-                            item.hint_key.map(|key| self.i18n.text(key).into()),
+                            None,
                             div().flex().flex_col().child(button).children(menu),
                             cx,
                         )
@@ -1068,7 +1048,7 @@ impl SettingsWindow {
                     Some(
                         settings_theme::setting_row(
                             self.i18n.text(item.label_key),
-                            item.hint_key.map(|key| self.i18n.text(key).into()),
+                            None,
                             control,
                             cx,
                         )

@@ -23,26 +23,6 @@ pub fn label_column() -> Div {
     div().w(LABEL_WIDTH).flex_shrink_0()
 }
 
-/// The heading of a group of rows (#622), with room above it. `note` is a
-/// short gray line under it that belongs to the whole group.
-pub fn group_heading(title: impl Into<SharedString>, note: Option<SharedString>, cx: &App) -> Div {
-    let theme = palette(cx);
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .mt_4()
-        .child(
-            div()
-                .text_size(px(16.))
-                .font_weight(FontWeight::BOLD)
-                .child(title.into()),
-        )
-        .when_some(note, |d, note| {
-            d.child(div().text_sm().text_color(theme.text_secondary).child(note))
-        })
-}
-
 /// A settings row (#622): the name, and a short description only where the
 /// name is not enough, on the left; the control on the right; a thin rule
 /// below. The control moves under the text when the pane is narrow.
