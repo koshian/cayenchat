@@ -27,9 +27,6 @@ use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::S
 /// Width of a slider's track.
 const SLIDER_WIDTH: f32 = 220.;
 
-/// Width of a select box.
-const SELECT_WIDTH: f32 = 160.;
-
 /// What a declared slider needs between renders: where its track was last
 /// painted (to turn the pointer position into a value) and its keyboard
 /// focus. Keyed by the item id.
@@ -49,33 +46,6 @@ impl SliderState {
             .map(|item| Self {
                 id: item.id,
                 track: Default::default(),
-                focus: cx.focus_handle().tab_stop(true),
-            })
-            .collect()
-    }
-}
-
-/// Keyboard focus of a declared select box (#622): Tab reaches it, Enter,
-/// Space and Down open it, Up/Down move the highlight, Enter chooses.
-pub(crate) struct SelectState {
-    id: &'static str,
-    focus: FocusHandle,
-}
-
-impl SelectState {
-    #[cfg(test)]
-    pub(crate) fn focus_handle(&self) -> &FocusHandle {
-        &self.focus
-    }
-
-    /// The state of every declared select box.
-    pub(crate) fn all(cx: &mut App) -> Vec<Self> {
-        TABLES
-            .iter()
-            .flat_map(|table| table.iter())
-            .filter(|item| matches!(item.control, Control::Select(_)))
-            .map(|item| Self {
-                id: item.id,
                 focus: cx.focus_handle().tab_stop(true),
             })
             .collect()
@@ -149,9 +119,8 @@ pub(crate) struct Item {
     pub visible: bool,
     /// When set, the row is usable only while this holds.
     pub enabled_when: Option<fn(&Settings) -> bool>,
-    /// Draw a switch in the shared setting row (name left, control right)
-    /// instead of the older checkbox line (#622).
-    pub row: bool,
+    /// Localization key of the gray line under the label of a row (#622).
+    pub hint_key: Option<&'static str>,
 }
 
 impl Item {
@@ -162,13 +131,13 @@ impl Item {
             control,
             visible: true,
             enabled_when: None,
-            row: false,
+            hint_key: None,
         }
     }
 
-    /// Draws a toggle in the shared setting row.
-    const fn in_row(mut self) -> Self {
-        self.row = true;
+    /// Adds the gray description line under the row's label.
+    const fn hint(mut self, key: &'static str) -> Self {
+        self.hint_key = Some(key);
         self
     }
 
@@ -547,7 +516,8 @@ pub(crate) const APPEARANCE_THEME: &[Item] = &[Item::select(
         option!("theme_light", theme = ThemeMode::Light),
         option!("theme_dark", theme = ThemeMode::Dark),
     ],
-)];
+)
+.hint("theme_hint_select")];
 
 /// The alternate rows switch of the Appearance tab, drawn after the colors.
 pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
@@ -556,12 +526,12 @@ pub(crate) const APPEARANCE_ROWS: &[Item] = &[Item::toggle(
     |s| s.appearance.alternate_rows,
     |s, on| s.appearance.alternate_rows = on,
 )
-.in_row()];
+.hint("alternate_rows_hint")];
 
 /// A pane background opacity slider of the Appearance tab (a percentage from
 /// the pane minimum to 100), drawn after the pane's colors.
 macro_rules! opacity_table {
-    ($name:ident, $id:literal, $key:literal, $min:expr, $field:ident) => {
+    ($name:ident, $id:literal, $key:literal, $hint:literal, $min:expr, $field:ident) => {
         pub(crate) const $name: &[Item] = &[Item::slider(
             $id,
             $key,
@@ -569,7 +539,8 @@ macro_rules! opacity_table {
             "%",
             |s| u32::from(s.appearance.$field),
             |s, v| s.appearance.$field = v as u8,
-        )];
+        )
+        .hint($hint)];
     };
 }
 
@@ -577,6 +548,7 @@ opacity_table!(
     OPACITY_MEMBER_LIST,
     "member-list-opacity",
     "member_list_opacity",
+    "member_list_opacity_hint",
     MIN_PANE_OPACITY,
     member_list_opacity
 );
@@ -584,6 +556,7 @@ opacity_table!(
     OPACITY_CHANNEL_TREE,
     "channel-tree-opacity",
     "channel_tree_opacity",
+    "channel_tree_opacity_hint",
     MIN_PANE_OPACITY,
     channel_tree_opacity
 );
@@ -591,6 +564,7 @@ opacity_table!(
     OPACITY_CHANNEL_LOG,
     "channel-log-opacity",
     "channel_log_opacity",
+    "channel_log_opacity_hint",
     MIN_PANE_OPACITY,
     channel_log_opacity
 );
@@ -598,6 +572,7 @@ opacity_table!(
     OPACITY_COMBINED_LOG,
     "combined-log-opacity",
     "combined_log_opacity",
+    "combined_log_opacity_hint",
     MIN_PANE_OPACITY,
     combined_log_opacity
 );
@@ -606,6 +581,7 @@ opacity_table!(
     OPACITY_URL_TOOLTIP,
     "url-tooltip-opacity",
     "url_tooltip_opacity",
+    "url_tooltip_opacity_hint",
     MIN_URL_TOOLTIP_OPACITY,
     url_tooltip_opacity
 );
@@ -622,13 +598,14 @@ pub(crate) const BLUR_RADIUS: &[Item] = &[Item::slider(
     "",
     |s| u32::from(s.appearance.background_blur_radius),
     |s, v| s.appearance.background_blur_radius = v as u8,
-)];
+)
+.hint("background_blur_radius_hint")];
 
 /// The line height of the channel log and of the combined log (#953), each
 /// with a button back to the default.
 pub(crate) const LINE_HEIGHT_CHANNEL_LOG: &[Item] = &[Item::slider(
     "channel-log-line-height",
-    "log_line_height",
+    "channel_log_line_height",
     (
         MIN_LINE_HEIGHT_PERCENT as u32,
         MAX_LINE_HEIGHT_PERCENT as u32,
@@ -637,11 +614,12 @@ pub(crate) const LINE_HEIGHT_CHANNEL_LOG: &[Item] = &[Item::slider(
     |s| u32::from(s.appearance.channel_log_line_height),
     |s, v| s.appearance.channel_log_line_height = v as u16,
 )
-.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)
+.hint("channel_log_line_height_hint")];
 
 pub(crate) const LINE_HEIGHT_COMBINED_LOG: &[Item] = &[Item::slider(
     "combined-log-line-height",
-    "log_line_height",
+    "combined_log_line_height",
     (
         MIN_LINE_HEIGHT_PERCENT as u32,
         MAX_LINE_HEIGHT_PERCENT as u32,
@@ -650,7 +628,8 @@ pub(crate) const LINE_HEIGHT_COMBINED_LOG: &[Item] = &[Item::slider(
     |s| u32::from(s.appearance.combined_log_line_height),
     |s, v| s.appearance.combined_log_line_height = v as u16,
 )
-.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)];
+.with_reset("line_height_reset", DEFAULT_LINE_HEIGHT_PERCENT as u32)
+.hint("combined_log_line_height_hint")];
 
 /// Every table; the shared code visits the text fields and sliders of all of
 /// them.
@@ -731,41 +710,6 @@ impl SettingsForm {
 }
 
 impl SettingsWindow {
-    /// Keys on a focused select box (#622). Escape is left to the window's
-    /// handler, which closes the list.
-    fn select_key_down(
-        &mut self,
-        id: &'static str,
-        options: &'static [ChoiceOption],
-        current: usize,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) {
-        let stroke = &event.keystroke;
-        if stroke.modifiers.modified() || stroke.is_ime_in_progress() {
-            return;
-        }
-        let open = self.open_select == Some(id);
-        let last = options.len().saturating_sub(1);
-        match stroke.key.as_str() {
-            // Opening and choosing happen in the button's click handler, which
-            // GPUI also calls for Enter/Space (on key release), so the key is
-            // only kept from the navigation here.
-            "enter" | "space" => {}
-            "down" | "up" if !open => {
-                self.select_cursor = current;
-                self.open_select = Some(id);
-            }
-            "down" => self.select_cursor = (self.select_cursor + 1).min(last),
-            "up" => self.select_cursor = self.select_cursor.saturating_sub(1),
-            "home" if open => self.select_cursor = 0,
-            "end" if open => self.select_cursor = last,
-            _ => return,
-        }
-        cx.stop_propagation();
-        cx.notify();
-    }
-
     /// Shows the values of `table`'s text fields again, from `values` (used
     /// by "Restore Defaults").
     pub(crate) fn show_item_fields(
@@ -801,6 +745,73 @@ impl SettingsWindow {
         }
     }
 
+    /// The slider, its value and the optional reset button of a declared
+    /// `Slider` item: the control that goes into the Kit's row.
+    pub(crate) fn slider_control(&self, item: &'static Item, cx: &mut Context<Self>) -> AnyElement {
+        let Control::Slider {
+            min,
+            max,
+            suffix,
+            get,
+            set,
+            reset,
+        } = &item.control
+        else {
+            return div().into_any_element();
+        };
+        let Some(state) = self.sliders.iter().find(|state| state.id == item.id) else {
+            return div().into_any_element();
+        };
+        let theme = settings_theme::palette(cx);
+        let (min, max, set) = (*min, *max, *set);
+        let value = get(&self.settings.values).clamp(min, max);
+        let primary = settings_theme::primary_color(cx);
+        let colors = crate::slider::SliderColors {
+            track: theme.border,
+            fill: primary.into(),
+            knob: theme.surface,
+            ring: primary.into(),
+        };
+        let slider = crate::slider::slider(
+            item.id,
+            value - min,
+            max - min,
+            &state.track,
+            &state.focus,
+            colors,
+            cx,
+            move |this, new, _, _| set(&mut this.settings.values, min + new),
+        );
+        let reset = reset.map(|(label_key, default)| {
+            div()
+                .id((ElementId::from(item.id), "reset"))
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(self.i18n.text(label_key))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    set(&mut this.settings.values, default);
+                    cx.notify();
+                }))
+        });
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
+            .child(
+                div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .child(format!("{value}{suffix}")),
+            )
+            .children(reset)
+            .into_any_element()
+    }
+
     /// Draws the rows of `table` below one another.
     pub(crate) fn render_items(
         &self,
@@ -816,28 +827,6 @@ impl SettingsWindow {
                     let enabled = item.enabled(&self.settings.values);
                     let checked = get(&self.settings.values);
                     let set = *set;
-                    if item.row {
-                        // The whole row is the click target.
-                        return Some(
-                            settings_theme::setting_row(
-                                self.i18n.text(item.label_key),
-                                None,
-                                settings_theme::checkbox(checked, enabled, cx),
-                                cx,
-                            )
-                            .id(item.id)
-                            .when(!enabled, |d| d.text_color(theme.text_secondary))
-                            .when(enabled, |d| {
-                                d.cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let on = !get(&this.settings.values);
-                                        set(&mut this.settings.values, on);
-                                        cx.notify();
-                                    }))
-                            })
-                            .into_any_element(),
-                        );
-                    }
                     Some(
                         div()
                             .id(item.id)
@@ -885,176 +874,8 @@ impl SettingsWindow {
                             .into_any_element(),
                     )
                 }
-                Control::Select(options) => {
-                    let current = options
-                        .iter()
-                        .find(|option| (option.is_selected)(&self.settings.values));
-                    let open = self.open_select == Some(item.id);
-                    let id = item.id;
-                    let focus = self.selects.iter().find(|s| s.id == id)?.focus.clone();
-                    let ring = settings_theme::primary_color(cx);
-                    let current_index = options
-                        .iter()
-                        .position(|option| (option.is_selected)(&self.settings.values))
-                        .unwrap_or(0);
-                    let options_ref: &'static [ChoiceOption] = options;
-                    let button = div()
-                        .id(id)
-                        .track_focus(&focus)
-                        .relative()
-                        .flex()
-                        .justify_between()
-                        .gap_2()
-                        .w(px(SELECT_WIDTH))
-                        .max_w_full()
-                        .px_2()
-                        .py_1()
-                        .border_1()
-                        .border_color(theme.border)
-                        .focus_visible(move |s| s.border_color(ring))
-                        .cursor_pointer()
-                        .child(current.map_or_else(String::new, |o| self.i18n.text(o.label_key)))
-                        .child("▾")
-                        .child({
-                            // Tells the settings pane where the select is, so
-                            // Shift+Tab back to it scrolls it into view.
-                            let focus = focus.clone();
-                            canvas(
-                                move |bounds, window, cx| {
-                                    crate::focus_reveal::note(&focus, bounds, window, cx)
-                                },
-                                |_, _, _, _| {},
-                            )
-                            .absolute()
-                            .size_full()
-                        })
-                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                            this.select_key_down(id, options_ref, current_index, event, cx);
-                        }))
-                        .on_click(cx.listener({
-                            let focus = focus.clone();
-                            move |this, event: &ClickEvent, window, cx| {
-                                window.focus(&focus, cx);
-                                if event.is_keyboard() && this.open_select == Some(id) {
-                                    // Enter/Space on an open list chooses.
-                                    if let Some(option) = options_ref.get(this.select_cursor) {
-                                        (option.select)(&mut this.settings.values);
-                                    }
-                                    this.open_select = None;
-                                    this.feedback = None;
-                                } else {
-                                    this.select_cursor = current_index;
-                                    this.open_select = (this.open_select != Some(id)).then_some(id);
-                                }
-                                cx.notify();
-                            }
-                        }));
-                    let menu = open.then(|| {
-                        let mut menu = div()
-                            .w(px(SELECT_WIDTH))
-                            .on_scroll(|_, _, cx| cx.stop_propagation())
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.surface);
-                        for (index, option) in options.iter().enumerate() {
-                            let select = option.select;
-                            menu = menu.child(
-                                div()
-                                    .id((id, index))
-                                    .px_2()
-                                    .py_1()
-                                    .cursor_pointer()
-                                    .hover(|d| d.bg(theme.hover))
-                                    .when((option.is_selected)(&self.settings.values), |d| {
-                                        d.bg(theme.selected)
-                                    })
-                                    .when(index == self.select_cursor, |d| d.bg(theme.hover))
-                                    .child(self.i18n.text(option.label_key))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        select(&mut this.settings.values);
-                                        this.open_select = None;
-                                        this.feedback = None;
-                                        cx.notify();
-                                    })),
-                            );
-                        }
-                        menu
-                    });
-                    Some(
-                        settings_theme::setting_row(
-                            self.i18n.text(item.label_key),
-                            None,
-                            div().flex().flex_col().child(button).children(menu),
-                            cx,
-                        )
-                        .into_any_element(),
-                    )
-                }
-                Control::Slider {
-                    min,
-                    max,
-                    suffix,
-                    get,
-                    set,
-                    reset,
-                } => {
-                    let state = self.sliders.iter().find(|state| state.id == item.id)?;
-                    let (min, max, set) = (*min, *max, *set);
-                    let value = get(&self.settings.values).clamp(min, max);
-                    let primary = settings_theme::primary_color(cx);
-                    let colors = crate::slider::SliderColors {
-                        track: theme.border,
-                        fill: primary.into(),
-                        knob: theme.surface,
-                        ring: primary.into(),
-                    };
-                    let slider = crate::slider::slider(
-                        item.id,
-                        value - min,
-                        max - min,
-                        &state.track,
-                        &state.focus,
-                        colors,
-                        cx,
-                        move |this, new, _, _| set(&mut this.settings.values, min + new),
-                    );
-                    let reset = reset.map(|(label_key, default)| {
-                        div()
-                            .id((ElementId::from(item.id), "reset"))
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text(label_key))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                set(&mut this.settings.values, default);
-                                cx.notify();
-                            }))
-                    });
-                    let control = div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(div().w(px(SLIDER_WIDTH)).flex_shrink_0().child(slider))
-                        .child(
-                            div()
-                                .w(px(48.))
-                                .flex_shrink_0()
-                                .child(format!("{value}{suffix}")),
-                        )
-                        .children(reset);
-                    Some(
-                        settings_theme::setting_row(
-                            self.i18n.text(item.label_key),
-                            None,
-                            control,
-                            cx,
-                        )
-                        .into_any_element(),
-                    )
-                }
+                // Drawn by the Kit's `Settings` (`kit_items`).
+                Control::Select(_) | Control::Slider { .. } => None,
                 Control::Note => Some(
                     div()
                         .ml(settings_theme::LABEL_INDENT)
@@ -1073,18 +894,21 @@ pub(crate) type ToggleHandler = std::rc::Rc<dyn Fn(&'static Item, bool, &mut App
 /// Called with the item and the index of the option when a Kit dropdown changes.
 pub(crate) type ChoiceHandler = std::rc::Rc<dyn Fn(&'static Item, usize, &mut App)>;
 
-/// Converts the visible items of `table` into Kit `setting` items (the thin
-/// adapter to `gpui-component::setting`).
+/// Draws the control of a declared slider inside the Kit's row.
+pub(crate) type SliderHandler = std::rc::Rc<dyn Fn(&'static Item, &mut App) -> AnyElement>;
+
+/// Converts the visible items of `table` into Kit `setting` items (the
+/// adapter to `gpui-component::setting`), each with the gray description
+/// its `hint_key` names.
 ///
 /// A switch becomes `SettingField::switch`, a text item wraps the existing
 /// `TextInput` (found by `field`; an item without one is skipped) in
 /// `SettingField::render`, and a note becomes the description of the item
 /// above it. `on_toggle` receives the item and the new value when the Kit
 /// switch is flipped, `on_choose` the item and option index when a choice
-/// (a dropdown) changes. Kit offers no standalone item renderer (`Settings`
-/// always draws its sidebar and search), so the screen still draws through
-/// `render_items`; the Kit render path is taken when #622/#623 need it.
-#[cfg_attr(not(test), allow(dead_code))]
+/// (a dropdown) changes. The Kit has no slider, so `slider` draws the
+/// shared slider (pointer and key behaviour of [`crate::slider`]) for a
+/// declared one.
 pub(crate) fn kit_items(
     table: &'static [Item],
     values: &Settings,
@@ -1092,17 +916,22 @@ pub(crate) fn kit_items(
     field: impl Fn(&str) -> Option<Entity<TextInput>>,
     on_toggle: ToggleHandler,
     on_choose: ChoiceHandler,
+    slider: SliderHandler,
 ) -> Vec<gpui_component::setting::SettingItem> {
     use gpui_component::setting::{SettingField, SettingItem};
 
     let mut out: Vec<SettingItem> = Vec::new();
     for item in table.iter().filter(|item| item.visible) {
         let disabled = !item.enabled(values);
+        let hint = |setting: SettingItem| match item.hint_key {
+            Some(key) => setting.description(i18n.text(key)),
+            None => setting,
+        };
         match &item.control {
             Control::Toggle { get, .. } => {
                 let checked = get(values);
                 let on_toggle = on_toggle.clone();
-                out.push(
+                out.push(hint(
                     SettingItem::new(
                         i18n.text(item.label_key),
                         SettingField::switch(
@@ -1111,19 +940,19 @@ pub(crate) fn kit_items(
                         ),
                     )
                     .disabled(disabled),
-                );
+                ));
             }
             Control::Text { .. } => {
                 let Some(input) = field(item.id) else {
                     continue;
                 };
-                out.push(
+                out.push(hint(
                     SettingItem::new(
                         i18n.text(item.label_key),
                         SettingField::render(move |_, _, _| input.clone()),
                     )
                     .disabled(disabled),
-                );
+                ));
             }
             Control::Choice(options) | Control::Select(options) => {
                 // The dropdown's values are the option indexes.
@@ -1140,7 +969,7 @@ pub(crate) fn kit_items(
                     .unwrap_or(0)
                     .to_string();
                 let on_choose = on_choose.clone();
-                out.push(
+                out.push(hint(
                     SettingItem::new(
                         i18n.text(item.label_key),
                         SettingField::dropdown(
@@ -1154,11 +983,18 @@ pub(crate) fn kit_items(
                         ),
                     )
                     .disabled(disabled),
-                );
+                ));
             }
-            // The Kit has no slider field that keeps the shared slider's
-            // pointer and key behaviour, so sliders are drawn by `render_items`.
-            Control::Slider { .. } => {}
+            Control::Slider { .. } => {
+                let slider = slider.clone();
+                out.push(hint(
+                    SettingItem::new(
+                        i18n.text(item.label_key),
+                        SettingField::render(move |_, _, cx| slider(item, cx)),
+                    )
+                    .disabled(disabled),
+                ));
+            }
             Control::Note => {
                 if let Some(SettingItem::Item { description, .. }) = out.last_mut() {
                     *description = Some(i18n.text(item.label_key).into());
@@ -1184,6 +1020,7 @@ mod tests {
             |_| None,
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| gpui::IntoElement::into_any_element(gpui::div())),
         )
     }
 
@@ -1335,6 +1172,7 @@ mod tests {
             |_| None,
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| gpui::IntoElement::into_any_element(gpui::div())),
         );
         // Two choices; their hints become descriptions.
         assert_eq!(items.len(), 2);

@@ -3579,46 +3579,6 @@ fn the_window_lays_out_at_its_smallest_size_and_recovers(cx: &mut TestAppContext
     assert!(cx.debug_bounds("members-split").is_some());
 }
 
-#[gpui::test]
-fn switching_settings_tabs_resets_only_the_pane_scroll(cx: &mut TestAppContext) {
-    crate::support::install_test_globals(cx);
-    let settings = crate::settings_with_channels("#a");
-    let owner =
-        cx.add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
-    let (form, cx) = cx.add_window_view(|window, cx| {
-        let mut form = super::SettingsWindow::new(owner, settings.clone(), window, cx);
-        form.tab = super::SettingsTab::Appearance;
-        form
-    });
-    let scrolled = gpui::point(gpui::px(0.), gpui::px(-120.));
-    form.update(cx, |form, _| {
-        form.pane_scroll.set_offset(scrolled);
-        form.nav_scroll.set_offset(scrolled);
-    });
-
-    // The same tab keeps its place.
-    form.update(cx, |form, cx| {
-        form.show_tab(super::SettingsTab::Appearance, cx)
-    });
-    assert_eq!(form.read_with(cx, |f, _| f.pane_scroll.offset()), scrolled);
-
-    // Another tab starts at the top, and so does coming back; the nav stays.
-    for tab in [
-        super::SettingsTab::Connection,
-        super::SettingsTab::Appearance,
-    ] {
-        form.update(cx, |form, cx| {
-            form.pane_scroll.set_offset(scrolled);
-            form.show_tab(tab, cx)
-        });
-        assert_eq!(
-            form.read_with(cx, |f, _| f.pane_scroll.offset().y),
-            gpui::px(0.)
-        );
-        assert_eq!(form.read_with(cx, |f, _| f.nav_scroll.offset()), scrolled);
-    }
-}
-
 /// Runs the pending work and draws the window, so that what a change put on
 /// screen can be found and reached by keys.
 fn settle(cx: &mut gpui::VisualTestContext) {

@@ -598,46 +598,17 @@ mod tests {
     }
 
     #[gpui::test]
-    fn up_and_down_move_through_the_categories(cx: &mut gpui::TestAppContext) {
-        let (form, cx) = form(SettingsTab::Connection, cx);
-        form.update_in(cx, |form, window, cx| window.focus(&form.nav_focus, cx));
-        let tab = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
-            form.read_with(cx, |form, _| form.tab)
-        };
-        cx.simulate_keystrokes("down");
-        assert!(tab(&form, cx) == SettingsTab::Application);
-        cx.simulate_keystrokes("up up");
-        assert!(tab(&form, cx) == SettingsTab::Connection);
-    }
-
-    #[gpui::test]
-    fn a_key_recording_and_the_category_list_do_not_disturb_each_other(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn changing_the_category_ends_a_key_recording(cx: &mut gpui::TestAppContext) {
         let (form, cx) = form(SettingsTab::Keyboard, cx);
         cx.update(|window, _| window.activate_window());
-        form.update_in(cx, |form, window, cx| {
-            window.focus(&form.nav_focus, cx);
+        form.update_in(cx, |form, _, cx| {
             form.toggle_shortcut_recording("next_channel", cx);
         });
         cx.run_until_parked();
-        let state = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
-            form.read_with(cx, |form, _| {
-                (
-                    form.tab == SettingsTab::Keyboard,
-                    form.shortcut_recording.is_some(),
-                )
-            })
-        };
-
-        // Up and Down belong to the recording: refused as keys, and the
-        // category stays.
-        cx.simulate_keystrokes("down up");
-        assert_eq!(state(&form, cx), (true, true));
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_some()));
 
         // Choosing another category ends the recording.
-        let notifications = cx.debug_bounds("notifications-tab").unwrap().center();
-        cx.simulate_click(notifications, gpui::Modifiers::default());
+        form.update(cx, |form, cx| form.show_tab(SettingsTab::Notifications, cx));
         form.read_with(cx, |form, _| {
             assert!(form.tab == SettingsTab::Notifications);
             assert!(form.shortcut_recording.is_none());

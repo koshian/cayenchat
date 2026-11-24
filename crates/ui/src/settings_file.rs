@@ -405,7 +405,7 @@ mod tests {
                     dialog.scroll.offset().y,
                     dialog.scroll.bounds(),
                     focused,
-                    form.pane_scroll.offset().y,
+                    gpui::px(0.),
                 )
             })
         };
