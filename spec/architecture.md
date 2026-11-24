@@ -2577,8 +2577,9 @@ Transparency and blur, Fonts and spacing, Wallpapers and Display, so colors
 and sliders are not interleaved. A row's name is not repeated by its group's
 heading. Where the left side has a value (the source theme of the light or the
 dark side), it is the description and the actions are on the right. Only the
-Appearance tab uses this layout so far (the wallpaper miniature and its
-per-area detail panel stay a composite block between rows); other tabs move
+Appearance tab uses this layout so far (the wallpaper miniature, right-aligned
+like the controls, and its per-area detail panel stay a composite block between
+rows); other tabs move
 over one by one. `Control::Choice` (a button row) remains for the tabs not
 moved yet.
 

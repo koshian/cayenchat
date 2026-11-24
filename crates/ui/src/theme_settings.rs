@@ -1353,7 +1353,8 @@ impl SettingsWindow {
                     cx,
                 ))
             })
-            .child(preview)
+            // Right-aligned like the controls of the rows around it.
+            .child(div().flex().justify_end().child(preview))
             .child(controls)
             .children(sliders)
             .children(detail)
