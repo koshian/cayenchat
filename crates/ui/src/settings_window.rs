@@ -6104,6 +6104,12 @@ mod escape_tests {
         form.update(cx, |form, cx| {
             form.show_tab(super::SettingsTab::Appearance, cx)
         });
+        // The default language follows the environment, so pin one first.
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_language(cayenchat_storage::Language::Japanese, window, cx)
+            })
+        });
         cx.run_until_parked();
         let label = |cx: &mut gpui::VisualTestContext| {
             form.read_with(cx, |form, _| {
