@@ -161,3 +161,10 @@ records them when its tracked focus handle is the focused one
 settings window follows Tab inside the GPUI Kit's pages, whose inputs report
 nothing themselves and which give no scroll handle (`focus_reveal`). Candidate
 for an upstream proposal.
+
+## One tab stop per focus handle (#622)
+
+`TabStopMap::insert` (`src/tab_stop.rs`) ignores a handle that is already in the
+map. The GPUI Kit's number input tracks one handle on its frame and on the
+editor inside it; the second entry was its own neighbour, so Shift+Tab stayed
+on the field. Candidate for an upstream proposal.

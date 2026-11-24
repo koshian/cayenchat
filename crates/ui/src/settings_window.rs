@@ -6164,6 +6164,40 @@ mod escape_tests {
         (form, vcx, app)
     }
 
+    /// The Kit's number input registers one focus handle on its frame and on
+    /// its editor; Shift+Tab must still walk back through every field of the
+    /// Appearance page, the font size fields included.
+    #[gpui::test]
+    fn shift_tab_walks_back_through_the_kit_number_inputs(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(5000.)));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Appearance, cx)
+        });
+        cx.run_until_parked();
+        let focused = |cx: &mut gpui::VisualTestContext| cx.update(|w, cx| w.focused(cx));
+        let mut forward = Vec::new();
+        for _ in 0..200 {
+            cx.update(|w, cx| w.focus_next(cx));
+            cx.run_until_parked();
+            let id = focused(cx);
+            if forward.contains(&id) {
+                break;
+            }
+            forward.push(id);
+        }
+        assert!(forward.len() > 10, "tab reached {forward:?}");
+        for (i, expected) in forward.iter().enumerate().rev() {
+            cx.update(|w, cx| w.focus_prev(cx));
+            cx.run_until_parked();
+            assert_eq!(
+                &focused(cx),
+                expected,
+                "shift-tab to stop {i} of {forward:?}"
+            );
+        }
+    }
+
     #[gpui::test]
     fn escape_closes_language_and_encoding_lists_first(cx: &mut TestAppContext) {
         let (form, cx, mut app) = open(cx, crate::settings_with_channels("#a"));
