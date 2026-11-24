@@ -2877,6 +2877,8 @@ only then another source or a hand-drawn icon is considered.
 
 Status: implemented (#134, #135).
 
+Update (#622): the category list is now the sidebar of the GPUI Kit's `Settings` (with its search field); the one-reset-per-tab rule is unchanged.
+
 The horizontal tabs wrapped onto two rows once there were nine of them, which
 broke the joined tab/body border. The settings window now has a fixed-width
 category list on the left (Experimental apart at the bottom) and the selected

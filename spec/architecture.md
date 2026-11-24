@@ -2516,10 +2516,10 @@ declared and stay separate widgets. Rows use the existing settings palette and
 `gpui-component::setting`: it converts a table into Kit `SettingItem`s (a switch
 becomes `SettingField::switch`, a text item wraps its `TextInput` in
 `SettingField::render`, a note becomes the description of the item above, an
-unmet condition becomes `disabled`) and is covered by conversion tests. Kit 0.9.1
-exposes no standalone item renderer (`Settings` always draws its sidebar and
-search), so the screen still draws through `render_items`; switching to the Kit
-render path belongs to #622 (rows with descriptions) and #623 (search).
+unmet condition becomes `disabled`, a slider is drawn by a caller-supplied
+control inside the Kit row, a `hint_key` becomes the description) and is covered
+by conversion tests. The Appearance tab is drawn through it (see "Settings
+window on the GPUI Kit"); the other tabs still draw through `render_items`.
 The Notifications tab is the first table; other tabs move over one by one. The
 Application tab declares its plain switches and hints in several short tables
 (`APPLICATION_WINDOW`, `APPLICATION_MENU`, `APPLICATION_PREVIEWS`,
@@ -2544,31 +2544,54 @@ slider (`ui::slider`: pointer, drag and keys): its range, a suffix, a reset
 button when wanted, and how the value is read and written. The five pane
 opacities, the background blur strength and the two log line heights are
 sliders; each keeps its painted track and keyboard focus in
-`SettingsWindow::sliders`, keyed by item id. `kit_items` skips sliders (the
-Kit has no field with this behaviour). The color pairs, fonts and wallpaper
-stay their own widgets.
+`SettingsWindow::sliders`, keyed by item id, and is drawn by `slider_control`
+inside a Kit row. The color pairs, fonts and wallpaper are Kit rows holding
+their own controls.
 
-### Setting row layout (#622)
+### Settings window on the GPUI Kit (#622)
 
-`settings_theme::setting_row(label, hint, control)` is the shared row: the
-name (and a short description only where the name is not enough) on the left,
-the control on the right, a thin rule below, no extra panel border. When the
-pane is narrow the control wraps under the text; the control box is never wider
-than the row, so a control made of several parts wraps its own parts (`flex_wrap`).
-Single choices are select
-boxes (`Control::Select`: a button with the current choice that opens a list,
-`SettingsWindow::open_select`). A select takes Tab focus (`SelectState`); Enter,
-Space, Up or Down open it, Up/Down/Home/End move the highlight, Enter or Space
-chooses, and Escape or leaving by Tab closes it without changing the value. Keys it
-handles do not reach the category list. Two-valued
-settings are checkboxes (`Item::in_row` draws a declared toggle as a row whose
-whole width is the click target); sliders, fonts and color pairs are rows with
-their own control. A color pair is two cells (swatch, then a 7-character
-`#RRGGBB` field) under shared Light/Dark headings. Only the Appearance tab uses
-this layout so far (the wallpaper section's name, hint and switches are rows; its
-miniature and per-area controls stay a composite block below them);
-other tabs move over one by one. `Control::Choice` (a button row) remains for
-the tabs not moved yet.
+The settings window is drawn by `gpui_component::setting::Settings`
+(`ui::settings_kit`): the Kit's sidebar with its search field replaces the
+former category list (#135), each tab is a `SettingPage`, each block under a
+heading a `SettingGroup` and each row a `SettingItem` (name, one-line
+description). `settings_theme::sync_kit` makes the Kit's theme follow the
+settings palette (the native theme when it is loaded). The Kit's setters get
+only `&mut App`, so a setter reaches the window through a `WeakEntity` and does
+what the former control did: it changes the form, and the existing autosave
+validates and stores it. Saving, validation and secrets are unchanged.
+
+Parts the Kit has, and which are used as they are: `SettingField::switch`
+(toggles), `dropdown` (a choice of a few values: the color scheme, the theme
+being edited), `number_input` (font sizes). Kit-only look and behaviour is
+accepted; none of these is imitated by a CayenChat widget.
+
+Parts the Kit lacks, drawn inside a Kit row with `SettingField::render`
+(`field_item`: the Kit draws name and description, the control is ours) or
+`SettingItem::render` (`element_item`): the color swatches with the
+light/dark columns and the picker, the sliders (`ui::slider`, via
+`settings_items::kit_items`), the font name field with the list of system
+fonts, the theme library buttons, the wallpaper miniature and its controls and
+the tabs not rebuilt yet. Text fields stay `TextInput` (IME, direct input,
+validation at the sink); the Kit's `Input` has none of that.
+
+The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
+colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
+wallpapers and Display, every row with a one-sentence description (Japanese and
+English). Every other tab is one item holding its previous panel, so what it
+shows and does is unchanged; they move to groups tab by tab. The Kit's page is
+the tab being shown: a page found drawn calls `follow_kit_page`, and
+`show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
+
+Known limits: the Kit's pages scroll by themselves and give no way to scroll to
+the field Tab moved to, so Tab to a field out of view does not scroll (the
+auto-join dialog's own list still does); the Kit draws only the groups in view,
+so tests that look for a lower control enlarge the window. Up/Down on the old
+category list is the Kit sidebar's behaviour now. Experimental is no longer set
+apart at the bottom of the list.
+
+Layout checks (Xvfb): the Appearance tab in Japanese (light), English (dark) and
+a 520 px wide window, top to bottom. At that width the Kit puts each control
+under its name.
 
 ## Conversation logs (D044)
 

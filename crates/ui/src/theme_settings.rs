@@ -1136,6 +1136,7 @@ impl SettingsWindow {
             .gap_1()
             .w(px(520.))
             .max_w_full()
+            .min_w_0()
             .h(px(280.))
             .child(
                 div()
@@ -1371,7 +1372,8 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap_2()
-            .child(preview)
+            // Right-aligned like the controls of the rows around it.
+            .child(div().flex().justify_end().w_full().min_w_0().child(preview))
             .child(controls)
             .children(sliders)
             .children(detail)
