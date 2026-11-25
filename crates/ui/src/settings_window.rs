@@ -1444,10 +1444,6 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .child(div().flex_1().min_w_0().child(input))
 }
 
-/// One button of a choice row: its label key, whether it is selected and what
-/// selecting it writes to the settings.
-pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
-
 /// Width of the `#RRGGBB` field of a color row: seven characters and padding.
 const COLOR_FIELD_WIDTH: f32 = 96.;
 /// Width of a font name field.
@@ -1456,47 +1452,6 @@ pub(crate) const FONT_FIELD_WIDTH: f32 = 200.;
 pub(crate) const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
 
 impl SettingsWindow {
-    /// The row of a declared `Choice` item: each option is its label key,
-    /// whether it is selected and what selecting it writes to the settings.
-    pub(crate) fn choice_row(
-        &self,
-        label_key: &'static str,
-        options: Vec<ChoiceButton>,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let theme = theme::current(cx);
-        let mut choices = div().flex().gap_1();
-        for (index, (key, selected, select)) in options.into_iter().enumerate() {
-            choices = choices.child(
-                div()
-                    .id((label_key, index))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(selected, |d| d.bg(theme.selected))
-                    .child(self.i18n.text(key))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        select(&mut this.settings.values);
-                        this.feedback = None;
-                        cx.notify();
-                    })),
-            );
-        }
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .w(settings_theme::LABEL_WIDTH)
-                    .flex_shrink_0()
-                    .child(self.i18n.text(label_key)),
-            )
-            .child(choices)
-    }
-
     pub(crate) fn select_language(
         &mut self,
         language: Language,
@@ -5119,34 +5074,6 @@ impl SettingsWindow {
                     }),
             ),
         )
-    }
-
-    /// The send and NOTICE keys, the channel-number and draft-editing keys
-    /// (only Windows and Linux have choices there), then the shortcut list.
-    pub(crate) fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let clash = self
-            .settings
-            .values
-            .notice_key
-            .clashes_with(self.settings.values.send_key);
-        account_settings::panel(cx)
-            .child(self.tab_heading("keyboard"))
-            .children(self.render_items(crate::settings_items::KEYBOARD_SEND, cx))
-            .when(clash, |d| {
-                d.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.warning)
-                        .child(self.i18n.text("notice_key_clash")),
-                )
-            })
-            .children(self.render_items(crate::settings_items::KEYBOARD_MODIFIERS, cx))
-            .children(self.shortcut_rows(cx))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(self.reset_footer(SettingsTab::Keyboard, cx))
     }
 
     /// The categories in list order; the last, Experimental, stands apart.

@@ -2535,13 +2535,13 @@ rows are built by `experimental_page` (a switch that first asks for a file, a
 file row with its chooser, and the status). Like the other
 switches, the phrase switch is saved by the debounced autosave.
 
-Choices (an enum setting shown as a row of buttons) are declared with
-`Item::choice` and `option!("label_key", field = Value)`; the row is drawn by
-`SettingsWindow::choice_row`, and `kit_items` maps it to a Kit dropdown. The Keyboard tab declares the send and
+Choices (an enum setting) are declared with
+`Item::choice` and `option!("label_key", field = Value)`, and `kit_items` maps
+each to a Kit dropdown. The Keyboard tab declares the send and
 notice key rows (`KEYBOARD_SEND`) and the channel number modifier and text key
-theme rows (`KEYBOARD_MODIFIERS`) with the clash warning drawn between them
-(it depends on two settings); the shortcut recorder rows stay their own
-widgets. The Application tab's unread log position (a dropdown) and display
+theme rows (`KEYBOARD_MODIFIERS`) with the clash warning drawn after the
+first (it depends on two settings); the shortcut recorder rows are Kit rows
+(`keyboard_page`) whose control is the keys, a warning mark, Change and Reset. The Application tab's unread log position (a dropdown) and display
 server rows are in `APPLICATION_BEHAVIOR` and `APPLICATION_WINDOW`. The Appearance tab
 declares its theme mode row (`APPEARANCE_THEME`) and alternate rows switch
 (`APPEARANCE_ROWS`). `Item::slider` declares a whole number on the shared
@@ -2597,7 +2597,7 @@ The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
 colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
 wallpapers and Display, every row with a one-sentence description (Japanese and
 English). Every other tab is one item holding its previous panel, so what it
-shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading; so is Startup & Behavior: General, Window, Behavior, Text and links, Conversation logs and Settings file, a description on every row; so is Experimental: Display and Debug log, checked at 900 px in English (dark) on Linux/Xvfb, where the phrase switch persisted over a restart; the native file chooser was not exercised). The Kit's page is
+shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading; so is Startup & Behavior: General, Window, Behavior, Text and links, Conversation logs and Settings file, a description on every row; so is Experimental: Display and Debug log, checked at 900 px in English (dark) on Linux/Xvfb, where the phrase switch persisted over a restart; the native file chooser was not exercised; so is Keyboard: Sending, Modifier keys (not on macOS: no choice there) and Shortcuts, each shortcut a Kit row with its own description, checked at 900 px in English (dark) on Linux/Xvfb, where Change recorded a key and Reset appeared). The Kit's page is
 the tab being shown: a page found drawn calls `follow_kit_page`, and
 `show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
 

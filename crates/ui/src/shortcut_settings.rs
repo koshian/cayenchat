@@ -4,10 +4,13 @@
 //! can be undone for one action or for all of them.
 
 use gpui::App;
+use gpui_component::setting::{SettingGroup, SettingItem, SettingPage};
 
 use crate::{
-    SettingsWindow,
+    SettingsTab, SettingsWindow,
     key_recorder::{self, Recorded, Rejection},
+    settings_items,
+    settings_kit::{element_item, field_item, footer_item, group},
     settings_theme,
     shortcuts::{self, Caution, Owner, ShortcutAction},
     tooltip::TextTooltip,
@@ -138,7 +141,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn shortcut_row(
+    /// The control of an action's Kit row: its keys (or the prompt while a
+    /// key is recorded), a warning mark, Change and Reset. The Kit draws the
+    /// name and the description.
+    fn shortcut_control(
         &self,
         index: usize,
         action: &'static ShortcutAction,
@@ -160,17 +166,12 @@ impl SettingsWindow {
         let id = action.id;
         div()
             .flex()
+            .flex_wrap()
             .items_center()
+            .justify_end()
             .gap_2()
             .child(
                 div()
-                    .w(px(230.))
-                    .flex_shrink_0()
-                    .child(self.shortcut_name(id)),
-            )
-            .child(
-                div()
-                    .flex_1()
                     .min_w_0()
                     .when(changed && recording.is_none(), |d| {
                         d.font_weight(FontWeight::BOLD)
@@ -233,13 +234,50 @@ impl SettingsWindow {
             }))
     }
 
-    /// The rows of the shortcut list, shown under the Keyboard tab's options.
-    pub(crate) fn shortcut_rows(&mut self, cx: &mut Context<Self>) -> Vec<Div> {
+    /// The Kit rows of the shortcut list: the action's name, a one-sentence
+    /// description and the control.
+    fn shortcut_items(&self, this: &WeakEntity<Self>) -> Vec<SettingItem> {
         shortcuts::ACTIONS
             .iter()
             .enumerate()
-            .map(|(index, action)| self.shortcut_row(index, action, cx))
+            .map(|(index, action)| {
+                field_item(
+                    this,
+                    self.shortcut_name(action.id),
+                    self.i18n.text(&format!("shortcut_{}_hint", action.id)),
+                    move |this, _, cx| this.shortcut_control(index, action, cx).into_any_element(),
+                )
+            })
             .collect()
+    }
+
+    /// The Keyboard tab: the keys that send, the keys of the channel numbers
+    /// and of draft editing (where the system has a choice), then the
+    /// shortcut list.
+    pub(crate) fn keyboard_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+        let i18n = &self.i18n;
+        let values = &self.settings.values;
+        let mut sending = self.kit_table(settings_items::KEYBOARD_SEND, this);
+        if values.notice_key.clashes_with(values.send_key) {
+            sending.push(element_item(this, |this, _, cx| {
+                div()
+                    .text_color(settings_theme::palette(cx).warning)
+                    .child(this.i18n.text("notice_key_clash"))
+                    .into_any_element()
+            }));
+        }
+        let mut groups = vec![group(i18n.text("group_keys_send"), None, sending)];
+        let editing = self.kit_table(settings_items::KEYBOARD_MODIFIERS, this);
+        if !editing.is_empty() {
+            groups.push(group(i18n.text("group_keys_editing"), None, editing));
+        }
+        groups.push(group(
+            i18n.text("group_keys_shortcuts"),
+            Some(i18n.text("shortcut_list_hint")),
+            self.shortcut_items(this),
+        ));
+        groups.push(SettingGroup::new().item(footer_item(this, SettingsTab::Keyboard)));
+        SettingPage::new(title).groups(groups)
     }
 }
 
@@ -249,6 +287,23 @@ mod tests {
 
     use super::{Recorded, SettingsWindow, shortcuts};
     use crate::SettingsTab;
+
+    #[test]
+    fn every_shortcut_row_has_a_description_in_both_languages() {
+        use cayenchat_storage::Language;
+        for language in [Language::Japanese, Language::English] {
+            let i18n = crate::localization::Localizer::new(language);
+            for action in shortcuts::ACTIONS {
+                for key in [
+                    format!("shortcut_{}", action.id),
+                    format!("shortcut_{}_hint", action.id),
+                ] {
+                    assert_ne!(i18n.text(&key), key, "{language:?} lacks {key}");
+                }
+            }
+        }
+    }
+
     #[gpui::test]
     fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
         crate::support::install_test_globals(cx);
