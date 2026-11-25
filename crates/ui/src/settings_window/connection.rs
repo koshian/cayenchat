@@ -3,13 +3,17 @@
 //! you are, the messages, the character encoding, what happens on connect
 //! and the avatars. Each row has a name and a one-sentence description; the
 //! switches and dropdowns are the Kit's. What the Kit has no part for (the
-//! text fields, the password and key controls, the auto-join summary, the
+//! password and key controls, the auto-join summary, the
 //! avatar section and the Back/Save/Connect buttons) sits in a Kit row
 //! through `SettingField::render` / `SettingItem::render`. Saving,
 //! validation and the secrets stay with the form, as before.
 
-use gpui::Axis;
+use gpui::{Axis, EntityInputHandler};
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_component::{
+    Sizable,
+    input::{Input, InputEvent, InputState},
+};
 
 use super::*;
 use crate::settings_kit::{element_item, field_item, group, page};
@@ -62,13 +66,9 @@ impl SettingsWindow {
                     self.i18n.text("group_conn_messages"),
                     None,
                     vec![
-                        self.text_item(this, "quit_message", &self.settings.quit_message),
-                        self.text_item(
-                            this,
-                            "sleep_quit_message",
-                            &self.settings.sleep_quit_message,
-                        ),
-                        self.text_item(this, "part_message", &self.settings.part_message),
+                        self.text_item(this, "quit_message", |form| &form.quit_message),
+                        self.text_item(this, "sleep_quit_message", |form| &form.sleep_quit_message),
+                        self.text_item(this, "part_message", |form| &form.part_message),
                     ],
                 ),
                 group(
@@ -94,30 +94,72 @@ impl SettingsWindow {
 
     /// A row with the Kit's input for a text field of the form, laid out
     /// vertically (the Kit's own layout for a wide control, so that it fits a
-    /// narrow window). The form's
-    /// field keeps the text (saving and Reset read it): the input shows it
-    /// and a change is written to it.
+    /// narrow window). The form's field keeps the text (saving and Reset read
+    /// it): the input shows it and a change is written to it.
+    ///
+    /// This is the Kit's `Input` with the sync of `SettingField::input` done
+    /// here, for two reasons. The Kit keeps its getter and setter from the
+    /// first draw on, while a reload of the settings file replaces the form's
+    /// fields: `field` is looked up in the window's current form each time.
+    /// And the Kit resets the input to the form's text on every draw, which
+    /// ends an IME composition (marked text raises no change event, so the
+    /// form still holds the old text): a composing input is left alone.
     fn text_item(
         &self,
         this: &WeakEntity<Self>,
         key: &str,
-        input: &Entity<TextInput>,
+        field: fn(&SettingsForm) -> &Entity<TextInput>,
     ) -> SettingItem {
-        let shown = input.clone();
-        let input = input.clone();
-        let target = this.clone();
+        let title = self.i18n.text(key);
+        let aria = title.clone();
+        let window_entity = this.clone();
+        let id = SharedString::from(format!("kit-text-{key}"));
         SettingItem::new(
-            self.i18n.text(key),
-            SettingField::input(
-                move |cx| SharedString::from(shown.read(cx).text().to_owned()),
-                move |value, cx| {
-                    if input.read(cx).text() == value.as_ref() {
-                        return;
+            title,
+            SettingField::render(move |options, window, cx| {
+                let shown = window_entity
+                    .read_with(cx, |this, cx| {
+                        field(&this.settings).read(cx).text().to_owned()
+                    })
+                    .unwrap_or_default();
+                let state = window.use_keyed_state(id.clone(), cx, {
+                    let (shown, target) = (shown.clone(), window_entity.clone());
+                    move |window, cx| {
+                        let input = cx.new(|cx| InputState::new(window, cx).default_value(shown));
+                        let _subscription =
+                            cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                                if !matches!(event, InputEvent::Change) {
+                                    return;
+                                }
+                                let value = input.read(cx).value();
+                                let _ = target.update(cx, |this, cx| {
+                                    let field = field(&this.settings).clone();
+                                    if field.read(cx).text() == value.as_ref() {
+                                        return;
+                                    }
+                                    field.update(cx, |field, cx| field.set_text(&value, cx));
+                                    this.watch_kit_input(cx);
+                                });
+                            });
+                        KitTextState {
+                            input,
+                            _subscription,
+                        }
                     }
-                    input.update(cx, |field, cx| field.set_text(&value, cx));
-                    let _ = target.update(cx, |this, cx| this.watch_kit_input(cx));
-                },
-            ),
+                });
+                let input = state.read(cx).input.clone();
+                input.update(cx, |input, cx| {
+                    if input.value() != shown && input.marked_text_range(window, cx).is_none() {
+                        input.set_value(shown, window, cx);
+                    }
+                });
+                Input::new(&input)
+                    .aria_label(aria.clone())
+                    .disabled(options.is_disabled())
+                    .with_size(options.size())
+                    .w_full()
+                    .into_any_element()
+            }),
         )
         .description(self.i18n.text(&format!("{key}_desc")))
         .layout(Axis::Vertical)
@@ -305,9 +347,9 @@ impl SettingsWindow {
             items.push(self.note_item(this, "no_servers_hint", false));
             return items;
         };
-        items.push(self.text_item(this, "display_name", &self.settings.display_name));
-        items.push(self.text_item(this, "host", &self.settings.custom_host));
-        items.push(self.text_item(this, "port", &self.settings.port));
+        items.push(self.text_item(this, "display_name", |form| &form.display_name));
+        items.push(self.text_item(this, "host", |form| &form.custom_host));
+        items.push(self.text_item(this, "port", |form| &form.port));
         items.push(self.toggle_switch(this, "tls", profile.use_tls, Self::toggle_tls));
         if profile.use_tls {
             items.push(self.toggle_switch(
@@ -405,7 +447,7 @@ impl SettingsWindow {
         );
         if profile.sasl_enabled {
             items.push(self.note_item(this, "sasl_tls_note", false));
-            items.push(self.text_item(this, "sasl_account", &self.settings.sasl_username));
+            items.push(self.text_item(this, "sasl_account", |form| &form.sasl_username));
             if profile.sasl_mechanism.uses_key() {
                 items.extend(self.sasl_key_items(profile.sasl_key_saved, this));
             } else {
@@ -419,7 +461,7 @@ impl SettingsWindow {
     fn identity_items(&self, profile: &ServerProfile, this: &WeakEntity<Self>) -> Vec<SettingItem> {
         let collisions = NickCollision::ALL;
         vec![
-            self.text_item(this, "nickname", &self.settings.nickname),
+            self.text_item(this, "nickname", |form| &form.nickname),
             self.index_dropdown(
                 this,
                 "nick_collision",
@@ -442,10 +484,10 @@ impl SettingsWindow {
                 },
             )
             .layout(Axis::Vertical),
-            self.text_item(this, "alt_nicks", &self.settings.alt_nicks),
+            self.text_item(this, "alt_nicks", |form| &form.alt_nicks),
             self.note_item(this, "nick_collision_hint", false),
-            self.text_item(this, "username", &self.settings.username),
-            self.text_item(this, "realname", &self.settings.realname),
+            self.text_item(this, "username", |form| &form.username),
+            self.text_item(this, "realname", |form| &form.realname),
         ]
     }
 
@@ -844,6 +886,11 @@ fn nick_collision_key(choice: NickCollision) -> &'static str {
     }
 }
 
+/// The Kit input of a text row (`text_item`), kept across draws.
+struct KitTextState {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
 #[cfg(test)]
 mod tests {
     use gpui::Entity;

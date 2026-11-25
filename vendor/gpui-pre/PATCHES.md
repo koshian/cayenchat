@@ -168,3 +168,10 @@ for an upstream proposal.
 map. The GPUI Kit's number input tracks one handle on its frame and on the
 editor inside it; the second entry was its own neighbour, so Shift+Tab stayed
 on the field. Candidate for an upstream proposal.
+
+## Composition of the focused input (#622)
+
+`Window::focused_input_is_composing()` (`src/window.rs`) asks the platform input
+handler whether it holds marked (uncommitted IME) text. The GPUI Kit's inputs
+keep their state private, so the settings window uses it to leave an Escape that
+ends a composition alone. Candidate for an upstream proposal.

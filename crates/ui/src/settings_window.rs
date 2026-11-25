@@ -1346,6 +1346,10 @@ pub(crate) struct SettingsWindow {
     /// The Kit input being typed in, with the subscription that commits the
     /// shown server's text when it loses focus (see `watch_kit_input`).
     kit_input_blur: Option<(FocusHandle, Subscription)>,
+    /// Set by the capture of an Escape that reached a Kit input holding
+    /// uncommitted IME text: the input ends the composition before the key
+    /// reaches `escape_key_down`, which must still leave the window alone.
+    kit_escape_composing: bool,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
     /// Secrets of removed servers that could not be deleted yet; every save
@@ -1622,6 +1626,7 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             kit_input_blur: None,
+            kit_escape_composing: false,
             autosave_error: None,
             forget_pending: Vec::new(),
             host_change_open: false,
@@ -2731,7 +2736,9 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        let kit_composing = std::mem::take(&mut self.kit_escape_composing);
         if keystroke.key != "escape"
+            || kit_composing
             || keystroke.modifiers.modified()
             || keystroke.is_ime_in_progress()
             || self.shortcut_recording.is_some()
@@ -3808,8 +3815,10 @@ impl SettingsWindow {
     /// ends in the sidebar is therefore undone, the page scrolled by part of
     /// a view and the Tab made again (see `TabWrap`).
     fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The page's own handle (where the focus waits while no field has
+        // it) covers the whole window and is no field of the page.
         self.tab_wrap = focus_reveal::focused_bounds(window, cx)
-            .filter(|bounds| self.in_kit_page(*bounds))
+            .filter(|bounds| self.in_kit_page(*bounds) && !self.nav_focus.is_focused(window))
             .zip(window.focused(cx))
             .map(|(bounds, from)| TabWrap {
                 from,
@@ -4499,6 +4508,11 @@ impl SettingsWindow {
                 this.traverse(false, window, cx)
             }))
             .key_context("SettingsWindow")
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
+                    this.kit_escape_composing = window.focused_input_is_composing(cx);
+                }),
+            )
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.escape_key_down(event, window, cx)),
             )
@@ -5445,6 +5459,95 @@ mod escape_tests {
         let windows = |app: &mut TestAppContext| app.update(|app| app.windows().len());
         assert_eq!(windows(&mut app), 2);
         cx.update(|window, cx| nickname.update(cx, |input, cx| input.unmark_text(window, cx)));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(windows(&mut app), 1);
+    }
+
+    /// Clicks into the Connection tab's display name input (the Kit's own
+    /// state is out of reach, so it is found by typing: a letter typed
+    /// elsewhere is taken back).
+    fn focus_display_name(form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext) {
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, cx| {
+                form.settings.display_name.read(cx).text().to_owned()
+            })
+        };
+        let before = shown(cx);
+        for y in (100..260).step_by(8) {
+            cx.simulate_click(
+                gpui::point(gpui::px(1500.), gpui::px(y as f32)),
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+            cx.simulate_input("Z");
+            cx.run_until_parked();
+            if shown(cx) != before {
+                return;
+            }
+            cx.simulate_keystrokes("backspace");
+        }
+        panic!("the display name input is not reached by a click");
+    }
+
+    /// The Connection tab draws the Kit's inputs. Their getter and setter
+    /// stay as the first draw made them, so an input that is still shown
+    /// when the settings file is reloaded (which makes a new form) must keep
+    /// taking edits.
+    #[gpui::test]
+    fn kit_input_takes_edits_after_the_settings_are_reloaded(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().display_name = "Before".into();
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings.clone());
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
+        cx.run_until_parked();
+        // The pause of a pending autosave is over, so that the reload runs.
+        cx.executor().advance_clock(super::AUTOSAVE_DELAY * 2);
+        cx.run_until_parked();
+        let mut changed = settings.clone();
+        changed.selected_profile_mut().unwrap().realname = "External".into();
+        crate::settings_file::save(&changed).unwrap();
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.reload_changed_settings(window, cx))
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            form.read_with(cx, |form, cx| form
+                .settings
+                .realname
+                .read(cx)
+                .text()
+                .to_owned()),
+            "External"
+        );
+        focus_display_name(&form, cx);
+        let shown = form.read_with(cx, |form, cx| {
+            form.settings.display_name.read(cx).text().to_owned()
+        });
+        assert!(shown.contains('Z'), "the edit reached the form: {shown}");
+        drop(file);
+    }
+
+    /// Escape ends an IME composition in a Kit input and must not also close
+    /// the window.
+    #[gpui::test]
+    fn escape_during_composition_in_a_kit_input_keeps_the_window(cx: &mut TestAppContext) {
+        let (form, cx, mut app) = open(cx, crate::settings_with_channels("#a"));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
+        cx.run_until_parked();
+        focus_display_name(&form, cx);
+        cx.update(|window, cx| window.mark_focused_input_text("あ", cx));
+        cx.run_until_parked();
+        // A redraw while composing leaves the composition alone.
+        assert!(cx.update(|window, cx| window.focused_input_is_composing(cx)));
+        cx.simulate_keystrokes("escape");
+        let windows = |app: &mut TestAppContext| app.update(|app| app.windows().len());
+        assert_eq!(windows(&mut app), 2);
+        assert!(!cx.update(|window, cx| window.focused_input_is_composing(cx)));
         cx.simulate_keystrokes("escape");
         assert_eq!(windows(&mut app), 1);
     }
