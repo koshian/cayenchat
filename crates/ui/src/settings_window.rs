@@ -5473,18 +5473,21 @@ mod escape_tests {
             })
         };
         let before = shown(cx);
-        for y in (100..260).step_by(8) {
-            cx.simulate_click(
-                gpui::point(gpui::px(1500.), gpui::px(y as f32)),
-                gpui::Modifiers::default(),
-            );
-            cx.run_until_parked();
-            cx.simulate_input("Z");
-            cx.run_until_parked();
-            if shown(cx) != before {
-                return;
+        for y in (60..600).step_by(10) {
+            // The input sits at the right of its row (the Kit's layout).
+            for x in (500..1900).step_by(60) {
+                cx.simulate_click(
+                    gpui::point(gpui::px(x as f32), gpui::px(y as f32)),
+                    gpui::Modifiers::default(),
+                );
+                cx.run_until_parked();
+                cx.simulate_input("Z");
+                cx.run_until_parked();
+                if shown(cx) != before {
+                    return;
+                }
+                cx.simulate_keystrokes("backspace");
             }
-            cx.simulate_keystrokes("backspace");
         }
         panic!("the display name input is not reached by a click");
     }

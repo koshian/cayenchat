@@ -92,9 +92,8 @@ impl SettingsWindow {
         page(title, groups, cx)
     }
 
-    /// A row with the Kit's input for a text field of the form, laid out
-    /// vertically (the Kit's own layout for a wide control, so that it fits a
-    /// narrow window). The form's field keeps the text (saving and Reset read
+    /// A row with the Kit's input for a text field of the form, with the Kit's
+    /// layout (beside the name, below it in a narrow window). The form's field keeps the text (saving and Reset read
     /// it): the input shows it and a change is written to it.
     ///
     /// This is the Kit's `Input` with the sync of `SettingField::input` done
@@ -153,16 +152,19 @@ impl SettingsWindow {
                         input.set_value(shown, window, cx);
                     }
                 });
-                Input::new(&input)
+                let input = Input::new(&input)
                     .aria_label(aria.clone())
                     .disabled(options.is_disabled())
-                    .with_size(options.size())
-                    .w_full()
-                    .into_any_element()
+                    .with_size(options.size());
+                // The width of the Kit's `SettingField::input`.
+                if options.layout() == Axis::Horizontal {
+                    input.w_64().into_any_element()
+                } else {
+                    input.w_full().into_any_element()
+                }
             }),
         )
         .description(self.i18n.text(&format!("{key}_desc")))
-        .layout(Axis::Vertical)
     }
 
     /// A line of text under a row, in the warning color or not.
@@ -482,8 +484,7 @@ impl SettingsWindow {
                     }
                     cx.notify();
                 },
-            )
-            .layout(Axis::Vertical),
+            ),
             self.text_item(this, "alt_nicks", |form| &form.alt_nicks),
             self.note_item(this, "nick_collision_hint", false),
             self.text_item(this, "username", |form| &form.username),
@@ -719,7 +720,6 @@ impl SettingsWindow {
             self.i18n.text(&format!("{key}_desc")),
             move |this, _, cx| this.credential_controls(which, cx).into_any_element(),
         )
-        .layout(Axis::Vertical)
     }
 
     fn credential_controls(&self, which: Credential, cx: &mut Context<Self>) -> Div {
