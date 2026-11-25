@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Application-wide experimental diagnostics, independent of IRC wire traces.
+//! Drawn as Kit groups (#622); the debug log rows are built here because the
+//! switch may first ask for a file and the file row holds a chooser.
 
 use gpui::{prelude::*, *};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use crate::{
-    SettingsTab, SettingsWindow, account_settings, diagnostics, settings_items, settings_theme,
+    SettingsTab, SettingsWindow, diagnostics, settings_items,
+    settings_kit::{element_item, field_item, footer_item, group},
+    settings_theme,
 };
 
 impl SettingsWindow {
@@ -49,64 +54,90 @@ impl SettingsWindow {
         .detach();
     }
 
-    pub(crate) fn render_experimental_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
+    /// The debug log switch. Turning it on with no file chosen asks for one
+    /// first, and the log is on only once one is chosen.
+    fn toggle_debug_logging(&mut self, cx: &mut Context<Self>) {
+        let settings = &mut self.settings.values.experimental;
+        if !settings.debug_logging && settings.stderr_file.is_none() {
+            self.choose_stderr_file(true, cx);
+            return;
+        }
+        settings.debug_logging = !settings.debug_logging;
+        self.feedback = None;
+        self.autosave_now(None, cx);
+        cx.notify();
+    }
+
+    /// The Experimental tab: the automatic phrase switch, then the debug log.
+    pub(crate) fn experimental_page(
+        &mut self,
+        title: String,
+        this: &WeakEntity<Self>,
+    ) -> SettingPage {
+        let i18n = &self.i18n;
         let settings = &self.settings.values.experimental;
         let enabled = settings.debug_logging;
         let path = settings
             .stderr_file
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| self.i18n.text("debug_log_no_file"));
+            .unwrap_or_else(|| i18n.text("debug_log_no_file"));
         let active = diagnostics::configuration();
         let status = match active.stderr_file {
-            Some(path) => self
-                .i18n
-                .format("debug_log_active", &[("path", &path.display().to_string())]),
-            None => self.i18n.text("debug_log_inactive"),
+            Some(path) => i18n.format("debug_log_active", &[("path", &path.display().to_string())]),
+            None => i18n.text("debug_log_inactive"),
         };
-        account_settings::panel(cx)
-            .child(self.tab_heading("experimental_tab"))
-            .children(self.render_items(settings_items::EXPERIMENTAL, cx))
-            .child(
+        let toggle_target = this.clone();
+        let switch = SettingItem::new(
+            i18n.text("debug_logging"),
+            SettingField::switch(
+                move |_| enabled,
+                move |_, cx| {
+                    let _ = toggle_target.update(cx, |this, cx| this.toggle_debug_logging(cx));
+                },
+            ),
+        )
+        .description(i18n.text("debug_logging_hint"));
+        let file = field_item(
+            this,
+            i18n.text("debug_log_file"),
+            i18n.text("debug_log_file_hint"),
+            move |this, _, cx| {
                 div()
-                    .id("debug-logging-toggle")
-                    .debug_selector(|| "debug-logging-toggle".into())
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(enabled, true, cx))
-                    .child(self.i18n.text("debug_logging"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let settings = &mut this.settings.values.experimental;
-                        if !settings.debug_logging && settings.stderr_file.is_none() {
-                            this.choose_stderr_file(true, cx);
-                            return;
-                        }
-                        settings.debug_logging = !settings.debug_logging;
-                        this.feedback = None;
-                        this.autosave_now(None, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(self.i18n.text("debug_log_file"))
-            .child(div().id("debug-log-path").child(path))
-            .child(
-                settings_theme::button("choose-stderr-file", false, cx)
-                    .debug_selector(|| "choose-stderr-file".into())
-                    .child(self.i18n.text("debug_log_choose"))
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_stderr_file(false, cx))),
-            )
-            .child(div().text_color(theme.text_secondary).child(status))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("debug_log_hint")),
-            )
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(self.reset_footer(SettingsTab::Experimental, cx))
+                    .child(div().id("debug-log-path").child(path.clone()))
+                    .child(
+                        settings_theme::button("choose-stderr-file", false, cx)
+                            .debug_selector(|| "choose-stderr-file".into())
+                            .child(this.i18n.text("debug_log_choose"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.choose_stderr_file(false, cx)),
+                            ),
+                    )
+                    .into_any_element()
+            },
+        );
+        let status = element_item(this, move |_, _, cx| {
+            div()
+                .text_color(settings_theme::palette(cx).text_secondary)
+                .child(status.clone())
+                .into_any_element()
+        });
+        SettingPage::new(title).groups([
+            group(
+                i18n.text("group_exp_display"),
+                None,
+                self.kit_table(settings_items::EXPERIMENTAL, this),
+            ),
+            group(
+                i18n.text("group_exp_debug_log"),
+                Some(i18n.text("debug_log_hint")),
+                vec![switch, file, status],
+            ),
+            SettingGroup::new().item(footer_item(this, SettingsTab::Experimental)),
+        ])
     }
 }

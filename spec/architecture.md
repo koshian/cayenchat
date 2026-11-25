@@ -2531,7 +2531,8 @@ reports), the conversation log folder with its buttons and the settings file
 buttons. The Reiwa mode switch is in `APPLICATION_TEXT`; the Connection tab
 keeps its own checkbox for the same value. The Experimental tab
 declares its automatic phrase switch and hint (`EXPERIMENTAL`); the debug log
-rows (a file chooser and status) stay their own widgets. Like the other
+rows are built by `experimental_page` (a switch that first asks for a file, a
+file row with its chooser, and the status). Like the other
 switches, the phrase switch is saved by the debounced autosave.
 
 Choices (an enum setting shown as a row of buttons) are declared with
@@ -2596,7 +2597,7 @@ The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
 colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
 wallpapers and Display, every row with a one-sentence description (Japanese and
 English). Every other tab is one item holding its previous panel, so what it
-shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading; so is Startup & Behavior: General, Window, Behavior, Text and links, Conversation logs and Settings file, a description on every row). The Kit's page is
+shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading; so is Startup & Behavior: General, Window, Behavior, Text and links, Conversation logs and Settings file, a description on every row; so is Experimental: Display and Debug log, checked at 900 px in English (dark) on Linux/Xvfb, where the phrase switch persisted over a restart; the native file chooser was not exercised). The Kit's page is
 the tab being shown: a page found drawn calls `follow_kit_page`, and
 `show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
 
