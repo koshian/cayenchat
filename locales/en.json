@@ -354,7 +354,7 @@
   "shortcut_change": "Change",
   "shortcut_reset": "Reset",
   "group_keys_send": "Sending",
-  "group_keys_editing": "Number and editing keys",
+  "group_keys_editing": "Modifier keys",
   "group_keys_shortcuts": "Shortcuts",
   "shortcut_list_hint": "Choose Change, then press the new keys; a key shared with another shortcut is marked with a warning.",
   "shortcut_previous_channel_hint": "Selects the channel above the current one.",

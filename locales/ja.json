@@ -354,7 +354,7 @@
   "shortcut_change": "変更",
   "shortcut_reset": "元に戻す",
   "group_keys_send": "送信",
-  "group_keys_editing": "番号キーと編集キー",
+  "group_keys_editing": "修飾キー",
   "group_keys_shortcuts": "ショートカット",
   "shortcut_list_hint": "「変更」を押して新しいキーを入力します。ほかのショートカットと重なるキーには警告が付きます。",
   "shortcut_previous_channel_hint": "今のチャンネルの1つ上のチャンネルを選びます。",
