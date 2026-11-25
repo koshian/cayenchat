@@ -1114,6 +1114,23 @@ mod tests {
     }
 
     #[test]
+    fn experimental_page_texts_exist_in_both_languages() {
+        use crate::localization::Localizer;
+        use cayenchat_storage::Language;
+        for language in [Language::Japanese, Language::English] {
+            let i18n = Localizer::new(language);
+            for key in [
+                "group_exp_display",
+                "group_exp_debug_log",
+                "debug_logging_hint",
+                "debug_log_file_hint",
+            ] {
+                assert_ne!(i18n.text(key), key, "{key} is not translated");
+            }
+        }
+    }
+
+    #[test]
     fn every_notification_row_has_a_description() {
         assert!(
             NOTIFICATIONS_DESKTOP
