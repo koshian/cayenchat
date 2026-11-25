@@ -3,13 +3,13 @@
 
 use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
-use gpui_component::setting::{SettingField, SettingItem, SettingPage};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use crate::{
     SettingsTab, SettingsWindow,
     os_text::WindowOsText,
     secrets, settings_file,
-    settings_kit::{element_item, group},
+    settings_kit::{element_item, field_item, footer_item, group, page},
     settings_theme,
 };
 
@@ -439,158 +439,199 @@ impl SettingsWindow {
         .detach();
     }
 
-    pub(crate) fn render_image_upload_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let selected = self.settings.values.image_upload.provider.clone();
-        let heading = self.tab_heading("image_upload_tab");
-        let footer = self.reset_footer(SettingsTab::ImageUpload, cx);
-        let avatar_return = self.render_avatar_return(cx);
-        let label = |key: &str| settings_theme::label_column().child(self.i18n.text(key));
+    /// The Image Upload tab: the hosting service as a dropdown and the
+    /// account of that service (its state, the buttons and, while a token is
+    /// being entered, the field for it), under the note on who can see an
+    /// uploaded image.
+    pub(crate) fn image_upload_page(
+        &self,
+        title: String,
+        this: &WeakEntity<Self>,
+        cx: &App,
+    ) -> SettingPage {
+        let i18n = &self.i18n;
+        let none = SharedString::default();
+        let mut options = vec![(
+            none.clone(),
+            SharedString::from(i18n.text("image_provider_none")),
+        )];
+        options.extend(cayenchat_upload::providers().iter().map(|provider| {
+            (
+                SharedString::from(provider.id),
+                SharedString::from(provider.name),
+            )
+        }));
+        let reader = this.clone();
+        let writer = this.clone();
+        let provider = SettingItem::new(
+            i18n.text("image_provider"),
+            SettingField::dropdown(
+                options,
+                move |cx| {
+                    reader
+                        .read_with(cx, |this, _| {
+                            this.settings.values.image_upload.provider.clone()
+                        })
+                        .ok()
+                        .flatten()
+                        .map(SharedString::from)
+                        .unwrap_or_default()
+                },
+                move |value, cx| {
+                    let id = cayenchat_upload::providers()
+                        .iter()
+                        .map(|provider| provider.id)
+                        .find(|id| *id == value.as_ref());
+                    let _ = writer.update(cx, |this, cx| this.select_upload_provider(id, cx));
+                },
+            ),
+        )
+        .description(i18n.text("image_provider_hint"));
+        let mut items = Vec::new();
+        items.extend(self.avatar_return_item(this));
+        items.push(provider);
+        if let Some(info) = self
+            .settings
+            .values
+            .image_upload
+            .provider
+            .as_deref()
+            .and_then(cayenchat_upload::provider)
+        {
+            items.push(field_item(
+                this,
+                i18n.text("image_account"),
+                i18n.text("image_account_hint"),
+                |this, _, cx| this.render_upload_account(cx).into_any_element(),
+            ));
+            if self.upload_token_open {
+                items.push(element_item(this, move |this, _, cx| {
+                    this.render_upload_token_entry(info, cx).into_any_element()
+                }));
+            }
+        }
+        page(
+            title,
+            [
+                group(
+                    i18n.text("group_image_hosting"),
+                    Some(format!(
+                        "{} {}",
+                        i18n.text("image_upload_intro"),
+                        i18n.text("image_upload_privacy")
+                    )),
+                    items,
+                ),
+                SettingGroup::new().item(footer_item(this, SettingsTab::ImageUpload)),
+            ],
+            cx,
+        )
+    }
+
+    /// The way back to the server setup the avatar quick setup came from.
+    fn avatar_return_item(&self, this: &WeakEntity<Self>) -> Option<SettingItem> {
+        self.avatar_return.as_ref()?;
+        Some(element_item(this, |this, _, cx| {
+            this.render_avatar_return(cx)
+                .map(IntoElement::into_any_element)
+                .unwrap_or_else(|| div().into_any_element())
+        }))
+    }
+
+    /// The state of the account and the buttons that change it.
+    fn render_upload_account(&self, cx: &mut Context<Self>) -> Div {
+        let connected = self.upload_connected;
         let button =
             |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
-        let mut choices = div().flex().gap_1().child(
-            button(
-                "upload-provider-none",
-                self.i18n.text("image_provider_none"),
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(self.i18n.text(if connected {
+                "image_account_connected"
+            } else {
+                "image_account_not_connected"
+            }))
+            .child(
+                button(
+                    "upload-account-connect",
+                    self.i18n.text(if connected {
+                        "image_account_reconnect"
+                    } else {
+                        "image_account_connect"
+                    }),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.upload_token_open = true;
+                    this.feedback = None;
+                    window.focus(&this.upload_token.focus_handle(cx), cx);
+                    cx.notify();
+                })),
             )
-            .when(selected.is_none(), |d| d.bg(theme.selected))
-            .on_click(cx.listener(|this, _, _, cx| this.select_upload_provider(None, cx))),
-        );
-        for (index, provider) in cayenchat_upload::providers().iter().enumerate() {
-            let id = provider.id;
-            choices =
-                choices.child(
-                    div()
-                        .id(("upload-provider", index))
-                        .px_2()
-                        .py_1()
-                        .border_1()
-                        .border_color(theme.border)
-                        .cursor_pointer()
-                        .when(selected.as_deref() == Some(id), |d| d.bg(theme.selected))
-                        .child(provider.name)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_upload_provider(Some(id), cx)
-                        })),
-                );
-        }
-        let info = selected.as_deref().and_then(cayenchat_upload::provider);
-        let mut panel = panel(cx)
-            .child(heading)
+            .when(connected, |d| {
+                d.child(
+                    button(
+                        "upload-account-disconnect",
+                        self.i18n.text("image_account_disconnect"),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.disconnect_upload_account(cx))),
+                )
+            })
+    }
+
+    /// How to get the token of `info`, the field for it and its buttons.
+    fn render_upload_token_entry(
+        &self,
+        info: &'static cayenchat_upload::ProviderInfo,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = settings_theme::palette(cx);
+        let setup_url = info.setup_url;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
                     .text_color(theme.text_secondary)
-                    .child(self.i18n.text("image_upload_intro")),
+                    .child(self.i18n.text(&format!("image_setup_{}", info.id))),
             )
             .child(
                 div()
-                    .text_color(theme.warning)
-                    .child(self.i18n.text("image_upload_privacy")),
-            )
-            .children(avatar_return)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(label("image_provider"))
-                    .child(choices),
-            );
-        if let Some(info) = info {
-            let connected = self.upload_connected;
-            panel = panel.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(label("image_account"))
-                    .child(self.i18n.text(if connected {
-                        "image_account_connected"
-                    } else {
-                        "image_account_not_connected"
-                    }))
-                    .child(
-                        button(
-                            "upload-account-connect",
-                            self.i18n.text(if connected {
-                                "image_account_reconnect"
-                            } else {
-                                "image_account_connect"
-                            }),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.upload_token_open = true;
-                            this.feedback = None;
-                            window.focus(&this.upload_token.focus_handle(cx), cx);
-                            cx.notify();
-                        })),
-                    )
-                    .when(connected, |d| {
-                        d.child(
-                            button(
-                                "upload-account-disconnect",
-                                self.i18n.text("image_account_disconnect"),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.disconnect_upload_account(cx)),
-                            ),
-                        )
-                    }),
-            );
-            if self.upload_token_open {
-                let setup_url = info.setup_url;
-                panel = panel
-                    .child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.text_secondary)
-                            .child(self.i18n.text(&format!("image_setup_{}", info.id))),
-                    )
-                    .child(
-                        div()
-                            .id("upload-setup-page")
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.link)
-                            .cursor_pointer()
-                            .child(format!(
-                                "{} ({setup_url})",
-                                self.i18n.text("image_open_setup_page")
-                            ))
-                            .on_click(move |_, _, cx| cx.open_url(setup_url)),
-                    )
-                    .child(crate::settings_field(
-                        &self.i18n.text("image_token_label"),
-                        self.upload_token.clone(),
+                    .id("upload-setup-page")
+                    .text_color(theme.link)
+                    .cursor_pointer()
+                    .child(format!(
+                        "{} ({setup_url})",
+                        self.i18n.text("image_open_setup_page")
                     ))
+                    .on_click(move |_, _, cx| cx.open_url(setup_url)),
+            )
+            .child(crate::settings_field(
+                &self.i18n.text("image_token_label"),
+                self.upload_token.clone(),
+            ))
+            .child(
+                crate::button_order::row(div().ml(settings_theme::LABEL_INDENT).flex().gap_2())
                     .child(
-                        crate::button_order::row(
-                            div().ml(settings_theme::LABEL_INDENT).flex().gap_2(),
-                        )
-                        .child(
-                            settings_theme::button("upload-token-save", true, cx)
-                                .child(self.i18n.text("image_token_save"))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.connect_upload_account(cx)),
-                                ),
-                        )
-                        .child(
-                            button("upload-token-cancel", self.i18n.text("cancel")).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.upload_token_open = false;
-                                    this.upload_token
-                                        .update(cx, |field, cx| field.set_text("", cx));
-                                    cx.notify();
-                                }),
+                        settings_theme::button("upload-token-save", true, cx)
+                            .child(self.i18n.text("image_token_save"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.connect_upload_account(cx)),
                             ),
-                        ),
-                    );
-            }
-        }
-        panel
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().pt_2().text_color(theme.warning).child(feedback))
-            })
-            .child(footer)
+                    )
+                    .child(
+                        settings_theme::button("upload-token-cancel", false, cx)
+                            .child(self.i18n.text("cancel"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.upload_token_open = false;
+                                this.upload_token
+                                    .update(cx, |field, cx| field.set_text("", cx));
+                                cx.notify();
+                            })),
+                    ),
+            )
     }
 }
 
