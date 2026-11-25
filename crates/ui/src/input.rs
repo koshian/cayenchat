@@ -2147,7 +2147,7 @@ const GTK_EMACS_KEYS: &[(&str, Edit)] = &[
 
 /// The keys that apply on this platform: macOS always, the GTK Emacs theme
 /// only where it exists and `emacs` is set.
-#[cfg_attr(not(any(target_os = "macos", unix_desktop)), allow(unused_variables))]
+#[cfg_attr(not(unix_desktop), allow(unused_variables))]
 fn platform_edit_keys(emacs: bool) -> &'static [(&'static str, Edit)] {
     #[cfg(target_os = "macos")]
     return MACOS_KEYS;
@@ -2157,6 +2157,7 @@ fn platform_edit_keys(emacs: bool) -> &'static [(&'static str, Edit)] {
     &[]
 }
 
+#[cfg_attr(not(any(target_os = "macos", unix_desktop)), allow(dead_code))]
 fn text_input_action(edit: Edit) -> Option<Box<dyn gpui::Action>> {
     Some(match edit {
         Edit::Home => Box::new(Home),
@@ -3283,6 +3284,7 @@ mod tests {
     }
 
     /// A Kit `Input` focused in a window, with `text` in it and the caret at the end.
+    #[cfg(any(target_os = "macos", unix_desktop))]
     fn kit_input<'a>(
         text: &str,
         emacs: bool,
@@ -3328,6 +3330,7 @@ mod tests {
         (state, cx)
     }
 
+    #[cfg(any(target_os = "macos", unix_desktop))]
     fn kit_value(
         state: &Entity<gpui_component::input::InputState>,
         cx: &mut gpui::VisualTestContext,
