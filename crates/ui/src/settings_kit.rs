@@ -224,6 +224,7 @@ impl SettingsWindow {
                     SettingsTab::Notifications => self.notifications_page(title, &this),
                     SettingsTab::Application => self.application_page(title, &this, cx),
                     SettingsTab::Experimental => self.experimental_page(title, &this),
+                    SettingsTab::Keyboard => self.keyboard_page(title, &this),
                     _ => self.panel_page(tab, title, &this),
                 };
                 // The page being drawn is the tab being shown.
@@ -293,7 +294,8 @@ impl SettingsWindow {
             SettingsTab::Application => div().into_any_element(),
             // Drawn as groups by `appearance_page`.
             SettingsTab::Appearance => div().into_any_element(),
-            SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            // Drawn as groups by `keyboard_page`.
+            SettingsTab::Keyboard => div().into_any_element(),
             // Drawn as groups by `notifications_page`.
             SettingsTab::Notifications => div().into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
