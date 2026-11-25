@@ -3,9 +3,14 @@
 
 use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
+use gpui_component::setting::{SettingField, SettingItem, SettingPage};
 
 use crate::{
-    SettingsTab, SettingsWindow, os_text::WindowOsText, secrets, settings_file, settings_theme,
+    SettingsTab, SettingsWindow,
+    os_text::WindowOsText,
+    secrets, settings_file,
+    settings_kit::{element_item, group},
+    settings_theme,
 };
 
 /// Every secret this configuration may have stored, for moving them when the
@@ -227,89 +232,91 @@ impl SettingsWindow {
         self.refresh_upload_account(cx);
     }
 
-    pub(crate) fn render_credential_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let current = secrets::store(cx).kind();
-        let option = |kind: CredentialBackendKind, id: &'static str, label: String| {
-            let selected = current == kind;
+    /// The Credentials tab: where secrets are kept, a dropdown whose choice
+    /// moves the saved ones, with the state of each place under it.
+    pub(crate) fn credentials_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+        let i18n = &self.i18n;
+        let options = vec![
+            (
+                SharedString::from("system"),
+                SharedString::from(i18n.text("credential_system")),
+            ),
+            (
+                SharedString::from("local"),
+                SharedString::from(i18n.text("credential_local")),
+            ),
+        ];
+        let target = this.clone();
+        let window = self.window;
+        let location = SettingItem::new(
+            i18n.text("credential_location"),
+            SettingField::dropdown(
+                options,
+                |cx| match secrets::store(cx).kind() {
+                    CredentialBackendKind::System => "system".into(),
+                    CredentialBackendKind::LocalFile => "local".into(),
+                },
+                move |value, cx| {
+                    let kind = if value.as_ref() == "local" {
+                        CredentialBackendKind::LocalFile
+                    } else {
+                        CredentialBackendKind::System
+                    };
+                    // The choice may open a confirmation, which needs the
+                    // window; it is not free while this event is handled.
+                    let target = target.clone();
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, cx| {
+                            let _ = target.update(cx, |this, cx| {
+                                this.select_credential_backend(kind, window, cx)
+                            });
+                        });
+                    });
+                },
+            ),
+        )
+        .description(i18n.text("credential_location_hint"));
+        let notes = element_item(this, |this, _, cx| {
+            let theme = settings_theme::palette(cx);
+            let status = match &this.system_store {
+                None => (
+                    theme.text_secondary,
+                    this.i18n.text("credential_system_checking"),
+                ),
+                Some(Ok(())) => (
+                    theme.text_secondary,
+                    this.i18n.text("credential_system_available"),
+                ),
+                Some(Err(error)) => (
+                    theme.warning,
+                    this.i18n
+                        .format("credential_system_unavailable", &[("error", error)]),
+                ),
+            };
             div()
-                .id(id)
                 .flex()
-                .items_center()
-                .gap_2()
-                .cursor_pointer()
-                .child(if selected { "◉" } else { "○" })
+                .flex_col()
+                .gap_1()
                 .child(
                     div()
-                        .when(selected, |d| d.font_weight(FontWeight::BOLD))
-                        .child(label),
+                        .text_color(theme.text_secondary)
+                        .child(this.i18n.text(secrets::system_store_key())),
                 )
-                .when(selected, |d| {
-                    d.child(
-                        div()
-                            .text_color(theme.text_secondary)
-                            .child(self.i18n.text("credential_in_use")),
-                    )
-                })
-        };
-        let status = match &self.system_store {
-            None => (
-                theme.text_secondary,
-                self.i18n.text("credential_system_checking"),
-            ),
-            Some(Ok(())) => (
-                theme.text_secondary,
-                self.i18n.text("credential_system_available"),
-            ),
-            Some(Err(error)) => (
-                theme.warning,
-                self.i18n
-                    .format("credential_system_unavailable", &[("error", error)]),
-            ),
-        };
-        let note = |text: String, color: Rgba| div().ml(px(22.)).text_color(color).child(text);
-        panel(cx)
-            .child(self.tab_heading("credentials_tab"))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("credentials_intro")),
-            )
-            .child(
-                option(
-                    CredentialBackendKind::System,
-                    "credential-system",
-                    self.i18n.text("credential_system"),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.select_credential_backend(CredentialBackendKind::System, window, cx)
-                })),
-            )
-            .child(note(
-                self.i18n.text(secrets::system_store_key()),
-                theme.text_secondary,
-            ))
-            .child(note(status.1, status.0))
-            .child(
-                option(
-                    CredentialBackendKind::LocalFile,
-                    "credential-local-file",
-                    self.i18n.text("credential_local"),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.select_credential_backend(CredentialBackendKind::LocalFile, window, cx)
-                })),
-            )
-            .child(note(
-                self.i18n.format(
+                .child(div().text_color(status.0).child(status.1))
+                .child(div().text_color(theme.warning).child(this.i18n.format(
                     "credential_local_detail",
                     &[("path", &secrets::local_path_text())],
-                ),
-                theme.warning,
-            ))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().pt_2().text_color(theme.warning).child(feedback))
-            })
+                )))
+                .when_some(this.status_message(), |d, feedback| {
+                    d.child(div().text_color(theme.warning).child(feedback))
+                })
+                .into_any_element()
+        });
+        SettingPage::new(title).group(group(
+            i18n.text("group_credentials_storage"),
+            Some(i18n.text("credentials_intro")),
+            vec![location, notes],
+        ))
     }
 }
 
