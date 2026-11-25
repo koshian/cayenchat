@@ -1,110 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The Application page: how the app itself behaves, apart from any server.
+//! Drawn as Kit groups (#622); the rows the Kit has no part for (the
+//! language, which also retitles the window, the login startup, which the
+//! system answers, and the buttons) are built here.
 
 use cayenchat_storage::Language;
 use gpui::{prelude::*, *};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use crate::{
-    ExportSettings, ImportSettings, SettingsTab, SettingsWindow, account_settings, settings_items,
+    ExportSettings, ImportSettings, SettingsTab, SettingsWindow, autostart, settings_items,
+    settings_kit::{element_item, field_item, group},
     settings_theme,
 };
 
+/// The languages in the order of the dropdown; its values are the indexes.
+const LANGUAGES: [Language; 3] = [Language::System, Language::Japanese, Language::English];
+
 impl SettingsWindow {
-    /// Export and import of the settings file (#520); the questions are
-    /// drawn in the chat window, which the buttons ask.
-    fn render_settings_transfer(&self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        div()
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("transfer_heading")),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("transfer_hint")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        settings_theme::button("export-settings", false, cx)
-                            .child(self.i18n.text("menu_export_settings"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.owner.update(cx, |owner, window, cx| {
-                                    owner.export_settings(&ExportSettings, window, cx)
-                                });
-                            })),
-                    )
-                    .child(
-                        settings_theme::button("import-settings", false, cx)
-                            .child(self.i18n.text("menu_import_settings"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.owner.update(cx, |owner, window, cx| {
-                                    owner.import_settings(&ImportSettings, window, cx)
-                                });
-                            })),
-                    ),
-            )
-    }
-
-    fn language_selector(&self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let mut selector = div().flex().flex_col().child(
-            div()
-                .id("language-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!(
-                    "{}  ▾",
-                    self.i18n.preference_label(self.settings.values.language)
-                ))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.language_list_open = !this.settings.language_list_open;
-                    cx.notify();
-                })),
-        );
-        if self.settings.language_list_open {
-            let mut menu = div()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, language) in [Language::System, Language::Japanese, Language::English]
-                .into_iter()
-                .enumerate()
-            {
-                menu = menu.child(
-                    div()
-                        .id(("language-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(self.settings.values.language == language, |d| {
-                            d.bg(theme.selected)
-                        })
-                        .child(self.i18n.preference_label(language))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.settings.language_list_open = false;
-                            this.select_language(language, window, cx)
-                        })),
-                );
-            }
-            selector = selector.child(menu);
-        }
-        selector
-    }
-
     /// The Reiwa mode checkbox; the Connection tab shows it too, and both
     /// edit the same app-wide `appearance.reiwa_mode`.
     pub(crate) fn reiwa_mode_row(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -127,48 +40,193 @@ impl SettingsWindow {
             }))
     }
 
-    pub(crate) fn render_application_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let language_selector = self.language_selector(cx);
-        let autostart_toggle = self.render_autostart_toggle(cx);
-        account_settings::panel(cx)
-            .child(self.tab_heading("application_tab"))
-            .child(
+    /// The Application tab: language and startup, the window, behavior, text
+    /// and links, the conversation logs and the settings file.
+    pub(crate) fn application_page(
+        &mut self,
+        title: String,
+        this: &WeakEntity<Self>,
+        cx: &mut Context<Self>,
+    ) -> SettingPage {
+        let log_status = self.log_status_text(cx);
+        let directory = self.log_directory_text();
+        let log_hint = self.i18n.text("conversation_log_hint");
+        let mut log = self.kit_table(settings_items::APPLICATION_LOG, this);
+        log.push(field_item(
+            this,
+            self.i18n.text("conversation_log_directory"),
+            directory,
+            |this, _, cx| this.log_directory_buttons(cx).into_any_element(),
+        ));
+        if let Some(status) = log_status {
+            log.push(element_item(this, move |_, _, cx| {
                 div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("application_intro")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("language")),
-                    )
-                    .child(language_selector),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("language_hint")),
-            )
-            .child(autostart_toggle)
-            .children(self.render_items(settings_items::APPLICATION_WINDOW, cx))
-            // The menu bar and display server rows: macOS has its own menu bar.
-            .children(self.render_items(settings_items::APPLICATION_MENU, cx))
-            .children(self.render_items(settings_items::APPLICATION_PREVIEWS, cx))
-            .child(self.reiwa_mode_row("reiwa-mode", cx))
-            .children(self.render_items(settings_items::APPLICATION_TEXT, cx))
-            .child(self.render_conversation_log_settings(cx))
-            .child(self.render_settings_transfer(cx))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
+                    .id("conversation-log-status")
+                    .text_color(settings_theme::palette(cx).warning)
+                    .child(status.clone())
+                    .into_any_element()
+            }));
+        }
+        let i18n = &self.i18n;
+        SettingPage::new(title).groups([
+            group(
+                i18n.text("group_app_startup"),
+                Some(i18n.text("application_intro")),
+                vec![self.language_item(this), self.autostart_item(this)],
+            ),
+            group(
+                i18n.text("group_app_window"),
+                None,
+                self.kit_table(settings_items::APPLICATION_WINDOW, this),
+            ),
+            group(
+                i18n.text("group_app_behavior"),
+                None,
+                self.kit_table(settings_items::APPLICATION_BEHAVIOR, this),
+            ),
+            group(
+                i18n.text("group_app_text"),
+                None,
+                self.kit_table(settings_items::APPLICATION_TEXT, this),
+            ),
+            group(i18n.text("conversation_log"), Some(log_hint), log),
+            group(
+                i18n.text("transfer_item"),
+                None,
+                vec![field_item(
+                    this,
+                    i18n.text("transfer_heading"),
+                    i18n.text("transfer_hint"),
+                    |this, _, cx| this.settings_transfer_buttons(cx).into_any_element(),
+                )],
+            ),
+            SettingGroup::new().item(crate::settings_kit::footer_item(
+                this,
+                SettingsTab::Application,
+            )),
+        ])
+    }
+
+    /// The language dropdown. A change also retitles the window and the
+    /// fields, which need the window, so it is made once the Kit's setter
+    /// has returned.
+    fn language_item(&self, this: &WeakEntity<Self>) -> SettingItem {
+        let labels = LANGUAGES
+            .iter()
+            .enumerate()
+            .map(|(index, language)| {
+                (
+                    index.to_string().into(),
+                    self.i18n.preference_label(*language).into(),
+                )
             })
-            .child(self.reset_footer(SettingsTab::Application, cx))
+            .collect();
+        let selected = LANGUAGES
+            .iter()
+            .position(|language| *language == self.settings.values.language)
+            .unwrap_or(0)
+            .to_string();
+        let this = this.clone();
+        SettingItem::new(
+            self.i18n.text("language"),
+            SettingField::dropdown(
+                labels,
+                move |_| selected.clone().into(),
+                move |value, cx| {
+                    let Some(language) = value
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| LANGUAGES.get(index).copied())
+                    else {
+                        return;
+                    };
+                    let Ok(window) = this.read_with(cx, |this, _| this.window) else {
+                        return;
+                    };
+                    let this = this.clone();
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, cx| {
+                            let _ = this
+                                .update(cx, |this, cx| this.select_language(language, window, cx));
+                        });
+                    });
+                },
+            ),
+        )
+        .description(self.i18n.text("language_hint"))
+    }
+
+    /// The login startup switch. The system answers it, so the switch shows
+    /// what the system reports and is off limits while that is read or
+    /// changed.
+    fn autostart_item(&self, this: &WeakEntity<Self>) -> SettingItem {
+        let status = self
+            .autostart
+            .as_ref()
+            .and_then(|status| status.as_ref().ok())
+            .copied();
+        let usable = !self.autostart_busy
+            && status.is_some_and(|status| status != autostart::AutostartStatus::Unavailable);
+        let note = match &self.autostart {
+            Some(Ok(autostart::AutostartStatus::DisabledByUser)) => {
+                Some(if autostart::reenable_in_system_settings() {
+                    "autostart_disabled_in_system"
+                } else {
+                    "autostart_disabled_by_user"
+                })
+            }
+            Some(Ok(autostart::AutostartStatus::Unavailable)) => Some("autostart_unavailable"),
+            _ => None,
+        };
+        let mut description = self.i18n.text("autostart_hint");
+        if let Some(note) = note {
+            description = format!("{description} {}", self.i18n.text(note));
+        }
+        if let Some(Err(error)) = &self.autostart {
+            description = format!(
+                "{description} {}",
+                self.i18n.format("autostart_error", &[("error", error)])
+            );
+        }
+        let checked = status.is_some_and(autostart::AutostartStatus::is_on);
+        let this = this.clone();
+        SettingItem::new(
+            self.i18n.text("autostart"),
+            SettingField::switch(
+                move |_| checked,
+                move |_, cx| {
+                    let _ = this.update(cx, |this, cx| this.toggle_autostart(cx));
+                },
+            ),
+        )
+        .description(description)
+        .disabled(!usable)
+    }
+
+    /// Export and import of the settings file (#520); the questions are
+    /// drawn in the chat window, which the buttons ask.
+    fn settings_transfer_buttons(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                settings_theme::button("export-settings", false, cx)
+                    .child(self.i18n.text("menu_export_settings"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let _ = this.owner.update(cx, |owner, window, cx| {
+                            owner.export_settings(&ExportSettings, window, cx)
+                        });
+                    })),
+            )
+            .child(
+                settings_theme::button("import-settings", false, cx)
+                    .child(self.i18n.text("menu_import_settings"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let _ = this.owner.update(cx, |owner, window, cx| {
+                            owner.import_settings(&ImportSettings, window, cx)
+                        });
+                    })),
+            )
     }
 }

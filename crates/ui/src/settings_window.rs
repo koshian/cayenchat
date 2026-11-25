@@ -52,7 +52,6 @@ pub(crate) struct SettingsForm {
     server_list_open: bool,
     encoding_list_open: bool,
     sasl_list_open: bool,
-    pub(crate) language_list_open: bool,
     pub(crate) ircv3_server_list_open: bool,
     pub(crate) custom_host: Entity<TextInput>,
     pub(crate) port: Entity<TextInput>,
@@ -424,7 +423,6 @@ impl SettingsForm {
             server_list_open: false,
             encoding_list_open: false,
             sasl_list_open: false,
-            language_list_open: false,
             ircv3_server_list_open: false,
             values,
         };
@@ -888,7 +886,6 @@ impl SettingsForm {
         self.server_list_open = false;
         self.sasl_list_open = false;
         self.encoding_list_open = false;
-        self.language_list_open = false;
         self.ircv3_server_list_open = false;
     }
 }
@@ -2743,13 +2740,11 @@ impl SettingsWindow {
             || self.settings.ircv3_server_list_open
             || self.settings.encoding_list_open
             || self.settings.sasl_list_open
-            || self.settings.language_list_open
         {
             self.settings.server_list_open = false;
             self.settings.ircv3_server_list_open = false;
             self.settings.sasl_list_open = false;
             self.settings.encoding_list_open = false;
-            self.settings.language_list_open = false;
             cx.notify();
         } else {
             // When saving failed the window stays, with its error in front.
@@ -4101,7 +4096,6 @@ impl SettingsWindow {
                     this.settings.server_list_open = !this.settings.server_list_open;
                     this.settings.sasl_list_open = false;
                     this.settings.encoding_list_open = false;
-                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -4299,7 +4293,6 @@ impl SettingsWindow {
                     this.settings.encoding_list_open = !this.settings.encoding_list_open;
                     this.settings.sasl_list_open = false;
                     this.settings.server_list_open = false;
-                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -4344,7 +4337,6 @@ impl SettingsWindow {
                     this.settings.sasl_list_open = !this.settings.sasl_list_open;
                     this.settings.server_list_open = false;
                     this.settings.encoding_list_open = false;
-                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -5302,68 +5294,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    pub(crate) fn render_autostart_toggle(&self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let status = self
-            .autostart
-            .as_ref()
-            .and_then(|status| status.as_ref().ok())
-            .copied();
-        let usable = !self.autostart_busy
-            && status.is_some_and(|status| status != autostart::AutostartStatus::Unavailable);
-        let note = match &self.autostart {
-            Some(Ok(autostart::AutostartStatus::DisabledByUser)) => {
-                Some(if autostart::reenable_in_system_settings() {
-                    "autostart_disabled_in_system"
-                } else {
-                    "autostart_disabled_by_user"
-                })
-            }
-            Some(Ok(autostart::AutostartStatus::Unavailable)) => Some("autostart_unavailable"),
-            _ => None,
-        };
-        let read_error = self
-            .autostart
-            .as_ref()
-            .and_then(|status| status.as_ref().err());
-        let mut toggle = div()
-            .id("autostart")
-            .debug_selector(|| "autostart".into())
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(settings_theme::checkbox(
-                status.is_some_and(autostart::AutostartStatus::is_on),
-                usable,
-                cx,
-            ))
-            .child(self.i18n.text("autostart"));
-        if usable {
-            toggle = toggle
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_autostart(cx)));
-        }
-        div()
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .flex_col()
-            .child(toggle)
-            .when_some(note, |d, key| {
-                d.child(
-                    div()
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text(key)),
-                )
-            })
-            .when_some(read_error, |d, error| {
-                d.child(
-                    div()
-                        .text_color(theme.warning)
-                        .child(self.i18n.format("autostart_error", &[("error", error)])),
-                )
-            })
-    }
-
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
         settings_theme::sync_kit(cx);
@@ -6124,16 +6054,9 @@ mod escape_tests {
     }
 
     #[gpui::test]
-    fn escape_closes_language_and_encoding_lists_first(cx: &mut TestAppContext) {
+    fn escape_closes_the_encoding_list_first(cx: &mut TestAppContext) {
         let (form, cx, mut app) = open(cx, crate::settings_with_channels("#a"));
         let windows = |app: &mut TestAppContext| app.update(|app| app.windows().len());
-        form.update(cx, |form, cx| {
-            form.settings.language_list_open = true;
-            cx.notify();
-        });
-        cx.simulate_keystrokes("escape");
-        assert!(form.read_with(cx, |form, _| !form.settings.language_list_open));
-        assert_eq!(windows(&mut app), 2);
         form.update(cx, |form, cx| {
             form.settings.encoding_list_open = true;
             cx.notify();

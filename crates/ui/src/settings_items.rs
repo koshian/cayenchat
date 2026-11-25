@@ -312,9 +312,9 @@ pub(crate) const NOTIFICATIONS_KEYWORDS: &[Item] = &[
     .hint("exclude_keywords_hint"),
 ];
 
-/// The Application tab, from "Always on top" to the double-click
-/// confirmations. The language list, the autostart row and the option rows
-/// around the tables are their own widgets.
+/// The Window group of the Application tab: where and how the windows
+/// appear. The language and the login startup, which need the window or the
+/// system, are drawn beside it by `application_page`.
 pub(crate) const APPLICATION_WINDOW: &[Item] = &[
     Item::toggle(
         "always-on-top",
@@ -322,74 +322,23 @@ pub(crate) const APPLICATION_WINDOW: &[Item] = &[
         |s| s.always_on_top,
         |s, on| s.always_on_top = on,
     )
+    .hint("always_on_top_hint")
     .only_if(cfg!(target_os = "windows")),
     Item::toggle(
         "restore-window-layout",
         "restore_window_layout",
         |s| s.restore_window_layout,
         |s, on| s.restore_window_layout = on,
-    ),
-    Item::toggle(
-        "confirm-quit",
-        "confirm_quit",
-        |s| s.confirm_quit,
-        |s, on| s.confirm_quit = on,
-    ),
-    Item::toggle(
-        "shorten-amazon-urls",
-        "shorten_amazon_urls",
-        |s| s.shorten_amazon_urls,
-        |s, on| s.shorten_amazon_urls = on,
-    ),
-    Item::note("shorten-amazon-urls-hint", "shorten_amazon_urls_hint"),
-    Item::toggle(
-        "confirm-multiline-paste",
-        "confirm_multiline_paste",
-        |s| s.confirm_multiline_paste,
-        |s, on| s.confirm_multiline_paste = on,
-    ),
-    Item::note(
-        "confirm-multiline-paste-hint",
-        "confirm_multiline_paste_hint",
-    ),
-    Item::toggle(
-        "confirm-server-dblclick-disconnect",
-        "confirm_server_dblclick_disconnect",
-        |s| s.confirm_server_dblclick_disconnect,
-        |s, on| s.confirm_server_dblclick_disconnect = on,
-    ),
-    Item::toggle(
-        "confirm-channel-dblclick-part",
-        "confirm_channel_dblclick_part",
-        |s| s.confirm_channel_dblclick_part,
-        |s, on| s.confirm_channel_dblclick_part = on,
-    ),
-    Item::choice(
-        "unread_log_position",
-        "unread_log_position",
-        &[
-            option!(
-                "unread_log_position_previous",
-                unread_log_position = UnreadLogPosition::Previous
-            ),
-            option!(
-                "unread_log_position_latest",
-                unread_log_position = UnreadLogPosition::Latest
-            ),
-        ],
-    ),
-    Item::note("unread-log-position-hint", "unread_log_position_hint"),
-];
-
-/// The menu bar row (macOS has its own menu bar that is always shown) and
-/// the display server row (Linux) of the Application tab.
-pub(crate) const APPLICATION_MENU: &[Item] = &[
+    )
+    .hint("restore_window_layout_hint"),
+    // macOS has its own menu bar that is always shown.
     Item::toggle(
         "menu-bar-auto-hide",
         "menu_bar_auto_hide",
         |s| s.menu_bar_auto_hide,
         |s, on| s.menu_bar_auto_hide = on,
     )
+    .hint("menu_bar_auto_hide_hint")
     .only_if(!cfg!(target_os = "macos")),
     Item::choice(
         "linux_display",
@@ -402,8 +351,75 @@ pub(crate) const APPLICATION_MENU: &[Item] = &[
             option!("linux_display_x11", linux_display = LinuxDisplay::X11),
         ],
     )
+    .hint("linux_display_hint")
     .only_if(cfg!(unix_desktop)),
-    Item::note("linux-display-hint", "linux_display_hint").only_if(cfg!(unix_desktop)),
+];
+
+/// The Behavior group of the Application tab: confirmations and where the
+/// log opens.
+pub(crate) const APPLICATION_BEHAVIOR: &[Item] = &[
+    Item::toggle(
+        "confirm-quit",
+        "confirm_quit",
+        |s| s.confirm_quit,
+        |s, on| s.confirm_quit = on,
+    )
+    .hint("confirm_quit_hint"),
+    Item::toggle(
+        "confirm-multiline-paste",
+        "confirm_multiline_paste",
+        |s| s.confirm_multiline_paste,
+        |s, on| s.confirm_multiline_paste = on,
+    )
+    .hint("confirm_multiline_paste_hint"),
+    Item::toggle(
+        "confirm-server-dblclick-disconnect",
+        "confirm_server_dblclick_disconnect",
+        |s| s.confirm_server_dblclick_disconnect,
+        |s, on| s.confirm_server_dblclick_disconnect = on,
+    )
+    .hint("confirm_server_dblclick_disconnect_hint"),
+    Item::toggle(
+        "confirm-channel-dblclick-part",
+        "confirm_channel_dblclick_part",
+        |s| s.confirm_channel_dblclick_part,
+        |s, on| s.confirm_channel_dblclick_part = on,
+    )
+    .hint("confirm_channel_dblclick_part_hint"),
+    Item::select(
+        "unread_log_position",
+        "unread_log_position",
+        &[
+            option!(
+                "unread_log_position_previous",
+                unread_log_position = UnreadLogPosition::Previous
+            ),
+            option!(
+                "unread_log_position_latest",
+                unread_log_position = UnreadLogPosition::Latest
+            ),
+        ],
+    )
+    .hint("unread_log_position_hint"),
+];
+
+/// The conversation log switches of the Application tab. The folder and its
+/// buttons are drawn by `application_page`.
+pub(crate) const APPLICATION_LOG: &[Item] = &[
+    Item::toggle(
+        "conversation-log-channels",
+        "conversation_log_channels",
+        |s| s.conversation_log.channels,
+        |s, on| s.conversation_log.channels = on,
+    )
+    .hint("conversation_log_channels_hint"),
+    Item::toggle(
+        "conversation-log-private",
+        "conversation_log_private",
+        |s| s.conversation_log.private,
+        |s, on| s.conversation_log.private = on,
+    )
+    .hint("conversation_log_private_hint"),
 ];
 
 /// The send and notice key rows of the Keyboard tab. The clash warning
@@ -475,33 +491,45 @@ pub(crate) const KEYBOARD_MODIFIERS: &[Item] = &[
     Item::note("text-key-theme-hint", "text_key_theme_hint").only_if(cfg!(unix_desktop)),
 ];
 
-/// The image preview row of the Application tab.
-pub(crate) const APPLICATION_PREVIEWS: &[Item] = &[
+/// The Text and links group of the Application tab: how links and text in
+/// the log are shown and pasted.
+pub(crate) const APPLICATION_TEXT: &[Item] = &[
     Item::toggle(
         "image-previews",
         "image_previews",
         |s| s.appearance.image_previews,
         |s, on| s.appearance.image_previews = on,
-    ),
-    Item::note("image-previews-hint", "image_previews_hint"),
-];
-
-/// The URL and character reference rows of the Application tab.
-pub(crate) const APPLICATION_TEXT: &[Item] = &[
+    )
+    .hint("image_previews_hint"),
     Item::toggle(
         "compact-urls",
         "compact_urls",
         |s| s.appearance.compact_urls,
         |s, on| s.appearance.compact_urls = on,
-    ),
-    Item::note("compact-urls-hint", "compact_urls_hint"),
+    )
+    .hint("compact_urls_hint"),
     Item::toggle(
         "decode-char-refs",
         "decode_char_refs",
         |s| s.appearance.decode_char_refs,
         |s, on| s.appearance.decode_char_refs = on,
-    ),
-    Item::note("decode-char-refs-hint", "decode_char_refs_hint"),
+    )
+    .hint("decode_char_refs_hint"),
+    // The Connection tab shows this switch too; both edit the same value.
+    Item::toggle(
+        "reiwa-mode",
+        "reiwa_mode",
+        |s| s.appearance.reiwa_mode,
+        |s, on| s.appearance.reiwa_mode = on,
+    )
+    .hint("reiwa_mode_hint"),
+    Item::toggle(
+        "shorten-amazon-urls",
+        "shorten_amazon_urls",
+        |s| s.shorten_amazon_urls,
+        |s, on| s.shorten_amazon_urls = on,
+    )
+    .hint("shorten_amazon_urls_hint"),
 ];
 
 /// The automatic phrase row of the Experimental tab. The debug log rows
@@ -658,8 +686,8 @@ const TABLES: &[&[Item]] = &[
     NOTIFICATIONS_KEYWORDS,
     EXPERIMENTAL,
     APPLICATION_WINDOW,
-    APPLICATION_MENU,
-    APPLICATION_PREVIEWS,
+    APPLICATION_BEHAVIOR,
+    APPLICATION_LOG,
     APPLICATION_TEXT,
     KEYBOARD_SEND,
     KEYBOARD_MODIFIERS,
@@ -1063,6 +1091,26 @@ mod tests {
         // The master switch stays usable; the dependent ones are disabled.
         assert_eq!(disabled.first(), Some(&false));
         assert!(disabled.iter().skip(1).all(|d| *d));
+    }
+
+    #[test]
+    fn every_application_row_has_a_description_in_both_languages() {
+        use crate::localization::Localizer;
+        use cayenchat_storage::Language;
+        for language in [Language::Japanese, Language::English] {
+            let i18n = Localizer::new(language);
+            for table in [
+                super::APPLICATION_WINDOW,
+                super::APPLICATION_BEHAVIOR,
+                super::APPLICATION_LOG,
+                super::APPLICATION_TEXT,
+            ] {
+                for item in table {
+                    let key = item.hint_key.expect("a row without a description");
+                    assert_ne!(i18n.text(key), key, "{key} is not translated");
+                }
+            }
+        }
     }
 
     #[test]

@@ -90,7 +90,6 @@ impl SettingsWindow {
             SettingsTab::Connection | SettingsTab::Credentials => {}
             SettingsTab::Application => {
                 self.select_language(defaults.language, window, cx);
-                self.settings.language_list_open = false;
                 let values = &mut self.settings.values;
                 values.restore_window_layout = defaults.restore_window_layout;
                 if cfg!(target_os = "windows") {
