@@ -288,7 +288,7 @@ impl SettingsWindow {
             .child(self.i18n.text(title_key))
     }
 
-    /// The end of a tab with its reset at the right, in the same place on
+    /// The end of a tab with its reset at the left, apart from the setting rows, in the same place on
     /// every tab. It is disabled while everything the tab shows has its
     /// default.
     pub(crate) fn reset_footer(&self, tab: SettingsTab, cx: &mut Context<Self>) -> Div {
@@ -297,13 +297,13 @@ impl SettingsWindow {
         let button = settings_theme::button("reset-defaults", false, cx)
             .debug_selector(|| "reset-defaults".into())
             .child(self.i18n.text("reset_to_defaults"));
-        div().flex().justify_end().mt_2().child(if default {
+        div().flex().justify_start().mt_2().child(if default {
             button
                 .cursor_default()
                 .opacity(0.5)
                 .text_color(theme.text_secondary)
         } else {
-            // A destructive action: warning color, at the right end, behind a
+            // A destructive action: warning color, behind a
             // confirmation.
             button
                 .text_color(theme.warning)

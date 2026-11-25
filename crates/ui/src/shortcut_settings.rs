@@ -10,7 +10,7 @@ use crate::{
     SettingsTab, SettingsWindow,
     key_recorder::{self, Recorded, Rejection},
     settings_items,
-    settings_kit::{element_item, field_item, footer_item, group},
+    settings_kit::{element_item, field_item, footer_item, group, page},
     settings_theme,
     shortcuts::{self, Caution, Owner, ShortcutAction},
     tooltip::TextTooltip,
@@ -254,7 +254,12 @@ impl SettingsWindow {
     /// The Keyboard tab: the keys that send, the keys of the channel numbers
     /// and of draft editing (where the system has a choice), then the
     /// shortcut list.
-    pub(crate) fn keyboard_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+    pub(crate) fn keyboard_page(
+        &self,
+        title: String,
+        this: &WeakEntity<Self>,
+        cx: &App,
+    ) -> SettingPage {
         let i18n = &self.i18n;
         let values = &self.settings.values;
         let mut sending = self.kit_table(settings_items::KEYBOARD_SEND, this);
@@ -277,7 +282,7 @@ impl SettingsWindow {
             self.shortcut_items(this),
         ));
         groups.push(SettingGroup::new().item(footer_item(this, SettingsTab::Keyboard)));
-        SettingPage::new(title).groups(groups)
+        page(title, groups, cx)
     }
 }
 

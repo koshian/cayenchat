@@ -8,7 +8,7 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 
 use crate::{
     SettingsTab, SettingsWindow, diagnostics, settings_items,
-    settings_kit::{element_item, field_item, footer_item, group},
+    settings_kit::{element_item, field_item, footer_item, group, page},
     settings_theme,
 };
 
@@ -73,6 +73,7 @@ impl SettingsWindow {
         &mut self,
         title: String,
         this: &WeakEntity<Self>,
+        cx: &App,
     ) -> SettingPage {
         let i18n = &self.i18n;
         let settings = &self.settings.values.experimental;
@@ -126,18 +127,22 @@ impl SettingsWindow {
                 .child(status.clone())
                 .into_any_element()
         });
-        SettingPage::new(title).groups([
-            group(
-                i18n.text("group_exp_display"),
-                None,
-                self.kit_table(settings_items::EXPERIMENTAL, this),
-            ),
-            group(
-                i18n.text("group_exp_debug_log"),
-                Some(i18n.text("debug_log_hint")),
-                vec![switch, file, status],
-            ),
-            SettingGroup::new().item(footer_item(this, SettingsTab::Experimental)),
-        ])
+        page(
+            title,
+            [
+                group(
+                    i18n.text("group_exp_display"),
+                    None,
+                    self.kit_table(settings_items::EXPERIMENTAL, this),
+                ),
+                group(
+                    i18n.text("group_exp_debug_log"),
+                    Some(i18n.text("debug_log_hint")),
+                    vec![switch, file, status],
+                ),
+                SettingGroup::new().item(footer_item(this, SettingsTab::Experimental)),
+            ],
+            cx,
+        )
     }
 }

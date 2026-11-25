@@ -9,7 +9,7 @@ use crate::{
     SettingsTab, SettingsWindow,
     os_text::WindowOsText,
     secrets, settings_file,
-    settings_kit::{element_item, field_item, footer_item, group},
+    settings_kit::{element_item, field_item, footer_item, group, page},
     settings_theme,
 };
 
@@ -443,7 +443,12 @@ impl SettingsWindow {
     /// account of that service (its state, the buttons and, while a token is
     /// being entered, the field for it), under the note on who can see an
     /// uploaded image.
-    pub(crate) fn image_upload_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+    pub(crate) fn image_upload_page(
+        &self,
+        title: String,
+        this: &WeakEntity<Self>,
+        cx: &App,
+    ) -> SettingPage {
         let i18n = &self.i18n;
         let none = SharedString::default();
         let mut options = vec![(
@@ -505,18 +510,22 @@ impl SettingsWindow {
                 }));
             }
         }
-        SettingPage::new(title).groups([
-            group(
-                i18n.text("group_image_hosting"),
-                Some(format!(
-                    "{} {}",
-                    i18n.text("image_upload_intro"),
-                    i18n.text("image_upload_privacy")
-                )),
-                items,
-            ),
-            SettingGroup::new().item(footer_item(this, SettingsTab::ImageUpload)),
-        ])
+        page(
+            title,
+            [
+                group(
+                    i18n.text("group_image_hosting"),
+                    Some(format!(
+                        "{} {}",
+                        i18n.text("image_upload_intro"),
+                        i18n.text("image_upload_privacy")
+                    )),
+                    items,
+                ),
+                SettingGroup::new().item(footer_item(this, SettingsTab::ImageUpload)),
+            ],
+            cx,
+        )
     }
 
     /// The way back to the server setup the avatar quick setup came from.

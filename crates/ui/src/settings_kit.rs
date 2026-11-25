@@ -19,6 +19,7 @@ use std::rc::Rc;
 use cayenchat_storage::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use gpui::{prelude::*, *};
 use gpui_component::{
+    ActiveTheme as _,
     select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectItem, SelectState},
     setting::{
         NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
@@ -206,6 +207,24 @@ pub(crate) fn group(
     }
 }
 
+/// A page of groups. Every group after the first gets a line above it, in
+/// the Kit theme's border color, so that where one group ends and the next
+/// begins shows (the first one sits under the page title's own line).
+pub(crate) fn page(
+    title: String,
+    groups: impl IntoIterator<Item = SettingGroup>,
+    cx: &App,
+) -> SettingPage {
+    let border = cx.theme().border;
+    SettingPage::new(title).groups(groups.into_iter().enumerate().map(|(at, group)| {
+        if at == 0 {
+            group
+        } else {
+            group.border_t_1().border_color(border)
+        }
+    }))
+}
+
 impl SettingsWindow {
     /// The Kit's `Settings`: a page for each tab.
     pub(crate) fn kit_settings(&mut self, cx: &mut Context<Self>) -> Settings {
@@ -221,12 +240,12 @@ impl SettingsWindow {
                 let title = self.i18n.text(label_key);
                 let page = match tab {
                     SettingsTab::Appearance => self.appearance_page(title, &this, cx),
-                    SettingsTab::Notifications => self.notifications_page(title, &this),
+                    SettingsTab::Notifications => self.notifications_page(title, &this, cx),
                     SettingsTab::Application => self.application_page(title, &this, cx),
-                    SettingsTab::Experimental => self.experimental_page(title, &this),
-                    SettingsTab::Keyboard => self.keyboard_page(title, &this),
+                    SettingsTab::Experimental => self.experimental_page(title, &this, cx),
+                    SettingsTab::Keyboard => self.keyboard_page(title, &this, cx),
                     SettingsTab::Credentials => self.credentials_page(title, &this),
-                    SettingsTab::ImageUpload => self.image_upload_page(title, &this),
+                    SettingsTab::ImageUpload => self.image_upload_page(title, &this, cx),
                     _ => self.panel_page(tab, title, &this),
                 };
                 // The page being drawn is the tab being shown.
@@ -252,26 +271,30 @@ impl SettingsWindow {
 
     /// The Notifications tab: when a desktop notification is shown, then the
     /// keywords that make a message count as one.
-    fn notifications_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+    fn notifications_page(&self, title: String, this: &WeakEntity<Self>, cx: &App) -> SettingPage {
         let i18n = &self.i18n;
         let platform_hint = if cfg!(target_os = "macos") {
             "notifications_hint_macos"
         } else {
             "notifications_hint"
         };
-        SettingPage::new(title).groups([
-            group(
-                i18n.text("group_notify_desktop"),
-                Some(i18n.text(platform_hint)),
-                self.kit_table(settings_items::NOTIFICATIONS_DESKTOP, this),
-            ),
-            group(
-                i18n.text("group_notify_keywords"),
-                None,
-                self.kit_table(settings_items::NOTIFICATIONS_KEYWORDS, this),
-            ),
-            SettingGroup::new().item(footer_item(this, SettingsTab::Notifications)),
-        ])
+        page(
+            title,
+            [
+                group(
+                    i18n.text("group_notify_desktop"),
+                    Some(i18n.text(platform_hint)),
+                    self.kit_table(settings_items::NOTIFICATIONS_DESKTOP, this),
+                ),
+                group(
+                    i18n.text("group_notify_keywords"),
+                    None,
+                    self.kit_table(settings_items::NOTIFICATIONS_KEYWORDS, this),
+                ),
+                SettingGroup::new().item(footer_item(this, SettingsTab::Notifications)),
+            ],
+            cx,
+        )
     }
 
     /// A tab not rebuilt yet: its panel as one item of one group.
@@ -619,33 +642,37 @@ impl SettingsWindow {
         let display = self.kit_table(settings_items::APPEARANCE_ROWS, this);
         let footer = footer_item(this, SettingsTab::Appearance);
         let i18n = &self.i18n;
-        SettingPage::new(title).groups([
-            group(
-                i18n.text("theme_heading"),
-                Some(i18n.text("theme_hint")),
-                theme_rows,
-            ),
-            group(
-                i18n.text("group_pane_colors"),
-                Some(i18n.text("colors_note")),
-                pane_colors,
-            ),
-            group(i18n.text("group_text_colors"), None, text_colors),
-            group(i18n.text("group_popup_colors"), None, popup_colors),
-            group(i18n.text("group_transparency"), None, transparency),
-            group(
-                i18n.text("group_fonts"),
-                Some(i18n.text("fonts_note")),
-                fonts,
-            ),
-            group(
-                i18n.text("wallpaper_heading"),
-                Some(i18n.text("wallpaper_hint")),
-                self.wallpaper_items(this, cx),
-            ),
-            group(i18n.text("group_display"), None, display),
-            SettingGroup::new().item(footer),
-        ])
+        page(
+            title,
+            [
+                group(
+                    i18n.text("theme_heading"),
+                    Some(i18n.text("theme_hint")),
+                    theme_rows,
+                ),
+                group(
+                    i18n.text("group_pane_colors"),
+                    Some(i18n.text("colors_note")),
+                    pane_colors,
+                ),
+                group(i18n.text("group_text_colors"), None, text_colors),
+                group(i18n.text("group_popup_colors"), None, popup_colors),
+                group(i18n.text("group_transparency"), None, transparency),
+                group(
+                    i18n.text("group_fonts"),
+                    Some(i18n.text("fonts_note")),
+                    fonts,
+                ),
+                group(
+                    i18n.text("wallpaper_heading"),
+                    Some(i18n.text("wallpaper_hint")),
+                    self.wallpaper_items(this, cx),
+                ),
+                group(i18n.text("group_display"), None, display),
+                SettingGroup::new().item(footer),
+            ],
+            cx,
+        )
     }
 
     /// The window-wide background blur switch (#1018). It only does

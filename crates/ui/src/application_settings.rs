@@ -10,7 +10,7 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 
 use crate::{
     ExportSettings, ImportSettings, SettingsTab, SettingsWindow, autostart, settings_items,
-    settings_kit::{element_item, field_item, group},
+    settings_kit::{element_item, field_item, group, page},
     settings_theme,
 };
 
@@ -68,43 +68,47 @@ impl SettingsWindow {
             }));
         }
         let i18n = &self.i18n;
-        SettingPage::new(title).groups([
-            group(
-                i18n.text("group_app_startup"),
-                Some(i18n.text("application_intro")),
-                vec![self.language_item(this), self.autostart_item(this)],
-            ),
-            group(
-                i18n.text("group_app_window"),
-                None,
-                self.kit_table(settings_items::APPLICATION_WINDOW, this),
-            ),
-            group(
-                i18n.text("group_app_behavior"),
-                None,
-                self.kit_table(settings_items::APPLICATION_BEHAVIOR, this),
-            ),
-            group(
-                i18n.text("group_app_text"),
-                None,
-                self.kit_table(settings_items::APPLICATION_TEXT, this),
-            ),
-            group(i18n.text("conversation_log"), Some(log_hint), log),
-            group(
-                i18n.text("transfer_item"),
-                None,
-                vec![field_item(
+        page(
+            title,
+            [
+                group(
+                    i18n.text("group_app_startup"),
+                    Some(i18n.text("application_intro")),
+                    vec![self.language_item(this), self.autostart_item(this)],
+                ),
+                group(
+                    i18n.text("group_app_window"),
+                    None,
+                    self.kit_table(settings_items::APPLICATION_WINDOW, this),
+                ),
+                group(
+                    i18n.text("group_app_behavior"),
+                    None,
+                    self.kit_table(settings_items::APPLICATION_BEHAVIOR, this),
+                ),
+                group(
+                    i18n.text("group_app_text"),
+                    None,
+                    self.kit_table(settings_items::APPLICATION_TEXT, this),
+                ),
+                group(i18n.text("conversation_log"), Some(log_hint), log),
+                group(
+                    i18n.text("transfer_item"),
+                    None,
+                    vec![field_item(
+                        this,
+                        i18n.text("transfer_heading"),
+                        i18n.text("transfer_hint"),
+                        |this, _, cx| this.settings_transfer_buttons(cx).into_any_element(),
+                    )],
+                ),
+                SettingGroup::new().item(crate::settings_kit::footer_item(
                     this,
-                    i18n.text("transfer_heading"),
-                    i18n.text("transfer_hint"),
-                    |this, _, cx| this.settings_transfer_buttons(cx).into_any_element(),
-                )],
-            ),
-            SettingGroup::new().item(crate::settings_kit::footer_item(
-                this,
-                SettingsTab::Application,
-            )),
-        ])
+                    SettingsTab::Application,
+                )),
+            ],
+            cx,
+        )
     }
 
     /// The language dropdown. A change also retitles the window and the
