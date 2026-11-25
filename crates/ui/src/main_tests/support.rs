@@ -56,7 +56,7 @@ pub(crate) fn scroll_settings_to(cx: &mut gpui::VisualTestContext, id: &'static 
         if cx.debug_bounds(id).is_some() {
             return;
         }
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: gpui::point(size.width * 0.7, size.height * 0.5),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-300.))),
             ..Default::default()
