@@ -852,7 +852,7 @@
   "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。",
   "experimental_tab": "Experimental",
   "auto_phrase": "Auto Phrase (BudouX)",
-  "auto_phrase_hint": "日本語のメッセージを自然な文節の位置で折り返します。表示だけが変わり、コピーや保存されるテキストは受信したままです。",
+  "auto_phrase_hint": "日本語のメッセージを自然な文節の位置で折り返しますが、変わるのは表示だけで、コピーや保存されるテキストは受信したままです。",
   "group_exp_display": "表示",
   "group_exp_debug_log": "デバッグログ",
   "debug_logging_hint": "オンの間、アプリの診断出力（stderr）を下のログファイルに書き出します。",
