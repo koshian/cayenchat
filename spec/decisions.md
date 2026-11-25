@@ -302,6 +302,17 @@ and Ctrl+Y no longer redoes (Ctrl+Shift+Z still does). Ctrl+W/Y use the system
 clipboard, not an Emacs kill ring. Alt chords do not reveal the in-window menu
 bar, which only reacts to Alt pressed alone.
 
+The same keys apply to the Kit's `Input` (key context `Input`: the settings
+window's fields, the dropdowns' search boxes), on macOS always and on Linux and
+FreeBSD under the Emacs theme only (#622). The tables live once in `input.rs`
+(`MACOS_KEYS`, `GTK_EMACS_KEYS`) and are mapped to `TextInput`'s actions and to
+the Kit's, so they cannot drift apart. They are bound after the Kit's own keys,
+which `settings_theme::sync_kit` records and `rebind_kit_keys` restores when the
+shortcuts are rebound (that clears the keymap). The Kit has no counterpart for
+Ctrl+Shift+B/F (select one character, not exported by `gpui-component`), Ctrl+U
+(delete the whole line) and Alt+\\ / Alt+Space (whitespace); those stay unbound
+in the Kit's input.
+
 Source: [GTK 3 Emacs key theme](https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gtk/gtk-keys.css.emacs).
 
 ## D014 — Credential storage
