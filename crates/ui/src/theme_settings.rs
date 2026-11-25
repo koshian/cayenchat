@@ -22,11 +22,13 @@ use cayenchat_storage::{
     Appearance, ThemeFile, ThemeKind, ThemeMode, WallpaperFit, WallpaperRegion,
 };
 use gpui::{prelude::*, *};
+use gpui_component::setting::{SettingField, SettingItem};
 
 use crate::{
     SettingsWindow, channel_look,
     image_upload::{acceptable_attachment, read_in_background},
     input::TextInput,
+    settings_kit::{element_item, field_item},
     settings_theme,
     wallpaper_crop::CropState,
 };
@@ -262,7 +264,6 @@ impl SettingsWindow {
     fn adopt_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
         self.show_appearance(&appearance, cx);
         self.settings.values.appearance = appearance;
-        self.font_picker = None;
         self.color_picker = None;
         cx.notify();
     }
@@ -787,150 +788,197 @@ impl SettingsWindow {
 
     /// The theme section: where the light and dark appearance came from, the
     /// imported themes and the file actions.
-    pub(crate) fn render_theme_settings(&self, cx: &mut Context<Self>) -> Div {
-        let palette = settings_theme::palette(cx);
+    pub(crate) fn theme_items(&self, this: &WeakEntity<Self>, cx: &App) -> Vec<SettingItem> {
         let appearance = self.shown_appearance(cx);
-        let hint = |key: &str| {
-            div()
-                .text_sm()
-                .text_color(palette.text_secondary)
-                .child(self.i18n.text(key))
-        };
-        let mut section = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("theme_heading")),
-            )
-            .child(hint("theme_hint"));
+        let mut items = Vec::new();
         for dark in [false, true] {
             let (name, modified) = appearance.theme_status(dark);
-            let id = if dark { "dark" } else { "light" };
-            let control = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .max_w(px(260.))
-                        .debug_selector(move || format!("theme-source-{id}"))
-                        .child(self.i18n.format("theme_source", &[("name", &name)]))
-                        .when(modified, |d| {
-                            d.child(
-                                div()
-                                    .ml_2()
-                                    .text_color(palette.warning)
-                                    .child(self.i18n.text("theme_modified")),
-                            )
-                        }),
-                )
-                .child(
-                    settings_theme::button(("theme-default", usize::from(dark)), false, cx)
-                        .child(self.i18n.text("theme_use_default"))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.theme_use_default(dark, cx)),
-                        ),
-                )
-                .child(
-                    settings_theme::button(("theme-export", usize::from(dark)), false, cx)
-                        .child(self.i18n.text("theme_export"))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.theme_begin_export(dark, cx)),
-                        ),
-                );
-            section = section.child(settings_theme::setting_row(
+            // The source theme is the row's description; "modified" is part of it.
+            let mut source = self.i18n.format("theme_source", &[("name", &name)]);
+            if modified {
+                source = format!("{source} {}", self.i18n.text("theme_modified"));
+            }
+            items.push(field_item(
+                this,
                 self.theme_kind_label(dark),
-                None,
-                control,
-                cx,
+                source,
+                move |this, _, cx| {
+                    let id = if dark { "dark" } else { "light" };
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .debug_selector(move || format!("theme-source-{id}"))
+                        .child(
+                            settings_theme::button(("theme-default", usize::from(dark)), false, cx)
+                                .child(this.i18n.text("theme_use_default"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.theme_use_default(dark, cx)
+                                })),
+                        )
+                        .child(
+                            settings_theme::button(("theme-export", usize::from(dark)), false, cx)
+                                .child(this.i18n.text("theme_export"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.theme_begin_export(dark, cx)
+                                })),
+                        )
+                        .into_any_element()
+                },
             ));
         }
         if let Some(prompt) = &self.themes.export {
-            section = section.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(hint("theme_export_hint"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(settings_theme::label_column().child(format!(
-                                "{} ({})",
-                                self.i18n.text("theme_export_name"),
-                                self.theme_kind_label(prompt.dark)
-                            )))
-                            .child(div().flex_1().min_w_0().child(prompt.name.clone()))
-                            .child(
-                                settings_theme::button("theme-export-save", true, cx)
-                                    .child(self.i18n.text("theme_export_save"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.theme_choose_export_path(cx)
-                                    })),
-                            )
-                            .child(
-                                settings_theme::button("theme-export-cancel", false, cx)
-                                    .child(self.i18n.text("cancel"))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.theme_cancel_export(cx)),
-                                    ),
-                            ),
-                    ),
+            let title = format!(
+                "{} ({})",
+                self.i18n.text("theme_export_name"),
+                self.theme_kind_label(prompt.dark)
             );
+            let name = prompt.name.clone();
+            items.push(field_item(
+                this,
+                title,
+                self.i18n.text("theme_export_hint"),
+                move |this, _, cx| {
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(div().w(px(200.)).child(name.clone()))
+                        .child(
+                            settings_theme::button("theme-export-save", true, cx)
+                                .child(this.i18n.text("theme_export_save"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.theme_choose_export_path(cx)),
+                                ),
+                        )
+                        .child(
+                            settings_theme::button("theme-export-cancel", false, cx)
+                                .child(this.i18n.text("cancel"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.theme_cancel_export(cx)),
+                                ),
+                        )
+                        .into_any_element()
+                },
+            ));
         }
-        section = section.child(settings_theme::setting_row(
+        items.push(field_item(
+            this,
             self.i18n.text("theme_library_heading"),
-            None,
-            settings_theme::button("theme-import", false, cx)
-                .child(self.i18n.text("theme_import"))
-                .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx))),
-            cx,
+            self.i18n.text(if self.themes.library.is_empty() {
+                "theme_library_empty"
+            } else {
+                "theme_import_hint"
+            }),
+            |this, _, cx| {
+                settings_theme::button("theme-import", false, cx)
+                    .child(this.i18n.text("theme_import"))
+                    .on_click(cx.listener(|this, _, _, cx| this.theme_import(cx)))
+                    .into_any_element()
+            },
         ));
-        if self.themes.library.is_empty() {
-            section = section.child(hint("theme_library_empty"));
-        }
         for (index, entry) in self.themes.library.iter().enumerate() {
             let apply_id = entry.id.clone();
             let delete_id = entry.id.clone();
-            let buttons = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(
-                    settings_theme::button(("theme-apply", index), false, cx)
-                        .child(self.i18n.text("theme_apply"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.theme_apply(apply_id.clone(), cx)
-                        })),
-                )
-                .child(
-                    settings_theme::button(("theme-delete", index), false, cx)
-                        .child(self.i18n.text("theme_delete"))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.theme_delete(&delete_id, cx)),
-                        ),
-                );
-            section = section.child(settings_theme::setting_row(
-                format!(
-                    "{} ({})",
-                    cayenchat_model::display::neutralize_bidi(&entry.name),
-                    self.theme_kind_label(entry.mode == ThemeKind::Dark)
-                ),
-                None,
-                buttons,
-                cx,
+            let title = format!(
+                "{} ({})",
+                cayenchat_model::display::neutralize_bidi(&entry.name),
+                self.theme_kind_label(entry.mode == ThemeKind::Dark)
+            );
+            items.push(field_item(
+                this,
+                title,
+                self.i18n.text("theme_entry_hint"),
+                move |this, _, cx| {
+                    let (apply_id, delete_id) = (apply_id.clone(), delete_id.clone());
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            settings_theme::button(("theme-apply", index), false, cx)
+                                .child(this.i18n.text("theme_apply"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.theme_apply(apply_id.clone(), cx)
+                                })),
+                        )
+                        .child(
+                            settings_theme::button(("theme-delete", index), false, cx)
+                                .child(this.i18n.text("theme_delete"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.theme_delete(&delete_id, cx)
+                                })),
+                        )
+                        .into_any_element()
+                },
             ));
         }
-        section.when_some(self.themes.message.clone(), |d, message| {
-            d.child(div().py_1().child(message))
-        })
+        if let Some(message) = self.themes.message.clone() {
+            items.push(SettingItem::render(move |_, _, _| {
+                div().py_1().child(message.clone())
+            }));
+        }
+        items
+    }
+
+    /// The rows of the standard wallpapers group: whether the light and dark
+    /// themes have their own, which of them the miniature edits, and the
+    /// miniature with the controls of the selected area.
+    pub(crate) fn wallpaper_items(&self, this: &WeakEntity<Self>, cx: &App) -> Vec<SettingItem> {
+        let appearance = self.shown_appearance(cx);
+        let split = appearance.split_wallpapers();
+        let dark = self.wallpaper_side(&appearance, cx);
+        let mut items = vec![
+            SettingItem::new(
+                self.i18n.text("wallpaper_shared"),
+                SettingField::switch(move |_| split, {
+                    let this = this.clone();
+                    move |_, cx| {
+                        let _ = this.update(cx, |this, cx| this.wallpaper_set_shared(cx));
+                    }
+                }),
+            )
+            .description(self.i18n.text("wallpaper_shared_hint")),
+        ];
+        if split {
+            let labels = [false, true]
+                .map(|mode| {
+                    (
+                        SharedString::from(u8::from(mode).to_string()),
+                        self.theme_kind_label(mode).into(),
+                    )
+                })
+                .to_vec();
+            let this = this.clone();
+            items.push(
+                SettingItem::new(
+                    self.i18n.text("wallpaper_editing"),
+                    SettingField::dropdown(
+                        labels,
+                        move |_| u8::from(dark).to_string().into(),
+                        move |value, cx| {
+                            let _ = this.update(cx, |this, cx| {
+                                this.themes.wallpaper.dark = value == "1";
+                                this.themes.wallpaper.status = None;
+                                cx.notify();
+                            });
+                        },
+                    ),
+                )
+                .description(self.i18n.text("wallpaper_editing_hint")),
+            );
+        }
+        items.push(element_item(this, |this, window, cx| {
+            this.render_wallpaper_settings(window, cx)
+                .into_any_element()
+        }));
+        items
     }
 
     /// The standard wallpapers: a miniature of the four areas laid out as in
@@ -1087,6 +1135,7 @@ impl SettingsWindow {
             .gap_1()
             .w(px(520.))
             .max_w_full()
+            .min_w_0()
             .h(px(280.))
             .child(
                 div()
@@ -1127,15 +1176,6 @@ impl SettingsWindow {
             format!(" ({})", self.theme_kind_label(dark))
         } else {
             String::new()
-        };
-        let mode_button = |mode: bool, cx: &mut Context<Self>| {
-            settings_theme::button(("wallpaper-mode", usize::from(mode)), mode == dark, cx)
-                .child(self.theme_kind_label(mode))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.themes.wallpaper.dark = mode;
-                    this.themes.wallpaper.status = None;
-                    cx.notify();
-                }))
         };
         let controls = div()
             .flex()
@@ -1331,38 +1371,8 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                settings_theme::setting_row(
-                    self.i18n.text("wallpaper_heading"),
-                    Some(self.i18n.text("wallpaper_hint").into()),
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(settings_theme::checkbox(split, true, cx))
-                        .child(self.i18n.text("wallpaper_shared")),
-                    cx,
-                )
-                .id("split-wallpapers")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.wallpaper_set_shared(cx);
-                })),
-            )
-            .when(split, |d| {
-                d.child(settings_theme::setting_row(
-                    String::new(),
-                    None,
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(mode_button(false, cx))
-                        .child(mode_button(true, cx)),
-                    cx,
-                ))
-            })
-            .child(preview)
+            // Right-aligned like the controls of the rows around it.
+            .child(div().flex().justify_end().w_full().min_w_0().child(preview))
             .child(controls)
             .children(sliders)
             .children(detail)
@@ -1457,53 +1467,6 @@ mod tests {
         dark: bool,
     ) -> (String, bool) {
         form.read_with(cx, |form, cx| form.shown_appearance(cx).theme_status(dark))
-    }
-
-    #[gpui::test]
-    fn the_theme_select_works_from_the_keyboard(cx: &mut TestAppContext) {
-        let settings = settings_with_channels("#a");
-        let _file = TestFile::with(&settings);
-        let (form, cx) = open_in(&settings, ThemeMode::Light, cx);
-        form.update_in(cx, |form, window, cx| {
-            form.tab = crate::settings_window::SettingsTab::Appearance;
-            let focus = form.selects[0].focus_handle().clone();
-            window.focus(&focus, cx);
-            cx.notify();
-        });
-        cx.run_until_parked();
-        let state = |cx: &mut VisualTestContext| {
-            form.read_with(cx, |f, _| (f.open_select, f.settings.values.theme, f.tab))
-        };
-        // A full key press: GPUI turns Enter/Space into a click on the release.
-        let press = |cx: &mut VisualTestContext, key: &'static str| {
-            cx.simulate_keystrokes(key);
-            cx.simulate_event(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
-            });
-        };
-        // Space on the closed list opens it, once.
-        press(cx, "space");
-        assert_eq!(state(cx).0, Some("theme"));
-        cx.simulate_keystrokes("escape");
-        // Down opens the list without moving the navigation.
-        cx.simulate_keystrokes("down");
-        let (open, mode, tab) = state(cx);
-        assert_eq!(open, Some("theme"));
-        assert_eq!(mode, ThemeMode::Light);
-        assert!(tab == crate::settings_window::SettingsTab::Appearance);
-        // Down moves the highlight, Enter chooses it.
-        cx.simulate_keystrokes("down");
-        press(cx, "enter");
-        let (open, mode, tab) = state(cx);
-        assert_eq!(open, None);
-        assert_eq!(mode, ThemeMode::Dark);
-        assert!(tab == crate::settings_window::SettingsTab::Appearance);
-        // Escape closes the list and keeps the value.
-        press(cx, "enter");
-        cx.simulate_keystrokes("up escape");
-        let (open, mode, _) = state(cx);
-        assert_eq!(open, None);
-        assert_eq!(mode, ThemeMode::Dark);
     }
 
     #[gpui::test]
@@ -1636,9 +1599,12 @@ mod tests {
         // The miniature loaded the same picture through the chat window's
         // loader (limits, decode gate).
         form.update(cx, |form, cx| {
-            form.tab = crate::settings_window::SettingsTab::Appearance;
+            form.show_tab(crate::settings_window::SettingsTab::Appearance, cx);
             cx.notify();
         });
+        cx.run_until_parked();
+        // The Kit's page draws only the groups in view.
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(8000.)));
         cx.run_until_parked();
         form.update(cx, |form, _| {
             let preview = &mut form.themes.wallpaper.preview;
@@ -1951,7 +1917,7 @@ mod tests {
         crate::settings_file::use_theme_root(root.path());
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
-            form.tab = crate::settings_window::SettingsTab::Appearance;
+            form.show_tab(crate::settings_window::SettingsTab::Appearance, cx);
             cx.notify();
         });
         cx.run_until_parked();

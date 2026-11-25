@@ -80,6 +80,7 @@ mod select_unit;
 mod session;
 mod settings_file;
 mod settings_items;
+mod settings_kit;
 mod settings_reset;
 mod settings_theme;
 mod settings_transfer;

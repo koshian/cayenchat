@@ -609,20 +609,26 @@ const ICONS: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// CayenChat's own icons first, then the GPUI Kit's (`icons/minus.svg` and the
+/// like), which the Kit's parts in the settings window draw.
 impl AssetSource for Icons {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(ICONS
-            .iter()
-            .find(|(name, _)| *name == path)
-            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+        if let Some((_, bytes)) = ICONS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        // The Kit's source reports an unknown path as an error; here it is
+        // "not found", as for the icons above.
+        Ok(gpui_kit_assets::Assets.load(path).ok().flatten())
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(ICONS
+        let mut names: Vec<SharedString> = ICONS
             .iter()
             .filter(|(name, _)| name.starts_with(path))
             .map(|(name, _)| SharedString::from(*name))
-            .collect())
+            .collect();
+        names.extend(gpui_kit_assets::Assets.list(path)?);
+        Ok(names)
     }
 }
 
@@ -835,5 +841,19 @@ mod tests {
                 assert!(loaded.is_some(), "{}", button.icon);
             }
         }
+    }
+
+    #[test]
+    fn the_kits_icons_are_found_after_our_own() {
+        let icons = Icons;
+        // What the Kit's number input and search field draw.
+        for path in ["icons/minus.svg", "icons/plus.svg", "icons/search.svg"] {
+            assert!(icons.load(path).unwrap().is_some(), "{path}");
+        }
+        assert!(icons.load("icons/ui/settings.svg").unwrap().is_some());
+        assert!(icons.load("icons/nothing-here.svg").unwrap().is_none());
+        let listed = icons.list("icons/").unwrap();
+        assert!(listed.iter().any(|name| name == "icons/plus.svg"));
+        assert!(listed.iter().any(|name| name == "icons/ui/settings.svg"));
     }
 }

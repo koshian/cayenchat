@@ -2612,6 +2612,10 @@ impl Interactivity {
                                         // to the first item in the whole window instead of its own.
                                         if let Some(focus_handle) = &self.tracked_focus_handle {
                                             window.next_frame.tab_stops.insert(focus_handle);
+                                            if focus_handle.is_focused(window) {
+                                                window.focused_bounds =
+                                                    Some((focus_handle.id, bounds));
+                                            }
                                         }
                                         if let Some(hitbox) = hitbox {
                                             #[cfg(debug_assertions)]

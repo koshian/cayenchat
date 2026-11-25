@@ -8,8 +8,7 @@ use crate::{
     ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts, autostart, avatar_editor,
     color_picker, decorations, delete_secrets, diagnostics, focus_reveal, i18n_error,
     input::TextInput, ircv3_settings, localization::Localizer, notification_rules,
-    removed_secret_keys, scrollbar, secrets, settings_file, settings_theme, shortcut_settings,
-    theme,
+    removed_secret_keys, secrets, settings_file, settings_theme, shortcut_settings, theme,
 };
 use cayenchat_app::attachments::AttachmentFlow;
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
@@ -1022,23 +1021,37 @@ impl SettingsForm {
         self.show_fonts(&fonts, cx);
     }
 
-    /// Changes a size by `delta` px, within the allowed range.
-    pub(crate) fn step_font_size(&self, target: FontTarget, delta: i32, cx: &mut App) {
-        let field = &self.font_sizes[target as usize];
+    /// The size of a font as the form holds it: the typed whole number of
+    /// px, or the standard size while the text is not one.
+    pub(crate) fn font_size(&self, target: FontTarget, cx: &App) -> u16 {
         let standard = FontSet::default();
-        let current = font_size_text_value(field.read(cx).text()).unwrap_or(match target {
-            FontTarget::ChannelLog => standard.channel_log_font_size,
-            FontTarget::CombinedLog => standard.combined_log_font_size,
-            FontTarget::MemberList => standard.member_list_font_size,
-            FontTarget::ChannelTree => standard.channel_tree_font_size,
-            FontTarget::Input => standard.input_font_size,
-            FontTarget::Time => standard.time_font_size,
-        });
-        let next = (i32::from(current) + delta).clamp(
-            i32::from(cayenchat_storage::MIN_FONT_SIZE),
-            i32::from(cayenchat_storage::MAX_FONT_SIZE),
+        font_size_text_value(self.font_sizes[target as usize].read(cx).text()).unwrap_or(
+            match target {
+                FontTarget::ChannelLog => standard.channel_log_font_size,
+                FontTarget::CombinedLog => standard.combined_log_font_size,
+                FontTarget::MemberList => standard.member_list_font_size,
+                FontTarget::ChannelTree => standard.channel_tree_font_size,
+                FontTarget::Input => standard.input_font_size,
+                FontTarget::Time => standard.time_font_size,
+            },
+        )
+    }
+
+    /// Changes a size by `delta` px, within the allowed range.
+    #[cfg(test)]
+    pub(crate) fn step_font_size(&self, target: FontTarget, delta: i32, cx: &mut App) {
+        let next = i32::from(self.font_size(target, cx)) + delta;
+        self.set_font_size(target, next.clamp(0, i32::from(u16::MAX)) as u16, cx);
+    }
+
+    /// Sets a size, within the allowed range.
+    pub(crate) fn set_font_size(&self, target: FontTarget, size: u16, cx: &mut App) {
+        let size = size.clamp(
+            cayenchat_storage::MIN_FONT_SIZE,
+            cayenchat_storage::MAX_FONT_SIZE,
         );
-        field.update(cx, |field, cx| field.set_text(&next.to_string(), cx));
+        self.font_sizes[target as usize]
+            .update(cx, |field, cx| field.set_text(&size.to_string(), cx));
     }
 }
 
@@ -1286,36 +1299,38 @@ pub(crate) struct SettingsWindow {
     pub(crate) settings: SettingsForm,
     pub(crate) feedback: Option<String>,
     pub(crate) tab: SettingsTab,
-    /// The category list on the left; Up and Down move through it.
+    /// Where the focus waits while no field has it, so Escape still reaches
+    /// the window.
     pub(crate) nav_focus: FocusHandle,
-    pub(crate) nav_scroll: ScrollHandle,
-    pub(crate) pane_scroll: ScrollHandle,
+    /// Counts the times the tab was changed from outside the Kit's sidebar;
+    /// a new value gives the Kit's `Settings` a new state that opens on `tab`.
+    pub(crate) kit_generation: u32,
     /// Frames still allowed to scroll to the field Tab moved to: the first
     /// renders before the field is painted at its new place, the second after.
     reveal_focus: u8,
-    pub(crate) font_picker: Option<FontTarget>,
+    /// Where the Kit's `Settings` was last painted, and the direction of the
+    /// Tab being followed there (see `reveal_focused`).
+    kit_bounds: Option<Bounds<Pixels>>,
+    reveal_forward: bool,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Painted track and keyboard focus of the declared sliders (opacity,
     /// line height, blur strength).
     pub(crate) sliders: Vec<crate::settings_items::SliderState>,
-    /// The id of the declared select box whose list is open (#622).
-    pub(crate) open_select: Option<&'static str>,
-    /// Keyboard focus of the declared select boxes, and the highlighted
-    /// option of the open list.
-    pub(crate) selects: Vec<crate::settings_items::SelectState>,
-    pub(crate) select_cursor: usize,
     /// Whether this window's platform can blur what lies behind it, read
     /// from the window on each render (#1018).
-    blur_supported: bool,
+    pub(crate) blur_supported: bool,
     /// Whether the blur strength can be chosen there (macOS only), with the
     /// strength slider's painted track and keyboard focus (#1018).
-    blur_radius_supported: bool,
+    pub(crate) blur_radius_supported: bool,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
-    /// The system's font names, listed when the font list is first opened.
-    fonts: Vec<String>,
+    /// The system's font names, listed when a font dropdown is first drawn.
+    pub(crate) fonts: Vec<SharedString>,
+    /// The dropdown of each font name with the default label it was built with
+    /// (the language may change); the form's text field holds the value.
+    pub(crate) font_selects: [Option<(crate::settings_kit::FontSelect, String)>; 6],
     pub(crate) i18n: Localizer,
     /// Result of probing the system credential store; `None` while checking.
     pub(crate) system_store: Option<Result<(), String>>,
@@ -1411,6 +1426,15 @@ enum SaveMode {
 /// See `SettingsWindow::reveal_focus`.
 const REVEAL_FRAMES: u8 = 2;
 
+/// Frames the Kit's page may take to scroll to a field Tab moved to: the list
+/// paints only the rows near its view, so a far field is approached a view at
+/// a time.
+const KIT_REVEAL_FRAMES: u8 = 12;
+
+/// The top of the Kit's page that its title covers, which is not the view of
+/// the rows below it.
+const KIT_PAGE_HEADER: Pixels = px(72.);
+
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -1430,9 +1454,9 @@ pub(crate) type ChoiceButton = (&'static str, bool, Box<dyn Fn(&mut Settings)>);
 /// Width of the `#RRGGBB` field of a color row: seven characters and padding.
 const COLOR_FIELD_WIDTH: f32 = 96.;
 /// Width of a font name field.
-const FONT_FIELD_WIDTH: f32 = 200.;
+pub(crate) const FONT_FIELD_WIDTH: f32 = 200.;
 /// Width of one color cell: the swatch, the gap and the field.
-const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
+pub(crate) const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
 
 impl SettingsWindow {
     /// The row of a declared `Choice` item: each option is its label key,
@@ -1597,21 +1621,19 @@ impl SettingsWindow {
             settings,
             feedback: None,
             tab: SettingsTab::Connection,
-            nav_focus: cx.focus_handle().tab_stop(true),
-            nav_scroll: ScrollHandle::new(),
-            pane_scroll: ScrollHandle::new(),
+            nav_focus: cx.focus_handle(),
+            kit_generation: 0,
             reveal_focus: 0,
-            font_picker: None,
+            kit_bounds: None,
+            reveal_forward: true,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
-            open_select: None,
-            selects: crate::settings_items::SelectState::all(cx),
-            select_cursor: 0,
             blur_supported: true,
             blur_radius_supported: false,
             color_picker: None,
             shortcut_recording: None,
             fonts: Vec::new(),
+            font_selects: Default::default(),
             i18n,
             system_store: None,
             upload_token,
@@ -1887,8 +1909,6 @@ impl SettingsWindow {
         // The chat window follows too, so that a later save, which compares
         // with `saved`, does not find nothing to apply (#147).
         self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
-        self.font_picker = None;
-        self.open_select = None;
         self.color_picker = None;
         self.auto_join = None;
         self.shortcut_recording = None;
@@ -2718,12 +2738,6 @@ impl SettingsWindow {
             cx.notify();
         } else if self.color_picker.is_some() {
             self.color_picker = None;
-            cx.notify();
-        } else if self.font_picker.is_some() {
-            self.font_picker = None;
-            cx.notify();
-        } else if self.open_select.is_some() {
-            self.open_select = None;
             cx.notify();
         } else if self.settings.server_list_open
             || self.settings.ircv3_server_list_open
@@ -3773,7 +3787,7 @@ impl SettingsWindow {
             window.focus(&dialog.focus, cx);
         }
         // Only the dialog's own list follows; the panes behind stay put.
-        focus_reveal::clear(cx);
+        focus_reveal::clear(window, cx);
         self.reveal_focus = REVEAL_FRAMES;
         cx.notify();
     }
@@ -3786,53 +3800,42 @@ impl SettingsWindow {
         } else {
             window.focus_prev(cx);
         }
-        // Tab leaves an open select list behind.
-        self.open_select = None;
-        // The dialog covers the panes; nothing behind it needs to follow.
-        if self.auto_join.is_none() {
-            if self.nav_focus.is_focused(window) {
-                self.reveal_selected_tab();
-            }
-            focus_reveal::clear(cx);
-            self.reveal_focus = REVEAL_FRAMES;
-            cx.notify();
-        }
+        focus_reveal::clear(window, cx);
+        self.reveal_focus = KIT_REVEAL_FRAMES;
+        self.reveal_forward = forward;
+        cx.notify();
     }
 
-    /// Scrolls the category list just enough to show the selected category.
-    fn reveal_selected_tab(&self) {
-        let tabs = Self::settings_tabs();
-        let Some(index) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
-            return;
-        };
-        // The last category (Experimental) follows a spacer child.
-        let spacer = usize::from(index + 1 == tabs.len());
-        self.nav_scroll.scroll_to_item(index + spacer);
-    }
-
-    /// While a Tab is being followed, scrolls the pane (or the dialog's list)
-    /// to the field that has the focus unless it is already in view. The
-    /// bounds are those the field painted at its new place, so the frame
-    /// right after the Tab finds none and asks for one more.
-    fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+    /// While a Tab is being followed, scrolls to the field that has the focus
+    /// unless it is already in view. The bounds are those the field painted at
+    /// its new place, so the frame right after the Tab finds none and asks for
+    /// one more. The auto-join dialog's list is scrolled through its handle.
+    /// The Kit's pages give no handle, so they are scrolled by the wheel
+    /// events the page itself listens to; a field the list has not painted
+    /// yet is approached a view at a time.
+    fn reveal_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reveal_focus == 0 {
             return;
         }
         self.reveal_focus -= 1;
-        let Some(target) = focus_reveal::focused_bounds(window, cx) else {
-            if self.reveal_focus > 0 {
-                // Notifying while drawing does not schedule another frame.
-                let this = cx.entity();
-                window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
-            }
+        let target = focus_reveal::focused_bounds(window, cx);
+        if target.is_none() && self.reveal_focus > 0 {
+            // Notifying while drawing does not schedule another frame.
+            let this = cx.entity();
+            window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+        }
+        if self.auto_join.is_none() {
+            self.reveal_in_kit_page(target, window, cx);
+            return;
+        }
+        let Some(target) = target else {
             return;
         };
         self.reveal_focus = 0;
-        // With the dialog open, the scrolling region is its list.
-        let scroll = match &self.auto_join {
-            Some(dialog) => &dialog.scroll,
-            None => &self.pane_scroll,
+        let Some(dialog) = &self.auto_join else {
+            return;
         };
+        let scroll = &dialog.scroll;
         let offset = scroll.offset();
         let y = focus_reveal::offset_to_reveal(
             scroll.bounds(),
@@ -3843,6 +3846,46 @@ impl SettingsWindow {
         if y != offset.y {
             scroll.set_offset(point(offset.x, y));
         }
+    }
+
+    /// One step of `reveal_focused` on a Kit page: scrolls by what shows
+    /// `target`, or, while the field is not painted, by most of a view
+    /// towards where Tab is going.
+    fn reveal_in_kit_page(
+        &mut self,
+        target: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut view) = self.kit_bounds else {
+            self.reveal_focus = 0;
+            return;
+        };
+        view.origin.y += KIT_PAGE_HEADER;
+        view.size.height = (view.size.height - KIT_PAGE_HEADER).max(px(0.));
+        let delta = match target {
+            Some(target) => {
+                self.reveal_focus = 0;
+                focus_reveal::delta_to_reveal(view, target)
+            }
+            // The frame right after the Tab has not painted the field yet.
+            None if self.reveal_focus + 1 == KIT_REVEAL_FRAMES => return,
+            None if self.reveal_forward => -view.size.height * 0.8,
+            None => view.size.height * 0.8,
+        };
+        if delta == px(0.) {
+            return;
+        }
+        let event = ScrollEvent {
+            position: point(view.right() - px(24.), view.center().y),
+            delta: ScrollDelta::Pixels(point(px(0.), delta)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
+        };
+        window.defer(cx, move |window, cx| {
+            window.dispatch_event(PlatformInput::Scroll(event), cx);
+        });
     }
 
     /// Stores the dialog's rows in the `channels` field and in the shown
@@ -4011,7 +4054,7 @@ impl SettingsWindow {
         })
     }
 
-    fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let connected = self.selected_connected(cx);
         self.connected_shown = connected;
@@ -4921,7 +4964,7 @@ impl SettingsWindow {
         )
     }
 
-    fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
+    pub(crate) fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
         match target {
             FontTarget::ChannelLog => self.settings.channel_log_font.clone(),
             FontTarget::CombinedLog => self.settings.combined_log_font.clone(),
@@ -4932,25 +4975,8 @@ impl SettingsWindow {
         }
     }
 
-    /// The Light/Dark column headings above the color rows, lined up with the
-    /// two cells of `color_pair`.
-    fn color_headings(&self, cx: &mut Context<Self>) -> Div {
-        let heading = |key: &str| {
-            div()
-                .w(px(COLOR_CELL_WIDTH))
-                .flex_shrink_0()
-                .child(self.i18n.text(key))
-        };
-        let pair = div()
-            .flex()
-            .gap_4()
-            .child(heading("colors_light"))
-            .child(heading("colors_dark"));
-        settings_theme::setting_row(String::new(), None, pair, cx)
-    }
-
     /// One swatch that opens the color picker, and a `#RRGGBB` field.
-    fn color_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn color_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) -> Div {
         let theme = theme::current(cx);
         let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
         let open = self
@@ -4979,38 +5005,6 @@ impl SettingsWindow {
                     })),
             )
             .child(div().w(px(COLOR_FIELD_WIDTH)).child(input.clone()))
-    }
-
-    /// A color setting with its light-theme and dark-theme values side by
-    /// side; the picker for either opens below the row.
-    fn color_pair(
-        &self,
-        label: &str,
-        light: &Entity<TextInput>,
-        dark: &Entity<TextInput>,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let picker_here = self
-            .color_picker
-            .as_ref()
-            .is_some_and(|open| open.field == *light || open.field == *dark);
-        let pair = div()
-            .flex()
-            .gap_4()
-            .child(self.color_input(light, cx))
-            .child(self.color_input(dark, cx));
-        div()
-            .flex()
-            .flex_col()
-            .child(settings_theme::setting_row(
-                label.to_owned(),
-                None,
-                pair,
-                cx,
-            ))
-            .when(picker_here, |d| {
-                d.child(div().py_2().child(self.render_color_panel(cx)))
-            })
     }
 
     /// Opens the color picker for `field`, or closes it when it is open for
@@ -5073,7 +5067,7 @@ impl SettingsWindow {
     }
 
     /// The picker and the saved palette, under the row being edited.
-    fn render_color_panel(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_color_panel(&self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let Some(open) = &self.color_picker else {
             return div();
@@ -5114,399 +5108,30 @@ impl SettingsWindow {
                     ),
             );
         }
-        div()
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .gap_4()
-            .child(open.picker.clone())
-            .child(
-                div().flex().flex_col().gap_2().child(palette).child(
-                    settings_theme::button("palette-save", false, cx)
-                        .when(!can_save, |button| button.opacity(0.5).cursor_default())
-                        .child(self.i18n.text("palette_save"))
-                        .when(can_save, |button| {
-                            button.on_click(cx.listener(move |this, _, _, cx| {
-                                let color = this.color_picker.as_ref().map(|open| {
-                                    color_picker::format_hex(open.picker.read(cx).color())
-                                });
-                                if let Some(color) = color {
-                                    let _ = this.settings.values.appearance.save_color(&color);
-                                }
-                                cx.notify();
-                            }))
-                        }),
-                ),
-            )
-    }
-
-    /// The size input with a button on each side that steps it by 1 px; a
-    /// button is disabled (dimmed) at the end of the allowed range.
-    fn font_size_stepper(&self, target: FontTarget, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let field = self.settings.font_sizes[target as usize].clone();
-        let size = field
-            .read(cx)
-            .text()
-            .trim()
-            .parse::<u16>()
-            .unwrap_or(cayenchat_storage::MIN_FONT_SIZE);
-        let button = |id: &'static str, label: &'static str, delta: i32, enabled: bool| {
-            let button = div()
-                .id((id, target as u32))
-                .w(px(24.))
-                .py_1()
-                .flex()
-                .justify_center()
-                .border_1()
-                .border_color(theme.border)
-                .child(label);
-            if enabled {
-                button
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings.step_font_size(target, delta, cx);
-                        cx.notify();
-                    }))
-            } else {
-                button.text_color(theme.text_secondary).opacity(0.4)
-            }
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .flex_shrink_0()
-            .child(button(
-                "font-size-down",
-                "\u{2212}",
-                -1,
-                size > cayenchat_storage::MIN_FONT_SIZE,
-            ))
-            .child(div().w(px(56.)).child(field))
-            .child(button(
-                "font-size-up",
-                "+",
-                1,
-                size < cayenchat_storage::MAX_FONT_SIZE,
-            ))
-    }
-
-    /// The switch for separate light and dark fonts and, while it is on,
-    /// the choice of the theme whose fonts the rows below show.
-    fn render_font_mode(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let theme = settings_theme::palette(cx);
-        let split = self.settings.values.appearance.split_fonts;
-        let side = self.settings.font_side_dark;
-        let mut tabs = div().flex().gap_2();
-        if split {
-            let tab = |id: &'static str, key: &str, dark: bool| {
-                div()
-                    .id(id)
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(side == dark, |d| d.bg(theme.hover))
-                    .child(self.i18n.text(key))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        // The row around it switches the split; this click
-                        // is only the side.
-                        cx.stop_propagation();
-                        this.settings.select_font_side(dark, cx);
-                        this.font_picker = None;
-                        cx.notify();
-                    }))
-            };
-            tabs = tabs
-                .child(tab("font-side-light", "theme_kind_light", false))
-                .child(tab("font-side-dark", "theme_kind_dark", true));
-        }
-        let control = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_4()
-            .child(tabs)
-            .child(settings_theme::checkbox(split, true, cx));
-        settings_theme::setting_row(self.i18n.text("split_fonts"), None, control, cx)
-            .id("split-fonts")
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let on = !this.settings.values.appearance.split_fonts;
-                this.settings.set_split_fonts(on, cx);
-                this.font_picker = None;
-                cx.notify();
-            }))
-    }
-
-    fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let input = self.font_input(target);
-        let control = div()
-            .flex()
-            .flex_wrap()
-            .justify_end()
-            .items_center()
-            .gap_2()
-            .child(div().w(px(FONT_FIELD_WIDTH)).child(input.clone()))
-            .child(self.font_size_stepper(target, cx))
-            .child(
-                div()
-                    .id(("font-picker", target as u32))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .child(self.i18n.text("choose_font"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.font_picker = if this.font_picker == Some(target) {
-                            None
-                        } else {
-                            Some(target)
-                        };
-                        // Listing the system's fonts takes a while (many
-                        // seconds in a debug build), so it waits until a
-                        // list is wanted instead of slowing every opening
-                        // of the settings window.
-                        if this.font_picker.is_some() && this.fonts.is_empty() {
-                            let mut fonts = window.text_system().all_font_names();
-                            fonts.sort_unstable();
-                            fonts.dedup();
-                            this.fonts = fonts;
-                        }
-                        cx.notify();
-                    })),
-            );
-        let mut field = div().flex().flex_col().child(settings_theme::setting_row(
-            label.to_owned(),
-            None,
-            control,
-            cx,
-        ));
-        if self.font_picker == Some(target) {
-            let query = input.read(cx).text().trim().to_lowercase();
-            let mut choices = div()
-                .id(("font-choices", target as u32))
-                .my_2()
-                .max_h(px(170.))
-                .overflow_y_scroll()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            choices = choices.child(
-                div()
-                    .id(("font-system", target as u32))
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .child(self.i18n.text(if target == FontTarget::Time {
-                        "default_monospace"
-                    } else {
-                        "system_default"
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.font_input(target)
-                            .update(cx, |field, cx| field.set_text("", cx));
-                        this.font_picker = None;
-                        cx.notify();
-                    })),
-            );
-            for (index, name) in self
-                .fonts
-                .iter()
-                .filter(|name| name.to_lowercase().contains(&query))
-                .enumerate()
-            {
-                let name = name.clone();
-                choices = choices.child(
-                    div()
-                        .id(("font-choice", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .child(name.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.font_input(target)
-                                .update(cx, |field, cx| field.set_text(&name, cx));
-                            this.font_picker = None;
+        div().flex().gap_4().child(open.picker.clone()).child(
+            div().flex().flex_col().gap_2().child(palette).child(
+                settings_theme::button("palette-save", false, cx)
+                    .when(!can_save, |button| button.opacity(0.5).cursor_default())
+                    .child(self.i18n.text("palette_save"))
+                    .when(can_save, |button| {
+                        button.on_click(cx.listener(move |this, _, _, cx| {
+                            let color = this
+                                .color_picker
+                                .as_ref()
+                                .map(|open| color_picker::format_hex(open.picker.read(cx).color()));
+                            if let Some(color) = color {
+                                let _ = this.settings.values.appearance.save_color(&color);
+                            }
                             cx.notify();
-                        })),
-                );
-            }
-            field = field.child(choices);
-        }
-        field
-    }
-
-    /// The window-wide background blur switch (#1018). It only does
-    /// something where the platform blurs behind the window, so elsewhere it
-    /// is shown disabled with the reason; the stored value is kept.
-    fn render_background_blur(&self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let supported = self.blur_supported;
-        let hint = if supported && self.blur_radius_supported {
-            "background_blur_hint_adjustable"
-        } else if supported {
-            "background_blur_hint"
-        } else {
-            "background_blur_unsupported"
-        };
-        let mut row = settings_theme::setting_row(
-            self.i18n.text("background_blur"),
-            Some(self.i18n.text(hint).into()),
-            settings_theme::checkbox(
-                self.settings.values.appearance.background_blur,
-                supported,
-                cx,
+                        }))
+                    }),
             ),
-            cx,
         )
-        .id("background-blur");
-        if supported {
-            row = row.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
-                let value = &mut this.settings.values.appearance.background_blur;
-                *value = !*value;
-                cx.notify();
-            }));
-        } else {
-            row = row.text_color(theme.text_muted);
-        }
-        div()
-            .flex()
-            .flex_col()
-            .child(row)
-            .when(supported && self.blur_radius_supported, |d| {
-                d.children(self.render_items(crate::settings_items::BLUR_RADIUS, cx))
-            })
-    }
-
-    fn render_appearance_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        account_settings::panel(cx)
-            .child(self.tab_heading("appearance"))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("appearance_intro")),
-            )
-            .children(self.render_items(crate::settings_items::APPEARANCE_THEME, cx))
-            .child(self.render_theme_settings(cx))
-            .child(self.color_headings(cx))
-            .child(self.color_pair(
-                &self.i18n.text("member_list_background"),
-                &self.settings.member_list_background,
-                &self.settings.dark_member_list_background,
-                cx,
-            ))
-            .children(self.render_items(crate::settings_items::OPACITY_MEMBER_LIST, cx))
-            .child(self.color_pair(
-                &self.i18n.text("channel_tree_background"),
-                &self.settings.channel_tree_background,
-                &self.settings.dark_channel_tree_background,
-                cx,
-            ))
-            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_TREE, cx))
-            .child(self.color_pair(
-                &self.i18n.text("channel_log"),
-                &self.settings.channel_log_background,
-                &self.settings.dark_channel_log_background,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("channel_log_alternate"),
-                &self.settings.channel_log_alternate,
-                &self.settings.dark_channel_log_alternate,
-                cx,
-            ))
-            .children(self.render_items(crate::settings_items::OPACITY_CHANNEL_LOG, cx))
-            .child(self.color_pair(
-                &self.i18n.text("channel_event_color"),
-                &self.settings.channel_event_color,
-                &self.settings.dark_channel_event_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("notice_color"),
-                &self.settings.notice_color,
-                &self.settings.dark_notice_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("highlight_color"),
-                &self.settings.highlight_color,
-                &self.settings.dark_highlight_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("combined_log"),
-                &self.settings.combined_log_background,
-                &self.settings.dark_combined_log_background,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("combined_log_alternate"),
-                &self.settings.combined_log_alternate,
-                &self.settings.dark_combined_log_alternate,
-                cx,
-            ))
-            .children(self.render_items(crate::settings_items::OPACITY_COMBINED_LOG, cx))
-            .child(self.color_pair(
-                &self.i18n.text("link_color"),
-                &self.settings.link_color,
-                &self.settings.dark_link_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("link_background"),
-                &self.settings.link_background,
-                &self.settings.dark_link_background,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("url_tooltip_color"),
-                &self.settings.url_tooltip_color,
-                &self.settings.dark_url_tooltip_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("url_tooltip_link_color"),
-                &self.settings.url_tooltip_link_color,
-                &self.settings.dark_url_tooltip_link_color,
-                cx,
-            ))
-            .child(self.color_pair(
-                &self.i18n.text("url_tooltip_text_color"),
-                &self.settings.url_tooltip_text_color,
-                &self.settings.dark_url_tooltip_text_color,
-                cx,
-            ))
-            .children(self.render_items(crate::settings_items::OPACITY_URL_TOOLTIP, cx))
-            .child(self.render_background_blur(cx))
-            .children(self.render_items(crate::settings_items::APPEARANCE_ROWS, cx))
-            .child(self.render_wallpaper_settings(window, cx))
-            .child(self.render_font_mode(cx))
-            .child(self.font_field(FontTarget::ChannelLog, &self.i18n.text("channel_log"), cx))
-            .children(self.render_items(crate::settings_items::LINE_HEIGHT_CHANNEL_LOG, cx))
-            .child(self.font_field(FontTarget::CombinedLog, &self.i18n.text("combined_log"), cx))
-            .children(self.render_items(crate::settings_items::LINE_HEIGHT_COMBINED_LOG, cx))
-            .child(self.font_field(FontTarget::MemberList, &self.i18n.text("member_list"), cx))
-            .child(self.font_field(FontTarget::ChannelTree, &self.i18n.text("channel_tree"), cx))
-            .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
-            .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
     /// The send and NOTICE keys, the channel-number and draft-editing keys
     /// (only Windows and Linux have choices there), then the shortcut list.
-    fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let clash = self
             .settings
@@ -5535,7 +5160,7 @@ impl SettingsWindow {
     /// Desktop notification preferences, shown through the operating
     /// system's notification service. The rows come from
     /// `settings_items::NOTIFICATIONS`.
-    fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         account_settings::panel(cx)
             .child(self.tab_heading("notifications_tab"))
@@ -5546,55 +5171,8 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Notifications, cx))
     }
 
-    fn settings_tab(
-        &self,
-        tab: SettingsTab,
-        id: &'static str,
-        label_key: &str,
-        nav_focused: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let theme = settings_theme::palette(cx);
-        let selected = self.tab == tab;
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .w_full()
-            .px_3()
-            .py_2()
-            .border_l_2()
-            // The indicator takes the link color while Up/Down act on the list.
-            .border_color(if selected && nav_focused {
-                theme.link.into()
-            } else if selected {
-                theme.text.into()
-            } else {
-                gpui::transparent_black()
-            })
-            .whitespace_nowrap()
-            .cursor_pointer()
-            .when(selected, |d| {
-                d.bg(theme.selected).font_weight(FontWeight::BOLD)
-            })
-            .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
-            .child(self.i18n.text(label_key))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_tab(tab, window, cx);
-            }))
-    }
-
-    /// Shows `tab` from the category list, which keeps the focus so Up and
-    /// Down continue from it.
-    fn select_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_tab(tab, cx);
-        self.font_picker = None;
-        self.open_select = None;
-        window.focus(&self.nav_focus, cx);
-        cx.notify();
-    }
-
     /// The categories in list order; the last, Experimental, stands apart.
-    fn settings_tabs() -> Vec<(SettingsTab, &'static str, &'static str)> {
+    pub(crate) fn settings_tabs() -> Vec<(SettingsTab, &'static str, &'static str)> {
         let mut tabs = vec![
             (SettingsTab::Connection, "connection-tab", "connection"),
             (
@@ -5631,31 +5209,26 @@ impl SettingsWindow {
         tabs
     }
 
-    /// Up and Down move through the categories while the list has focus.
-    fn nav_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // A key being recorded for a shortcut belongs to the recording.
-        if self.shortcut_recording.is_some() || event.keystroke.modifiers.modified() {
-            return;
-        }
-        let step: isize = match event.keystroke.key.as_str() {
-            "up" => -1,
-            "down" => 1,
-            _ => return,
-        };
-        let tabs = Self::settings_tabs();
-        let Some(current) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
-            return;
-        };
-        if let Some((tab, ..)) = tabs.get(current.wrapping_add_signed(step)) {
-            self.select_tab(*tab, window, cx);
-            cx.stop_propagation();
-        }
-    }
-
     /// Switches tabs. A message about something done on one tab (such as
     /// connecting an image upload account) is not shown on the others;
     /// an autosave failure still is.
     pub(crate) fn show_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        if self.tab != tab {
+            // The Kit's page follows: its `Settings` opens on the new tab.
+            self.kit_generation += 1;
+        }
+        self.enter_tab(tab, cx);
+    }
+
+    /// The Kit's sidebar chose the page of `tab`; found out when the page is
+    /// drawn.
+    pub(crate) fn follow_kit_page(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        if self.tab != tab {
+            self.enter_tab(tab, cx);
+        }
+    }
+
+    fn enter_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
@@ -5664,9 +5237,6 @@ impl SettingsWindow {
             self.shortcut_recording = None;
             // A picker open under a color row does not wait for a return.
             self.color_picker = None;
-            // The new tab starts at its top; the nav list keeps its place.
-            let offset = self.pane_scroll.offset();
-            self.pane_scroll.set_offset(point(offset.x, px(0.)));
         }
         // Server names on other tabs follow the connection tab's fields: a
         // registered server's text is committed (valid values only), a
@@ -5810,53 +5380,15 @@ impl SettingsWindow {
 
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
-        let nav_focused = self.nav_focus.is_focused(window);
+        settings_theme::sync_kit(cx);
         self.blur_supported = window.supports_background_blur();
         self.blur_radius_supported = window.supports_background_blur_radius();
-        let mut tabs = Self::settings_tabs();
-        let experimental = tabs.pop();
-        let mut nav = div()
-            .id("settings-nav")
-            .track_scroll(&self.nav_scroll)
-            .track_focus(&self.nav_focus)
-            .on_key_down(
-                cx.listener(|this, event, window, cx| this.nav_key_down(event, window, cx)),
-            )
-            .w(px(190.))
-            .flex_shrink_0()
-            .h_full()
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_px()
-            .border_r_1()
-            .border_color(theme.border)
-            .overflow_y_scroll();
-        for (tab, id, label_key) in tabs {
-            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
-        }
-        // Experimental stands apart from the ordinary settings.
-        nav = nav.child(div().flex_1().min_h_4());
-        if let Some((tab, id, label_key)) = experimental {
-            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
-        }
-        let panel = match self.tab {
-            SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
-            SettingsTab::Application => self.render_application_settings(cx).into_any_element(),
-            SettingsTab::Appearance => self
-                .render_appearance_settings(window, cx)
-                .into_any_element(),
-            SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
-            SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
-            SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
-            SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
-            SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
-            SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
-        };
+        let settings = self.kit_settings(cx);
         let auto_join = self.render_auto_join_dialog(cx);
         self.reveal_focused(window, cx);
         div()
             .id("settings-screen")
+            .track_focus(&self.nav_focus)
             .on_action(
                 cx.listener(|this, _: &FocusNextField, window, cx| this.traverse(true, window, cx)),
             )
@@ -5870,6 +5402,7 @@ impl SettingsWindow {
             .relative()
             .size_full()
             .flex()
+            .flex_col()
             .bg(theme.window)
             .text_size(px(13.))
             .when_some(settings_theme::current(cx), |d, native| {
@@ -5877,53 +5410,35 @@ impl SettingsWindow {
                     .text_size(px(native.defaults.font.size))
             })
             .text_color(theme.text)
-            .child(div().relative().flex_shrink_0().h_full().child(nav).child(
-                scrollbar::scrollbar("scrollbar-settings-nav", &self.nav_scroll, theme.text_muted),
-            ))
+            // Outside the scrolling page, so the reason a refused leave gives
+            // is readable wherever the page is scrolled.
+            .when(self.store_busy(), |d| {
+                d.child(
+                    div()
+                        .id("credential-store-waiting")
+                        .flex_shrink_0()
+                        .w_full()
+                        .px_4()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_color(theme.warning)
+                        .child(self.i18n.text("credential_store_waiting")),
+                )
+            })
             .child(
                 div()
-                    .relative()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    // Outside the scrolling pane, so the reason a refused
-                    // leave gives is readable wherever the pane is scrolled.
-                    .when(self.store_busy(), |d| {
-                        d.child(
-                            div()
-                                .id("credential-store-waiting")
-                                .flex_shrink_0()
-                                .w_full()
-                                .px_4()
-                                .py_2()
-                                .border_b_1()
-                                .border_color(theme.border)
-                                .text_color(theme.warning)
-                                .child(self.i18n.text("credential_store_waiting")),
-                        )
+                    .min_h_0()
+                    .w_full()
+                    .on_children_prepainted({
+                        let this = cx.entity().downgrade();
+                        move |bounds, _, cx| {
+                            let _ = this
+                                .update(cx, |this, _| this.kit_bounds = bounds.first().copied());
+                        }
                     })
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .child(
-                                div()
-                                    .id("settings-pane")
-                                    .track_scroll(&self.pane_scroll)
-                                    .size_full()
-                                    .overflow_y_scroll()
-                                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
-                            )
-                            .child(scrollbar::scrollbar(
-                                "scrollbar-settings-pane",
-                                &self.pane_scroll,
-                                theme.text_muted,
-                            )),
-                    ),
+                    .child(settings),
             )
             .children(auto_join)
             .on_action(cx.listener(Self::open_settings_action))
@@ -6544,6 +6059,82 @@ mod escape_tests {
             .add_window_view(|window, cx| SettingsWindow::new(owner, settings.clone(), window, cx));
         vcx.run_until_parked();
         (form, vcx, app)
+    }
+
+    /// The Kit's number input registers one focus handle on its frame and on
+    /// its editor; Shift+Tab must still walk back through every field of the
+    /// Appearance page, the font size fields included.
+    #[gpui::test]
+    fn shift_tab_walks_back_through_the_kit_number_inputs(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(5000.)));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Appearance, cx)
+        });
+        cx.run_until_parked();
+        let focused = |cx: &mut gpui::VisualTestContext| cx.update(|w, cx| w.focused(cx));
+        let mut forward = Vec::new();
+        for _ in 0..200 {
+            cx.update(|w, cx| w.focus_next(cx));
+            cx.run_until_parked();
+            let id = focused(cx);
+            if forward.contains(&id) {
+                break;
+            }
+            forward.push(id);
+        }
+        assert!(forward.len() > 10, "tab reached {forward:?}");
+        for (i, expected) in forward.iter().enumerate().rev() {
+            cx.update(|w, cx| w.focus_prev(cx));
+            cx.run_until_parked();
+            assert_eq!(
+                &focused(cx),
+                expected,
+                "shift-tab to stop {i} of {forward:?}"
+            );
+        }
+    }
+
+    /// A font dropdown already drawn follows a change of language: its
+    /// default entry is relabelled while the held font name stays.
+    #[gpui::test]
+    fn font_dropdown_follows_the_language(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(5000.)));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Appearance, cx)
+        });
+        // The default language follows the environment, so pin one first.
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_language(cayenchat_storage::Language::Japanese, window, cx)
+            })
+        });
+        cx.run_until_parked();
+        let label = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                form.font_selects[0]
+                    .as_ref()
+                    .map(|(_, label)| label.clone())
+            })
+        };
+        let before = form.read_with(cx, |form, _| form.i18n.text("system_default"));
+        assert_eq!(label(cx), Some(before.clone()));
+        let after = cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_language(cayenchat_storage::Language::English, window, cx);
+                form.i18n.text("system_default")
+            })
+        });
+        assert_ne!(before, after);
+        cx.run_until_parked();
+        assert_eq!(label(cx), Some(after));
+        let held = form.read_with(cx, |form, cx| {
+            form.font_selects[0]
+                .as_ref()
+                .and_then(|(select, _)| select.read(cx).selected_value().cloned())
+        });
+        assert_eq!(held, Some(gpui::SharedString::default()));
     }
 
     #[gpui::test]

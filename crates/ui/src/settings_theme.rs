@@ -23,56 +23,52 @@ pub fn label_column() -> Div {
     div().w(LABEL_WIDTH).flex_shrink_0()
 }
 
-/// A settings row (#622): the name, and a short description only where the
-/// name is not enough, on the left; the control on the right; a thin rule
-/// below. The control moves under the text when the pane is narrow.
-pub fn setting_row(
-    label: impl Into<SharedString>,
-    hint: Option<SharedString>,
-    control: impl IntoElement,
-    cx: &App,
-) -> Div {
-    let theme = palette(cx);
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .justify_between()
-        .gap_x_4()
-        .gap_y_2()
-        .py_2()
-        .border_b_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w(px(220.))
-                .gap_1()
-                .child(label.into())
-                .when_some(hint, |d, hint| {
-                    d.child(div().text_sm().text_color(theme.text_secondary).child(hint))
-                }),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                // Never wider than the row, so controls that can wrap do.
-                .min_w_0()
-                .max_w_full()
-                .child(control),
-        )
-}
-
 #[derive(Default)]
 struct NativeSettingsTheme {
     variants: Option<[Variant; 2]>,
     loading: bool,
+    /// Bumped each time the cache is replaced, so the Kit theme follows it.
+    generation: u32,
 }
 impl Global for NativeSettingsTheme {}
+
+/// What the Kit's theme global was last built from.
+struct KitApplied {
+    generation: u32,
+    dark: bool,
+}
+impl Global for KitApplied {}
+
+/// Makes the `gpui-component` theme the Kit's `Settings` draws with follow the
+/// settings palette: the native theme when it is loaded, the Kit's own light or
+/// dark colors otherwise. Cheap when nothing changed, so it runs from render.
+pub fn sync_kit(cx: &mut App) {
+    let dark = crate::theme::current(cx).dark;
+    let generation = cx
+        .try_global::<NativeSettingsTheme>()
+        .map_or(0, |cache| cache.generation);
+    if cx.has_global::<gpui_component::Theme>()
+        && cx
+            .try_global::<KitApplied>()
+            .is_some_and(|applied| applied.generation == generation && applied.dark == dark)
+    {
+        return;
+    }
+    if let Some((mapped, resolved)) = variant(cx).map(|v| (v.mapped.clone(), v.resolved.clone())) {
+        native_theme_gpui::apply(mapped, &resolved, &AccessibilityPreferences::DEFAULT, cx);
+    } else {
+        if !cx.has_global::<gpui_component::Theme>() {
+            gpui_component::init(cx);
+        }
+        let mode = if dark {
+            gpui_component::theme::ThemeMode::Dark
+        } else {
+            gpui_component::theme::ThemeMode::Light
+        };
+        gpui_component::Theme::change(mode, None, cx);
+    }
+    cx.set_global(KitApplied { generation, dark });
+}
 
 struct Variant {
     resolved: ResolvedTheme,
@@ -128,6 +124,7 @@ pub fn refresh(cx: &mut App) {
 fn finish(result: native_theme::Result<SystemTheme>, cx: &mut App) {
     let cache = cx.global_mut::<NativeSettingsTheme>();
     cache.loading = false;
+    cache.generation = cache.generation.wrapping_add(1);
     cache.variants = match result {
         Ok(system) => Some([
             Variant::new(
@@ -401,6 +398,7 @@ mod tests {
                 Variant { resolved, mapped }
             })),
             loading: false,
+            generation: 0,
         }
     }
 

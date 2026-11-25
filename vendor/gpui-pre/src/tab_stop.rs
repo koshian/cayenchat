@@ -78,6 +78,13 @@ impl TabStopMap {
     pub fn insert(&mut self, focus_handle: &FocusHandle) {
         self.insertion_history
             .push(TabStopOperation::Insert(focus_handle.clone()));
+        // An element tree can register one handle twice (the GPUI Kit's number
+        // input tracks it on the frame and again on the editor inside). The
+        // second entry would be its own neighbour, so Shift+Tab stopped on it.
+        // Keep the first one only.
+        if self.by_id.contains_key(&focus_handle.id) {
+            return;
+        }
         let mut path = self.current_path.clone();
         path.0.push(focus_handle.tab_index);
         let order = TabStopNode {

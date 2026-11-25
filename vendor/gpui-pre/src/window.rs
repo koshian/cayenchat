@@ -1290,6 +1290,8 @@ pub struct Window {
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
     pub(crate) focus: Option<FocusId>,
+    /// The bounds the focused element painted last (CayenChat patch, #622).
+    pub(crate) focused_bounds: Option<(FocusId, Bounds<Pixels>)>,
     focus_enabled: bool,
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
@@ -2444,6 +2446,7 @@ impl Window {
             refreshing: false,
             activation_observers: SingleSubscriberSet::new(),
             focus: None,
+            focused_bounds: None,
             focus_enabled: true,
             focus_generation: 0,
             pending_input: None,
@@ -2634,6 +2637,21 @@ impl Window {
     pub fn focused(&self, cx: &App) -> Option<FocusHandle> {
         self.focus
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
+    }
+
+    /// The bounds the element holding the focus painted last, when it tracks
+    /// its focus handle (CayenChat patch, #622). `None` while it has not been
+    /// painted since it took the focus, for example because a virtualized list
+    /// leaves it out.
+    pub fn focused_bounds(&self) -> Option<Bounds<Pixels>> {
+        let (id, bounds) = self.focused_bounds?;
+        (self.focus == Some(id)).then_some(bounds)
+    }
+
+    /// Forgets [`Window::focused_bounds`], so that only bounds painted after
+    /// this call are reported (CayenChat patch, #622).
+    pub fn clear_focused_bounds(&mut self) {
+        self.focused_bounds = None;
     }
 
     /// While focus-lost listeners are being dispatched, returns the closest ancestor of the
