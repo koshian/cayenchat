@@ -2619,6 +2619,16 @@ Layout checks (Xvfb): the Appearance tab in Japanese (light), English (dark) and
 a 520 px wide window, top to bottom. At that width the Kit puts each control
 under its name.
 
+The Application tab was checked the same way at `405c957` (Linux/Xvfb, real
+app, isolated HOME): Japanese (light) and English (dark) at 900 px, and English
+(dark) at 520 px, every group from General to Settings file. All rows show a
+description and the Kit controls; switching the language from the dropdown
+renames the whole window and its title; the two log switches and the unread log
+position (arrow keys and Enter) persist after reopening; the login-startup
+switch creates and removes its entry in the isolated HOME. Screenshots are on
+the `ghwatch/issue-622-shots` branch under `round5/`. Not checked: Windows,
+macOS, a real login and the native file dialogs (backends unchanged).
+
 ## Conversation logs (D044)
 
 `storage::chatlog` knows nothing of IRC: it takes `Record`s (network, scope,
