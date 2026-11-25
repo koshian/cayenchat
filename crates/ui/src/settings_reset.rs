@@ -149,7 +149,7 @@ impl SettingsWindow {
                 self.shortcut_recording = None;
             }
             SettingsTab::Notifications => {
-                self.show_item_fields(crate::settings_items::NOTIFICATIONS, &defaults, cx);
+                self.show_item_fields(crate::settings_items::NOTIFICATIONS_KEYWORDS, &defaults, cx);
                 self.settings.values.notifications = defaults.notifications;
             }
             SettingsTab::Ircv3 => {

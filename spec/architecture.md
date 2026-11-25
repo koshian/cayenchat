@@ -2519,8 +2519,9 @@ becomes `SettingField::switch`, a text item wraps its `TextInput` in
 unmet condition becomes `disabled`, a slider is drawn by a caller-supplied
 control inside the Kit row, a `hint_key` becomes the description) and is covered
 by conversion tests. The Appearance tab is drawn through it (see "Settings
-window on the GPUI Kit"); the other tabs still draw through `render_items`.
-The Notifications tab is the first table; other tabs move over one by one. The
+window on the GPUI Kit"), and so is the Notifications tab (`NOTIFICATIONS_DESKTOP`,
+`NOTIFICATIONS_KEYWORDS`, one group each); the other tabs still draw through `render_items`.
+Other tabs move over one by one. The
 Application tab declares its plain switches and hints in several short tables
 (`APPLICATION_WINDOW`, `APPLICATION_MENU`, `APPLICATION_PREVIEWS`,
 `APPLICATION_TEXT`) drawn between its own widgets (language list, autostart,
@@ -2592,7 +2593,7 @@ The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
 colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
 wallpapers and Display, every row with a one-sentence description (Japanese and
 English). Every other tab is one item holding its previous panel, so what it
-shows and does is unchanged; they move to groups tab by tab. The Kit's page is
+shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading). The Kit's page is
 the tab being shown: a page found drawn calls `follow_kit_page`, and
 `show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
 
