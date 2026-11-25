@@ -226,6 +226,7 @@ impl SettingsWindow {
                     SettingsTab::Experimental => self.experimental_page(title, &this),
                     SettingsTab::Keyboard => self.keyboard_page(title, &this),
                     SettingsTab::Credentials => self.credentials_page(title, &this),
+                    SettingsTab::ImageUpload => self.image_upload_page(title, &this),
                     _ => self.panel_page(tab, title, &this),
                 };
                 // The page being drawn is the tab being shown.
@@ -300,7 +301,8 @@ impl SettingsWindow {
             // Drawn as groups by `notifications_page`.
             SettingsTab::Notifications => div().into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
-            SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
+            // Drawn as groups by `image_upload_page`.
+            SettingsTab::ImageUpload => div().into_any_element(),
             // Drawn as groups by `credentials_page`.
             SettingsTab::Credentials => div().into_any_element(),
             // Drawn as groups by `experimental_page`.
