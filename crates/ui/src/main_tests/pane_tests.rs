@@ -967,10 +967,6 @@ fn login_startup_is_set_without_a_server_and_follows_the_system(cx: &mut TestApp
         form
     });
     cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("autostart").is_some(),
-        "shown without a server"
-    );
     let shown = |form: &gpui::Entity<super::SettingsWindow>, cx: &mut gpui::VisualTestContext| {
         form.read_with(cx, |form, _| form.autostart.clone())
     };

@@ -538,44 +538,46 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn log_toggle(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        checked: bool,
-        change: fn(&mut ConversationLog),
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .gap_2()
-            .cursor_pointer()
-            .child(settings_theme::checkbox(checked, true, cx))
-            .child(self.i18n.text(label))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                change(&mut this.settings.values.conversation_log);
-                cx.notify();
-            }))
-    }
-
-    /// The conversation log options of the Application page.
-    pub(crate) fn render_conversation_log_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let options = self.settings.values.conversation_log.clone();
-        let directory = options
+    /// The folder the conversation logs are written to, for display.
+    pub(crate) fn log_directory_text(&self) -> String {
+        self.settings
+            .values
+            .conversation_log
             .resolved_directory()
             .map(|directory| directory.display().to_string())
-            .unwrap_or_else(|| self.i18n.text("conversation_log_no_directory"));
+            .unwrap_or_else(|| self.i18n.text("conversation_log_no_directory"))
+    }
+
+    /// The Open folder and Change… buttons of the conversation log row.
+    pub(crate) fn log_directory_buttons(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                settings_theme::button("open-conversation-log", false, cx)
+                    .debug_selector(|| "open-conversation-log".into())
+                    .child(self.i18n.text("conversation_log_open"))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_log_directory(cx))),
+            )
+            .child(
+                settings_theme::button("choose-conversation-log", false, cx)
+                    .debug_selector(|| "choose-conversation-log".into())
+                    .child(self.i18n.text("conversation_log_choose"))
+                    .on_click(cx.listener(|this, _, _, cx| this.choose_log_directory(cx))),
+            )
+    }
+
+    /// What is wrong with the conversation log writer, when something is.
+    /// Remembers the status it read, so a change of it redraws the page.
+    pub(crate) fn log_status_text(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let status = self
             .owner
             .read(cx)
             .ok()
             .and_then(|chat| chat.conversation_logs.status());
         self.log_status_shown = status.clone();
-        let status = status.and_then(|status| {
+        status.and_then(|status| {
             if let Some(error) = status.failure {
                 Some(
                     self.i18n
@@ -591,72 +593,7 @@ impl SettingsWindow {
             } else {
                 None
             }
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("conversation_log")),
-            )
-            .child(self.log_toggle(
-                "conversation-log-channels",
-                "conversation_log_channels",
-                options.channels,
-                |log| log.channels = !log.channels,
-                cx,
-            ))
-            .child(self.log_toggle(
-                "conversation-log-private",
-                "conversation_log_private",
-                options.private,
-                |log| log.private = !log.private,
-                cx,
-            ))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("conversation_log_hint")),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .flex_col()
-                    .child(self.i18n.text("conversation_log_directory"))
-                    .child(div().id("conversation-log-directory").child(directory)),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .child(
-                        settings_theme::button("open-conversation-log", false, cx)
-                            .debug_selector(|| "open-conversation-log".into())
-                            .child(self.i18n.text("conversation_log_open"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_log_directory(cx))),
-                    )
-                    .child(
-                        settings_theme::button("choose-conversation-log", false, cx)
-                            .debug_selector(|| "choose-conversation-log".into())
-                            .child(self.i18n.text("conversation_log_choose"))
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_log_directory(cx))),
-                    ),
-            )
-            .when_some(status, |d, status| {
-                d.child(
-                    div()
-                        .id("conversation-log-status")
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.warning)
-                        .child(status),
-                )
-            })
+        })
     }
 }
 

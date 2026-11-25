@@ -179,7 +179,7 @@ impl SettingsWindow {
 
 /// The item at the end of a page: the status message and the reset button
 /// of `tab`.
-fn footer_item(this: &WeakEntity<SettingsWindow>, tab: SettingsTab) -> SettingItem {
+pub(crate) fn footer_item(this: &WeakEntity<SettingsWindow>, tab: SettingsTab) -> SettingItem {
     element_item(this, move |this, _, cx| {
         let theme = settings_theme::palette(cx);
         div()
@@ -194,7 +194,11 @@ fn footer_item(this: &WeakEntity<SettingsWindow>, tab: SettingsTab) -> SettingIt
 }
 
 /// A group of rows under a heading.
-fn group(title: String, description: Option<String>, items: Vec<SettingItem>) -> SettingGroup {
+pub(crate) fn group(
+    title: String,
+    description: Option<String>,
+    items: Vec<SettingItem>,
+) -> SettingGroup {
     let group = SettingGroup::new().title(title).items(items);
     match description {
         Some(description) => group.description(description),
@@ -218,6 +222,7 @@ impl SettingsWindow {
                 let page = match tab {
                     SettingsTab::Appearance => self.appearance_page(title, &this, cx),
                     SettingsTab::Notifications => self.notifications_page(title, &this),
+                    SettingsTab::Application => self.application_page(title, &this, cx),
                     _ => self.panel_page(tab, title, &this),
                 };
                 // The page being drawn is the tab being shown.
@@ -283,7 +288,8 @@ impl SettingsWindow {
     fn render_tab_panel(&mut self, tab: SettingsTab, cx: &mut Context<Self>) -> AnyElement {
         match tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
-            SettingsTab::Application => self.render_application_settings(cx).into_any_element(),
+            // Drawn as groups by `application_page`.
+            SettingsTab::Application => div().into_any_element(),
             // Drawn as groups by `appearance_page`.
             SettingsTab::Appearance => div().into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),

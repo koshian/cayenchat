@@ -2519,14 +2519,17 @@ becomes `SettingField::switch`, a text item wraps its `TextInput` in
 unmet condition becomes `disabled`, a slider is drawn by a caller-supplied
 control inside the Kit row, a `hint_key` becomes the description) and is covered
 by conversion tests. The Appearance tab is drawn through it (see "Settings
-window on the GPUI Kit"), and so is the Notifications tab (`NOTIFICATIONS_DESKTOP`,
-`NOTIFICATIONS_KEYWORDS`, one group each); the other tabs still draw through `render_items`.
-Other tabs move over one by one. The
-Application tab declares its plain switches and hints in several short tables
-(`APPLICATION_WINDOW`, `APPLICATION_MENU`, `APPLICATION_PREVIEWS`,
-`APPLICATION_TEXT`) drawn between its own widgets (language list, autostart,
-option rows, Reiwa mode shared with the Connection tab, conversation logs,
-settings transfer), which keep their order and behaviour. The Experimental tab
+window on the GPUI Kit"), and so are the Notifications tab (`NOTIFICATIONS_DESKTOP`,
+`NOTIFICATIONS_KEYWORDS`, one group each) and the Application tab; the other
+tabs still draw through `render_items`. Other tabs move over one by one. The
+Application tab declares its switches, dropdowns and hints in four tables, one
+group each (`APPLICATION_WINDOW`, `APPLICATION_BEHAVIOR`, `APPLICATION_TEXT`,
+`APPLICATION_LOG`); `application_settings.rs` builds the rows no table can
+declare: the language dropdown (a change retitles the window, so its setter
+defers to the window), the login startup switch (it shows what the system
+reports), the conversation log folder with its buttons and the settings file
+buttons. The Reiwa mode switch is in `APPLICATION_TEXT`; the Connection tab
+keeps its own checkbox for the same value. The Experimental tab
 declares its automatic phrase switch and hint (`EXPERIMENTAL`); the debug log
 rows (a file chooser and status) stay their own widgets. Like the other
 switches, the phrase switch is saved by the debounced autosave.
@@ -2537,8 +2540,8 @@ Choices (an enum setting shown as a row of buttons) are declared with
 notice key rows (`KEYBOARD_SEND`) and the channel number modifier and text key
 theme rows (`KEYBOARD_MODIFIERS`) with the clash warning drawn between them
 (it depends on two settings); the shortcut recorder rows stay their own
-widgets. The Application tab's unread log position and display server rows
-joined `APPLICATION_WINDOW` and `APPLICATION_MENU`. The Appearance tab
+widgets. The Application tab's unread log position (a dropdown) and display
+server rows are in `APPLICATION_BEHAVIOR` and `APPLICATION_WINDOW`. The Appearance tab
 declares its theme mode row (`APPEARANCE_THEME`) and alternate rows switch
 (`APPEARANCE_ROWS`). `Item::slider` declares a whole number on the shared
 slider (`ui::slider`: pointer, drag and keys): its range, a suffix, a reset
@@ -2593,7 +2596,7 @@ The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
 colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
 wallpapers and Display, every row with a one-sentence description (Japanese and
 English). Every other tab is one item holding its previous panel, so what it
-shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading). The Kit's page is
+shows and does is unchanged; they move to groups tab by tab (Notifications is done: Desktop notifications and Keywords, a description on every row, the platform hint under the first heading; so is Startup & Behavior: General, Window, Behavior, Text and links, Conversation logs and Settings file, a description on every row). The Kit's page is
 the tab being shown: a page found drawn calls `follow_kit_page`, and
 `show_tab` gives the Kit a new state (`kit_generation`) that opens on it.
 
