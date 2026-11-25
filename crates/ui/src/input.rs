@@ -2032,31 +2032,7 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
         KeyBinding::new(secondary!("shift-z"), Redo, Some("TextInput")),
     ]);
     #[cfg(target_os = "macos")]
-    cx.bind_keys([
-        KeyBinding::new("ctrl-a", Home, Some("TextInput")),
-        KeyBinding::new("ctrl-e", End, Some("TextInput")),
-        KeyBinding::new("ctrl-b", Left, Some("TextInput")),
-        KeyBinding::new("ctrl-f", Right, Some("TextInput")),
-        KeyBinding::new("ctrl-h", Backspace, Some("TextInput")),
-        KeyBinding::new("ctrl-d", Delete, Some("TextInput")),
-        KeyBinding::new("ctrl-k", DeleteToEnd, Some("TextInput")),
-        KeyBinding::new("ctrl-w", DeleteWordBackward, Some("TextInput")),
-        KeyBinding::new("alt-left", WordLeft, Some("TextInput")),
-        KeyBinding::new("alt-right", WordRight, Some("TextInput")),
-        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("TextInput")),
-        KeyBinding::new("alt-shift-right", SelectWordRight, Some("TextInput")),
-        KeyBinding::new("alt-backspace", DeleteWordBackward, Some("TextInput")),
-        KeyBinding::new("alt-delete", DeleteWordForward, Some("TextInput")),
-        KeyBinding::new("cmd-left", Home, Some("TextInput")),
-        KeyBinding::new("cmd-right", End, Some("TextInput")),
-        KeyBinding::new("cmd-shift-left", SelectHome, Some("TextInput")),
-        KeyBinding::new("cmd-shift-right", SelectEnd, Some("TextInput")),
-        KeyBinding::new("cmd-shift-up", SelectHome, Some("TextInput")),
-        KeyBinding::new("cmd-shift-down", SelectEnd, Some("TextInput")),
-        KeyBinding::new("cmd-backspace", DeleteToBeginning, Some("TextInput")),
-        KeyBinding::new("alt-up", Home, Some("TextInput")),
-        KeyBinding::new("alt-down", End, Some("TextInput")),
-    ]);
+    bind_edit_table(MACOS_KEYS, "TextInput", text_input_action, cx);
     #[cfg(any(target_os = "windows", unix_desktop))]
     cx.bind_keys([
         KeyBinding::new("home", Home, Some("TextInput")),
@@ -2076,31 +2052,204 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
     // Select All to Ctrl+/ under this theme.
     #[cfg(unix_desktop)]
     if emacs {
-        cx.bind_keys([
-            KeyBinding::new("ctrl-b", Left, Some("TextInput")),
-            KeyBinding::new("ctrl-shift-b", SelectLeft, Some("TextInput")),
-            KeyBinding::new("ctrl-f", Right, Some("TextInput")),
-            KeyBinding::new("ctrl-shift-f", SelectRight, Some("TextInput")),
-            KeyBinding::new("alt-b", WordLeft, Some("TextInput")),
-            KeyBinding::new("alt-shift-b", SelectWordLeft, Some("TextInput")),
-            KeyBinding::new("alt-f", WordRight, Some("TextInput")),
-            KeyBinding::new("alt-shift-f", SelectWordRight, Some("TextInput")),
-            KeyBinding::new("ctrl-a", Home, Some("TextInput")),
-            KeyBinding::new("ctrl-shift-a", SelectHome, Some("TextInput")),
-            KeyBinding::new("ctrl-e", End, Some("TextInput")),
-            KeyBinding::new("ctrl-shift-e", SelectEnd, Some("TextInput")),
-            KeyBinding::new("ctrl-w", Cut, Some("TextInput")),
-            KeyBinding::new("ctrl-y", Paste, Some("TextInput")),
-            KeyBinding::new("ctrl-d", Delete, Some("TextInput")),
-            KeyBinding::new("alt-d", DeleteWordForward, Some("TextInput")),
-            KeyBinding::new("ctrl-k", DeleteToEnd, Some("TextInput")),
-            KeyBinding::new("ctrl-u", DeleteLine, Some("TextInput")),
-            KeyBinding::new("ctrl-h", Backspace, Some("TextInput")),
-            KeyBinding::new("alt-\\", DeleteWhitespace, Some("TextInput")),
-            KeyBinding::new("alt-space", CollapseWhitespace, Some("TextInput")),
-            KeyBinding::new("ctrl-/", SelectAll, Some("TextInput")),
-        ]);
+        bind_edit_table(GTK_EMACS_KEYS, "TextInput", text_input_action, cx);
     }
+}
+
+/// An editing operation the Emacs-style key tables bind. The tables name the
+/// operation once; [`text_input_action`] and [`kit_input_action`] map it to the
+/// action of `TextInput` and of the Kit's `Input`, so the keys are written in
+/// one place for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    Home,
+    End,
+    Left,
+    Right,
+    SelectLeft,
+    SelectRight,
+    SelectHome,
+    SelectEnd,
+    WordLeft,
+    WordRight,
+    SelectWordLeft,
+    SelectWordRight,
+    Backspace,
+    Delete,
+    DeleteToEnd,
+    DeleteToBeginning,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteLine,
+    DeleteWhitespace,
+    CollapseWhitespace,
+    Cut,
+    Paste,
+    SelectAll,
+}
+
+/// The macOS keys: Emacs-style Control keys, plus the Option and Command ones.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const MACOS_KEYS: &[(&str, Edit)] = &[
+    ("ctrl-a", Edit::Home),
+    ("ctrl-e", Edit::End),
+    ("ctrl-b", Edit::Left),
+    ("ctrl-f", Edit::Right),
+    ("ctrl-h", Edit::Backspace),
+    ("ctrl-d", Edit::Delete),
+    ("ctrl-k", Edit::DeleteToEnd),
+    ("ctrl-w", Edit::DeleteWordBackward),
+    ("alt-left", Edit::WordLeft),
+    ("alt-right", Edit::WordRight),
+    ("alt-shift-left", Edit::SelectWordLeft),
+    ("alt-shift-right", Edit::SelectWordRight),
+    ("alt-backspace", Edit::DeleteWordBackward),
+    ("alt-delete", Edit::DeleteWordForward),
+    ("cmd-left", Edit::Home),
+    ("cmd-right", Edit::End),
+    ("cmd-shift-left", Edit::SelectHome),
+    ("cmd-shift-right", Edit::SelectEnd),
+    ("cmd-shift-up", Edit::SelectHome),
+    ("cmd-shift-down", Edit::SelectEnd),
+    ("cmd-backspace", Edit::DeleteToBeginning),
+    ("alt-up", Edit::Home),
+    ("alt-down", Edit::End),
+];
+
+/// Mirrors GTK 3's gtk-keys.css.emacs for GtkEntry (the Emacs key theme on
+/// Linux and FreeBSD). Bound after the standard keys so these win over Select
+/// All (Ctrl+A) and Redo (Ctrl+Y); GTK likewise moves Select All to Ctrl+/.
+#[cfg_attr(not(unix_desktop), allow(dead_code))]
+const GTK_EMACS_KEYS: &[(&str, Edit)] = &[
+    ("ctrl-b", Edit::Left),
+    ("ctrl-shift-b", Edit::SelectLeft),
+    ("ctrl-f", Edit::Right),
+    ("ctrl-shift-f", Edit::SelectRight),
+    ("alt-b", Edit::WordLeft),
+    ("alt-shift-b", Edit::SelectWordLeft),
+    ("alt-f", Edit::WordRight),
+    ("alt-shift-f", Edit::SelectWordRight),
+    ("ctrl-a", Edit::Home),
+    ("ctrl-shift-a", Edit::SelectHome),
+    ("ctrl-e", Edit::End),
+    ("ctrl-shift-e", Edit::SelectEnd),
+    ("ctrl-w", Edit::Cut),
+    ("ctrl-y", Edit::Paste),
+    ("ctrl-d", Edit::Delete),
+    ("alt-d", Edit::DeleteWordForward),
+    ("ctrl-k", Edit::DeleteToEnd),
+    ("ctrl-u", Edit::DeleteLine),
+    ("ctrl-h", Edit::Backspace),
+    ("alt-\\", Edit::DeleteWhitespace),
+    ("alt-space", Edit::CollapseWhitespace),
+    ("ctrl-/", Edit::SelectAll),
+];
+
+/// The keys that apply on this platform: macOS always, the GTK Emacs theme
+/// only where it exists and `emacs` is set.
+#[cfg_attr(not(any(target_os = "macos", unix_desktop)), allow(unused_variables))]
+fn platform_edit_keys(emacs: bool) -> &'static [(&'static str, Edit)] {
+    #[cfg(target_os = "macos")]
+    return MACOS_KEYS;
+    #[cfg(unix_desktop)]
+    return if emacs { GTK_EMACS_KEYS } else { &[] };
+    #[cfg(not(any(target_os = "macos", unix_desktop)))]
+    &[]
+}
+
+fn text_input_action(edit: Edit) -> Option<Box<dyn gpui::Action>> {
+    Some(match edit {
+        Edit::Home => Box::new(Home),
+        Edit::End => Box::new(End),
+        Edit::Left => Box::new(Left),
+        Edit::Right => Box::new(Right),
+        Edit::SelectLeft => Box::new(SelectLeft),
+        Edit::SelectRight => Box::new(SelectRight),
+        Edit::SelectHome => Box::new(SelectHome),
+        Edit::SelectEnd => Box::new(SelectEnd),
+        Edit::WordLeft => Box::new(WordLeft),
+        Edit::WordRight => Box::new(WordRight),
+        Edit::SelectWordLeft => Box::new(SelectWordLeft),
+        Edit::SelectWordRight => Box::new(SelectWordRight),
+        Edit::Backspace => Box::new(Backspace),
+        Edit::Delete => Box::new(Delete),
+        Edit::DeleteToEnd => Box::new(DeleteToEnd),
+        Edit::DeleteToBeginning => Box::new(DeleteToBeginning),
+        Edit::DeleteWordBackward => Box::new(DeleteWordBackward),
+        Edit::DeleteWordForward => Box::new(DeleteWordForward),
+        Edit::DeleteLine => Box::new(DeleteLine),
+        Edit::DeleteWhitespace => Box::new(DeleteWhitespace),
+        Edit::CollapseWhitespace => Box::new(CollapseWhitespace),
+        Edit::Cut => Box::new(Cut),
+        Edit::Paste => Box::new(Paste),
+        Edit::SelectAll => Box::new(SelectAll),
+    })
+}
+
+/// The Kit's action for `edit`, or `None` where the Kit has no such operation
+/// (whole-line delete and the two whitespace commands).
+fn kit_input_action(edit: Edit) -> Option<Box<dyn gpui::Action>> {
+    use gpui_component::input as kit;
+    Some(match edit {
+        Edit::Home => Box::new(kit::MoveHome),
+        Edit::End => Box::new(kit::MoveEnd),
+        Edit::Left => Box::new(kit::MoveLeft),
+        Edit::Right => Box::new(kit::MoveRight),
+        Edit::SelectHome => Box::new(kit::SelectToStartOfLine),
+        Edit::SelectEnd => Box::new(kit::SelectToEndOfLine),
+        Edit::WordLeft => Box::new(kit::MoveToPreviousWord),
+        Edit::WordRight => Box::new(kit::MoveToNextWord),
+        Edit::SelectWordLeft => Box::new(kit::SelectToPreviousWordStart),
+        Edit::SelectWordRight => Box::new(kit::SelectToNextWordEnd),
+        Edit::Backspace => Box::new(kit::Backspace),
+        Edit::Delete => Box::new(kit::Delete),
+        Edit::DeleteToEnd => Box::new(kit::DeleteToEndOfLine),
+        Edit::DeleteToBeginning => Box::new(kit::DeleteToBeginningOfLine),
+        Edit::DeleteWordBackward => Box::new(kit::DeleteToPreviousWordStart),
+        Edit::DeleteWordForward => Box::new(kit::DeleteToNextWordEnd),
+        Edit::Cut => Box::new(kit::Cut),
+        Edit::Paste => Box::new(kit::Paste),
+        Edit::SelectAll => Box::new(kit::SelectAll),
+        Edit::SelectLeft
+        | Edit::SelectRight
+        | Edit::DeleteLine
+        | Edit::DeleteWhitespace
+        | Edit::CollapseWhitespace => return None,
+    })
+}
+
+fn bind_edit_table(
+    table: &[(&'static str, Edit)],
+    context: &str,
+    action: fn(Edit) -> Option<Box<dyn gpui::Action>>,
+    cx: &mut App,
+) {
+    let predicate = std::rc::Rc::new(
+        gpui::KeyBindingContextPredicate::parse(context).expect("a valid key context"),
+    );
+    let bindings: Vec<KeyBinding> = table
+        .iter()
+        .filter_map(|&(keys, edit)| {
+            KeyBinding::load(
+                keys,
+                action(edit)?,
+                Some(predicate.clone()),
+                false,
+                None,
+                cx,
+            )
+            .ok()
+        })
+        .collect();
+    cx.bind_keys(bindings);
+}
+
+/// Binds the Emacs-style editing keys on the Kit's `Input` (key context
+/// `Input`), with the same table as `TextInput`: on macOS always, on Linux and
+/// FreeBSD only under the Emacs key theme. Later bindings win, so call this
+/// after the Kit has bound its own keys.
+pub fn bind_kit_keys(emacs: bool, cx: &mut App) {
+    bind_edit_table(platform_edit_keys(emacs), "Input", kit_input_action, cx);
 }
 
 /// Binds the keys of a multi-line input. Called after every other binding, so
@@ -3131,5 +3280,129 @@ mod tests {
                 "{caret:?}"
             );
         }
+    }
+
+    /// A Kit `Input` focused in a window, with `text` in it and the caret at the end.
+    fn kit_input<'a>(
+        text: &str,
+        emacs: bool,
+        cx: &'a mut gpui::TestAppContext,
+    ) -> (
+        Entity<gpui_component::input::InputState>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        use gpui_component::input::{Input, InputState};
+        struct Host(Entity<InputState>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).child(Input::new(&self.0))
+            }
+        }
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+            cx.set_global(crate::ShortcutPrefs {
+                text_keys: if emacs {
+                    crate::TextKeyTheme::Emacs
+                } else {
+                    crate::TextKeyTheme::Standard
+                },
+                ..Default::default()
+            });
+            bind_keys(emacs, cx);
+            // As the settings window does: set the Kit up and bind its keys.
+            crate::settings_theme::sync_kit(cx);
+        });
+        let text = text.to_string();
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let state = cx.new(|cx| InputState::new(window, cx));
+            state.update(cx, |state, cx| state.set_value(text, window, cx));
+            Host(state)
+        });
+        let state = host.read_with(cx, |host, _| host.0.clone());
+        state.update_in(cx, |state, window, cx| state.focus(window, cx));
+        cx.run_until_parked();
+        (state, cx)
+    }
+
+    fn kit_value(
+        state: &Entity<gpui_component::input::InputState>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (String, usize) {
+        state.read_with(cx, |state, _| (state.value().to_string(), state.cursor()))
+    }
+
+    /// The keys the maintainer found dead on macOS (Ctrl+F/B/K/D/H) and the
+    /// Emacs keys around them work in a Kit `Input` wherever the theme applies.
+    #[cfg(any(target_os = "macos", unix_desktop))]
+    #[gpui::test]
+    fn kit_input_takes_the_emacs_keys(cx: &mut gpui::TestAppContext) {
+        let (state, cx) = kit_input("abcdef", true, cx);
+        cx.simulate_keystrokes("ctrl-a");
+        assert_eq!(kit_value(&state, cx), ("abcdef".into(), 0));
+        cx.simulate_keystrokes("ctrl-f ctrl-f");
+        assert_eq!(kit_value(&state, cx).1, 2);
+        cx.simulate_keystrokes("ctrl-b");
+        assert_eq!(kit_value(&state, cx).1, 1);
+        cx.simulate_keystrokes("ctrl-d");
+        assert_eq!(kit_value(&state, cx), ("acdef".into(), 1));
+        cx.simulate_keystrokes("ctrl-h");
+        assert_eq!(kit_value(&state, cx), ("cdef".into(), 0));
+        cx.simulate_keystrokes("ctrl-f ctrl-k");
+        assert_eq!(kit_value(&state, cx), ("c".into(), 1));
+        cx.simulate_keystrokes("ctrl-e");
+        assert_eq!(kit_value(&state, cx).1, 1);
+    }
+
+    /// Without the Emacs theme a Kit `Input` keeps its own keys on Linux and
+    /// FreeBSD: Ctrl+A selects all, Ctrl+F is not an edit.
+    #[cfg(unix_desktop)]
+    #[gpui::test]
+    fn kit_input_keeps_its_keys_without_the_emacs_theme(cx: &mut gpui::TestAppContext) {
+        let (state, cx) = kit_input("abcdef", false, cx);
+        cx.simulate_keystrokes("ctrl-a");
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.cursor(), 6, "Select All leaves the caret at the end");
+        });
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(kit_value(&state, cx).0, "");
+    }
+
+    /// Every key of both tables reaches a Kit action, apart from the operations
+    /// the Kit has no equivalent of; those are listed here on purpose.
+    #[test]
+    fn kit_input_covers_the_shared_key_tables() {
+        let missing: Vec<_> = MACOS_KEYS
+            .iter()
+            .chain(GTK_EMACS_KEYS)
+            .filter(|(_, edit)| kit_input_action(*edit).is_none())
+            .map(|(keys, edit)| (*keys, *edit))
+            .collect();
+        assert_eq!(
+            missing,
+            [
+                ("ctrl-shift-b", Edit::SelectLeft),
+                ("ctrl-shift-f", Edit::SelectRight),
+                ("ctrl-u", Edit::DeleteLine),
+                ("alt-\\", Edit::DeleteWhitespace),
+                ("alt-space", Edit::CollapseWhitespace),
+            ]
+        );
+    }
+
+    /// Changing the key preferences clears the whole keymap and binds it
+    /// again; the Kit's own keys and the Emacs-style ones must come back too.
+    #[cfg(any(target_os = "macos", unix_desktop))]
+    #[gpui::test]
+    fn kit_input_keeps_its_keys_after_the_shortcuts_are_rebound(cx: &mut gpui::TestAppContext) {
+        let (state, cx) = kit_input("abcdef", true, cx);
+        cx.update(|_, cx| crate::rebind_shortcuts(cx));
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(kit_value(&state, cx), ("abcde".into(), 5));
+        cx.simulate_keystrokes("ctrl-a ctrl-d");
+        assert_eq!(kit_value(&state, cx), ("bcde".into(), 0));
     }
 }

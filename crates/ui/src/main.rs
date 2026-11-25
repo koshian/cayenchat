@@ -11206,6 +11206,14 @@ fn rebind_shortcuts(cx: &mut App) {
         )]);
     }
     input::bind_multiline_keys(emacs, cx);
+    // `clear_key_bindings` dropped the Kit's keys with the rest.
+    settings_theme::rebind_kit_keys(emacs, cx);
+}
+
+/// Whether the Emacs text key theme is in effect, from the current preferences.
+fn emacs_keys_now(cx: &App) -> bool {
+    cx.try_global::<ShortcutPrefs>()
+        .is_some_and(|prefs| emacs_keys_active(prefs, cx))
 }
 
 /// Whether the Emacs text key theme is in effect.
