@@ -1311,6 +1311,7 @@ pub(crate) struct SettingsWindow {
     /// Tab being followed there (see `reveal_focused`).
     kit_bounds: Option<Bounds<Pixels>>,
     reveal_forward: bool,
+    tab_wrap: Option<TabWrap>,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Painted track and keyboard focus of the declared sliders (opacity,
@@ -1342,6 +1343,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) saved: Settings,
     pub(crate) window: AnyWindowHandle,
     autosave: Option<Task<()>>,
+    /// The Kit input being typed in, with the subscription that commits the
+    /// shown server's text when it loses focus (see `watch_kit_input`).
+    kit_input_blur: Option<(FocusHandle, Subscription)>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
     /// Secrets of removed servers that could not be deleted yet; every save
@@ -1434,6 +1438,27 @@ const KIT_REVEAL_FRAMES: u8 = 12;
 /// the rows below it.
 const KIT_PAGE_HEADER: Pixels = px(72.);
 
+/// The widest the Kit's sidebar can be dragged (see `settings_kit`); what
+/// lies to the right of it is the page.
+pub(crate) const KIT_SIDEBAR_MAX: Pixels = px(300.);
+
+/// How often a Tab that wrapped out of the page is tried again after the page
+/// scrolled, and the frames each try waits for the scrolled page to paint.
+const TAB_WRAP_RETRIES: u8 = 8;
+const TAB_WRAP_FRAMES: u8 = 3;
+
+/// A Tab that started in the Kit's page, followed until it lands in the page
+/// again or the page cannot scroll any further.
+struct TabWrap {
+    /// The field the Tab started at, and where its top was painted.
+    from: FocusHandle,
+    from_top: Pixels,
+    forward: bool,
+    left: u8,
+    /// Frames still to wait for the page to paint after a scroll.
+    wait: u8,
+}
+
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -1524,7 +1549,6 @@ impl SettingsWindow {
         window.os_set_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, cx);
-        window.focus(&settings.nickname.focus_handle(cx), cx);
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
@@ -1580,6 +1604,7 @@ impl SettingsWindow {
             reveal_focus: 0,
             kit_bounds: None,
             reveal_forward: true,
+            tab_wrap: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
             blur_supported: true,
@@ -1596,6 +1621,7 @@ impl SettingsWindow {
             saved,
             window: window.window_handle(),
             autosave: None,
+            kit_input_blur: None,
             autosave_error: None,
             forget_pending: Vec::new(),
             host_change_open: false,
@@ -1630,11 +1656,10 @@ impl SettingsWindow {
                 this.paste_avatar_image(&paste.0, window, cx);
             },
         ));
-        // Without a server the form shows no fields, so the focus waits on
-        // the page itself and Escape still reaches the window.
-        if this.settings.values.servers.is_empty() {
-            window.focus(&this.nav_focus, cx);
-        }
+        // The Kit paints the form's fields lazily and as its own inputs, so
+        // the focus waits on the page itself and Escape still reaches the
+        // window.
+        window.focus(&this.nav_focus, cx);
         this.refresh_autostart(cx);
         this.probe_system_store(cx);
         this.refresh_upload_account(cx);
@@ -1653,7 +1678,7 @@ impl SettingsWindow {
         let mut subscriptions = Vec::new();
         for field in settings.server_text_fields() {
             let handle = field.focus_handle(cx);
-            subscriptions.push(cx.on_blur(&handle, window, |this, window, cx| {
+            subscriptions.push(cx.on_focus_out(&handle, window, |this, _, window, cx| {
                 this.autosave_now(Some(window), cx)
             }));
         }
@@ -2304,6 +2329,36 @@ impl SettingsWindow {
                 this.update(cx, |this, cx| this.autosave_pause_elapsed(cx))
             });
         }));
+    }
+
+    /// Called when the Kit input of a text field changes: the text is
+    /// committed and saved once the focused input loses focus, as the form's
+    /// own fields were, so a value still being typed is never applied. The
+    /// setter has no window, so the subscription is made once it returns.
+    pub(crate) fn watch_kit_input(&mut self, cx: &mut Context<Self>) {
+        let window = self.window;
+        cx.spawn(async move |this, cx| {
+            let _ = cx.update_window(window, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    let Some(handle) = window.focused(cx) else {
+                        return;
+                    };
+                    if this
+                        .kit_input_blur
+                        .as_ref()
+                        .is_some_and(|(held, _)| *held == handle)
+                    {
+                        return;
+                    }
+                    let subscription = cx.on_focus_out(&handle, window, |this, _, window, cx| {
+                        this.kit_input_blur = None;
+                        this.autosave_now(Some(window), cx);
+                    });
+                    this.kit_input_blur = Some((handle, subscription));
+                });
+            });
+        })
+        .detach();
     }
 
     /// Whether the shown server is in the saved list. One that is not is a
@@ -3746,7 +3801,27 @@ impl SettingsWindow {
 
     /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
     /// whichever pane holds the new target by the least amount that shows it.
+    ///
+    /// The Kit's page paints only the groups near its view, so the next field
+    /// of a lower group is not in the tab order yet and Tab from the last
+    /// painted field wraps to the sidebar. A Tab that starts in the page and
+    /// ends in the sidebar is therefore undone, the page scrolled by part of
+    /// a view and the Tab made again (see `TabWrap`).
     fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_wrap = focus_reveal::focused_bounds(window, cx)
+            .filter(|bounds| self.in_kit_page(*bounds))
+            .zip(window.focused(cx))
+            .map(|(bounds, from)| TabWrap {
+                from,
+                from_top: bounds.top(),
+                forward,
+                left: TAB_WRAP_RETRIES,
+                wait: 0,
+            });
+        self.traverse_step(forward, window, cx);
+    }
+
+    fn traverse_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if forward {
             window.focus_next(cx);
         } else {
@@ -3758,6 +3833,47 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Whether `bounds` lie in the Kit's page and not in its sidebar.
+    fn in_kit_page(&self, bounds: Bounds<Pixels>) -> bool {
+        self.kit_bounds
+            .is_some_and(|view| bounds.right() > view.left() + KIT_SIDEBAR_MAX)
+    }
+
+    /// Asks for one more frame, which `reveal_focused` finds as it draws.
+    fn another_frame(window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity();
+        window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+    }
+
+    /// One frame of a Tab that wrapped out of the page. While the page scrolls
+    /// it waits; when it has, the Tab is made again from the field it started
+    /// at, unless that field did not move (the page is at its end, and the
+    /// wrap to the sidebar stands).
+    fn follow_tab_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(wrap) = self.tab_wrap.as_mut().filter(|wrap| wrap.wait > 0) else {
+            return false;
+        };
+        wrap.wait -= 1;
+        if wrap.wait > 0 {
+            Self::another_frame(window, cx);
+            return true;
+        }
+        let forward = wrap.forward;
+        let at = focus_reveal::focused_bounds(window, cx);
+        let moved = at.is_none_or(|at| (at.top() - wrap.from_top).abs() > px(1.));
+        if let Some(at) = at {
+            wrap.from_top = at.top();
+        }
+        if !moved {
+            self.tab_wrap = None;
+        }
+        let this = cx.entity();
+        window.defer(cx, move |window, cx| {
+            this.update(cx, |this, cx| this.traverse_step(forward, window, cx));
+        });
+        true
+    }
+
     /// While a Tab is being followed, scrolls to the field that has the focus
     /// unless it is already in view. The bounds are those the field painted at
     /// its new place, so the frame right after the Tab finds none and asks for
@@ -3766,7 +3882,7 @@ impl SettingsWindow {
     /// events the page itself listens to; a field the list has not painted
     /// yet is approached a view at a time.
     fn reveal_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.reveal_focus == 0 {
+        if self.follow_tab_wrap(window, cx) || self.reveal_focus == 0 {
             return;
         }
         self.reveal_focus -= 1;
@@ -3816,8 +3932,13 @@ impl SettingsWindow {
         view.origin.y += KIT_PAGE_HEADER;
         view.size.height = (view.size.height - KIT_PAGE_HEADER).max(px(0.));
         let delta = match target {
+            Some(target) if self.tab_wrapped_to_sidebar(target) => {
+                self.undo_tab_wrap(view, window, cx);
+                return;
+            }
             Some(target) => {
                 self.reveal_focus = 0;
+                self.tab_wrap = None;
                 focus_reveal::delta_to_reveal(view, target)
             }
             // The frame right after the Tab has not painted the field yet.
@@ -3828,6 +3949,17 @@ impl SettingsWindow {
         if delta == px(0.) {
             return;
         }
+        Self::scroll_kit_page(view, delta, window, cx);
+    }
+
+    /// Scrolls the Kit's page (shown in `view`) by `delta` through the wheel
+    /// event it listens to.
+    fn scroll_kit_page(
+        view: Bounds<Pixels>,
+        delta: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let event = ScrollEvent {
             position: point(view.right() - px(24.), view.center().y),
             delta: ScrollDelta::Pixels(point(px(0.), delta)),
@@ -3838,6 +3970,39 @@ impl SettingsWindow {
         window.defer(cx, move |window, cx| {
             window.dispatch_event(PlatformInput::Scroll(event), cx);
         });
+    }
+
+    /// Whether the Tab being followed started in the page and reached the
+    /// sidebar, which is where the order wraps to when the next field of the
+    /// page is not painted.
+    fn tab_wrapped_to_sidebar(&self, target: Bounds<Pixels>) -> bool {
+        self.tab_wrap.is_some() && !self.in_kit_page(target)
+    }
+
+    /// Puts the focus back where the Tab started and scrolls the page by part
+    /// of a view in the Tab's direction; `follow_tab_wrap` makes the Tab again
+    /// once that is painted. After `TAB_WRAP_RETRIES` tries the wrap stands.
+    fn undo_tab_wrap(&mut self, view: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_focus = 0;
+        let Some(wrap) = self.tab_wrap.as_mut() else {
+            return;
+        };
+        if wrap.left == 0 {
+            self.tab_wrap = None;
+            return;
+        }
+        wrap.left -= 1;
+        wrap.wait = TAB_WRAP_FRAMES;
+        let from = wrap.from.clone();
+        let delta = if wrap.forward {
+            -view.size.height * 0.6
+        } else {
+            view.size.height * 0.6
+        };
+        window.focus(&from, cx);
+        focus_reveal::clear(window, cx);
+        Self::scroll_kit_page(view, delta, window, cx);
+        Self::another_frame(window, cx);
     }
 
     /// Stores the dialog's rows in the `channels` field and in the shown

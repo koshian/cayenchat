@@ -8,6 +8,7 @@
 //! through `SettingField::render` / `SettingItem::render`. Saving,
 //! validation and the secrets stay with the form, as before.
 
+use gpui::Axis;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use super::*;
@@ -15,7 +16,7 @@ use crate::settings_kit::{element_item, field_item, group, page};
 
 /// Value of the dropdown entry that adds a server.
 const ADD_SERVER: &str = "\u{1}add";
-/// Width of a text field in a row.
+/// Width of a password field in a row.
 const FIELD_WIDTH: f32 = 260.;
 
 impl SettingsWindow {
@@ -91,25 +92,35 @@ impl SettingsWindow {
         page(title, groups, cx)
     }
 
-    /// A row with a text field of the form.
+    /// A row with the Kit's input for a text field of the form, laid out
+    /// vertically (the Kit's own layout for a wide control, so that it fits a
+    /// narrow window). The form's
+    /// field keeps the text (saving and Reset read it): the input shows it
+    /// and a change is written to it.
     fn text_item(
         &self,
         this: &WeakEntity<Self>,
         key: &str,
         input: &Entity<TextInput>,
     ) -> SettingItem {
+        let shown = input.clone();
         let input = input.clone();
-        field_item(
-            this,
+        let target = this.clone();
+        SettingItem::new(
             self.i18n.text(key),
-            self.i18n.text(&format!("{key}_desc")),
-            move |_, _, _| {
-                div()
-                    .w(px(FIELD_WIDTH))
-                    .child(input.clone())
-                    .into_any_element()
-            },
+            SettingField::input(
+                move |cx| SharedString::from(shown.read(cx).text().to_owned()),
+                move |value, cx| {
+                    if input.read(cx).text() == value.as_ref() {
+                        return;
+                    }
+                    input.update(cx, |field, cx| field.set_text(&value, cx));
+                    let _ = target.update(cx, |this, cx| this.watch_kit_input(cx));
+                },
+            ),
         )
+        .description(self.i18n.text(&format!("{key}_desc")))
+        .layout(Axis::Vertical)
     }
 
     /// A line of text under a row, in the warning color or not.
@@ -272,7 +283,7 @@ impl SettingsWindow {
         let mut items = vec![
             SettingItem::new(
                 i18n.text("destination"),
-                SettingField::dropdown(
+                SettingField::scrollable_dropdown(
                     options,
                     move |_| current.clone(),
                     move |value, cx| {
@@ -429,7 +440,8 @@ impl SettingsWindow {
                     }
                     cx.notify();
                 },
-            ),
+            )
+            .layout(Axis::Vertical),
             self.text_item(this, "alt_nicks", &self.settings.alt_nicks),
             self.note_item(this, "nick_collision_hint", false),
             self.text_item(this, "username", &self.settings.username),
@@ -665,6 +677,7 @@ impl SettingsWindow {
             self.i18n.text(&format!("{key}_desc")),
             move |this, _, cx| this.credential_controls(which, cx).into_any_element(),
         )
+        .layout(Axis::Vertical)
     }
 
     fn credential_controls(&self, which: Credential, cx: &mut Context<Self>) -> Div {
@@ -828,5 +841,82 @@ fn nick_collision_key(choice: NickCollision) -> &'static str {
         NickCollision::Digits => "nick_collision_digits",
         NickCollision::Alternates => "nick_collision_alternates",
         NickCollision::Dialog => "nick_collision_dialog",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::Entity;
+
+    use super::{SettingsTab, SettingsWindow};
+
+    /// Settings with one server shown on the Connection tab, with the
+    /// production Tab bindings.
+    fn connection_form(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<SettingsWindow>, &mut gpui::VisualTestContext) {
+        crate::support::install_test_globals(cx);
+        cx.update(|cx| {
+            crate::input::bind_keys(false, cx);
+            cx.bind_keys(crate::shortcut_bindings(
+                cayenchat_storage::ChannelNumberModifier::Ctrl,
+                &Default::default(),
+                cx,
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx.add_window(|window, cx| {
+            crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = SettingsTab::Connection;
+            form
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (form, cx)
+    }
+
+    /// Draws frames until the Tab being followed has settled.
+    fn settle(cx: &mut gpui::VisualTestContext) {
+        for _ in 0..40 {
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    fn tab_goes_on_into_the_groups_the_page_has_not_painted(cx: &mut gpui::TestAppContext) {
+        let (form, cx) = connection_form(cx);
+        form.update_in(cx, |form, window, cx| window.focus(&form.nav_focus, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("connection-button").is_none(),
+            "the last group is already painted"
+        );
+        let mut reached = false;
+        for _ in 0..80 {
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            if cx.debug_bounds("connection-button").is_some() {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Tab never reached the groups below");
+
+        // Shift+Tab goes back up through the groups above.
+        let mut back = false;
+        for _ in 0..120 {
+            cx.simulate_keystrokes("shift-tab");
+            settle(cx);
+            if cx.debug_bounds("connection-button").is_none() {
+                back = true;
+                break;
+            }
+        }
+        assert!(back, "Shift+Tab never left the groups below");
     }
 }

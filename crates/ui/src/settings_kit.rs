@@ -262,7 +262,7 @@ impl SettingsWindow {
             self.kit_generation
         )))
         .sidebar_width(px(190.))
-        .sidebar_size_range(px(140.)..px(300.))
+        .sidebar_size_range(px(140.)..crate::settings_window::KIT_SIDEBAR_MAX)
         .default_selected_index(SelectIndex {
             page_ix: selected,
             group_ix: None,
