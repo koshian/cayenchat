@@ -177,6 +177,22 @@ impl SettingsWindow {
     }
 }
 
+/// The item at the end of a page: the status message and the reset button
+/// of `tab`.
+fn footer_item(this: &WeakEntity<SettingsWindow>, tab: SettingsTab) -> SettingItem {
+    element_item(this, move |this, _, cx| {
+        let theme = settings_theme::palette(cx);
+        div()
+            .flex()
+            .flex_col()
+            .when_some(this.status_message(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(this.reset_footer(tab, cx))
+            .into_any_element()
+    })
+}
+
 /// A group of rows under a heading.
 fn group(title: String, description: Option<String>, items: Vec<SettingItem>) -> SettingGroup {
     let group = SettingGroup::new().title(title).items(items);
@@ -199,10 +215,10 @@ impl SettingsWindow {
             .iter()
             .map(|&(tab, _, label_key)| {
                 let title = self.i18n.text(label_key);
-                let page = if tab == SettingsTab::Appearance {
-                    self.appearance_page(title, &this, cx)
-                } else {
-                    self.panel_page(tab, title, &this)
+                let page = match tab {
+                    SettingsTab::Appearance => self.appearance_page(title, &this, cx),
+                    SettingsTab::Notifications => self.notifications_page(title, &this),
+                    _ => self.panel_page(tab, title, &this),
                 };
                 // The page being drawn is the tab being shown.
                 let follow = this.clone();
@@ -223,6 +239,30 @@ impl SettingsWindow {
             group_ix: None,
         })
         .pages(pages)
+    }
+
+    /// The Notifications tab: when a desktop notification is shown, then the
+    /// keywords that make a message count as one.
+    fn notifications_page(&self, title: String, this: &WeakEntity<Self>) -> SettingPage {
+        let i18n = &self.i18n;
+        let platform_hint = if cfg!(target_os = "macos") {
+            "notifications_hint_macos"
+        } else {
+            "notifications_hint"
+        };
+        SettingPage::new(title).groups([
+            group(
+                i18n.text("group_notify_desktop"),
+                Some(i18n.text(platform_hint)),
+                self.kit_table(settings_items::NOTIFICATIONS_DESKTOP, this),
+            ),
+            group(
+                i18n.text("group_notify_keywords"),
+                None,
+                self.kit_table(settings_items::NOTIFICATIONS_KEYWORDS, this),
+            ),
+            SettingGroup::new().item(footer_item(this, SettingsTab::Notifications)),
+        ])
     }
 
     /// A tab not rebuilt yet: its panel as one item of one group.
@@ -247,7 +287,8 @@ impl SettingsWindow {
             // Drawn as groups by `appearance_page`.
             SettingsTab::Appearance => div().into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
-            SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
+            // Drawn as groups by `notifications_page`.
+            SettingsTab::Notifications => div().into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
@@ -562,17 +603,7 @@ impl SettingsWindow {
         fonts.extend(self.kit_table(settings_items::LINE_HEIGHT_COMBINED_LOG, this));
 
         let display = self.kit_table(settings_items::APPEARANCE_ROWS, this);
-        let footer = element_item(this, |this, _, cx| {
-            let theme = settings_theme::palette(cx);
-            div()
-                .flex()
-                .flex_col()
-                .when_some(this.status_message(), |d, feedback| {
-                    d.child(div().text_color(theme.warning).child(feedback))
-                })
-                .child(this.reset_footer(SettingsTab::Appearance, cx))
-                .into_any_element()
-        });
+        let footer = footer_item(this, SettingsTab::Appearance);
         let i18n = &self.i18n;
         SettingPage::new(title).groups([
             group(

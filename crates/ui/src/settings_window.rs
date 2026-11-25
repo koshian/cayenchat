@@ -5157,20 +5157,6 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Keyboard, cx))
     }
 
-    /// Desktop notification preferences, shown through the operating
-    /// system's notification service. The rows come from
-    /// `settings_items::NOTIFICATIONS`.
-    pub(crate) fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        account_settings::panel(cx)
-            .child(self.tab_heading("notifications_tab"))
-            .children(self.render_items(crate::settings_items::NOTIFICATIONS, cx))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(self.reset_footer(SettingsTab::Notifications, cx))
-    }
-
     /// The categories in list order; the last, Experimental, stands apart.
     pub(crate) fn settings_tabs() -> Vec<(SettingsTab, &'static str, &'static str)> {
         let mut tabs = vec![

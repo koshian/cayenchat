@@ -27,6 +27,9 @@ use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::S
 /// Width of a slider's track.
 const SLIDER_WIDTH: f32 = 220.;
 
+/// Width of a text field inside a Kit row.
+const TEXT_FIELD_WIDTH: f32 = 260.;
+
 /// What a declared slider needs between renders: where its track was last
 /// painted (to turn the pointer position into a value) and its keyboard
 /// focus. Keyed by the item id.
@@ -238,20 +241,23 @@ fn notifications_on(settings: &Settings) -> bool {
     settings.notifications.enabled
 }
 
-/// The Notifications tab.
-pub(crate) const NOTIFICATIONS: &[Item] = &[
+/// The desktop notifications of the Notifications tab: the master switch and
+/// when a notification is shown.
+pub(crate) const NOTIFICATIONS_DESKTOP: &[Item] = &[
     Item::toggle(
         "notifications-enabled",
         "notifications_enabled",
         |s| s.notifications.enabled,
         |s, on| s.notifications.enabled = on,
-    ),
+    )
+    .hint("notifications_enabled_hint"),
     Item::toggle(
         "notify-mentions",
         "notify_mentions",
         |s| s.notifications.mentions,
         |s, on| s.notifications.mentions = on,
     )
+    .hint("notify_mentions_hint")
     .enabled_when(notifications_on),
     Item::toggle(
         "notify-private-messages",
@@ -259,6 +265,7 @@ pub(crate) const NOTIFICATIONS: &[Item] = &[
         |s| s.notifications.private_messages,
         |s, on| s.notifications.private_messages = on,
     )
+    .hint("notify_private_messages_hint")
     .enabled_when(notifications_on),
     Item::toggle(
         "notify-keywords",
@@ -266,7 +273,21 @@ pub(crate) const NOTIFICATIONS: &[Item] = &[
         |s| s.notifications.keyword_alerts,
         |s, on| s.notifications.keyword_alerts = on,
     )
+    .hint("notify_keywords_hint")
     .enabled_when(notifications_on),
+    Item::toggle(
+        "notify-sound",
+        "notify_sound",
+        |s| s.notifications.sound,
+        |s, on| s.notifications.sound = on,
+    )
+    .hint("notify_sound_hint")
+    .enabled_when(notifications_on)
+    .only_if(cfg!(target_os = "windows")),
+];
+
+/// The keyword lists of the Notifications tab.
+pub(crate) const NOTIFICATIONS_KEYWORDS: &[Item] = &[
     Item::text(
         "keywords",
         "keywords",
@@ -276,8 +297,8 @@ pub(crate) const NOTIFICATIONS: &[Item] = &[
             s.notifications.keywords = notifications::parse_keywords(text);
             Ok(())
         },
-    ),
-    Item::note("keywords-hint", "keywords_hint"),
+    )
+    .hint("keywords_hint"),
     Item::text(
         "exclude-keywords",
         "exclude_keywords",
@@ -287,19 +308,8 @@ pub(crate) const NOTIFICATIONS: &[Item] = &[
             s.notifications.exclude_keywords = notifications::parse_keywords(text);
             Ok(())
         },
-    ),
-    Item::note("exclude-keywords-hint", "exclude_keywords_hint"),
-    Item::toggle(
-        "notify-sound",
-        "notify_sound",
-        |s| s.notifications.sound,
-        |s, on| s.notifications.sound = on,
     )
-    .enabled_when(notifications_on)
-    .only_if(cfg!(target_os = "windows")),
-    Item::note("notifications-hint-macos", "notifications_hint_macos")
-        .only_if(cfg!(target_os = "macos")),
-    Item::note("notifications-hint", "notifications_hint").only_if(!cfg!(target_os = "macos")),
+    .hint("exclude_keywords_hint"),
 ];
 
 /// The Application tab, from "Always on top" to the double-click
@@ -644,7 +654,8 @@ const TABLES: &[&[Item]] = &[
     BLUR_RADIUS,
     LINE_HEIGHT_CHANNEL_LOG,
     LINE_HEIGHT_COMBINED_LOG,
-    NOTIFICATIONS,
+    NOTIFICATIONS_DESKTOP,
+    NOTIFICATIONS_KEYWORDS,
     EXPERIMENTAL,
     APPLICATION_WINDOW,
     APPLICATION_MENU,
@@ -949,7 +960,9 @@ pub(crate) fn kit_items(
                 out.push(hint(
                     SettingItem::new(
                         i18n.text(item.label_key),
-                        SettingField::render(move |_, _, _| input.clone()),
+                        SettingField::render(move |_, _, _| {
+                            div().w(px(TEXT_FIELD_WIDTH)).child(input.clone())
+                        }),
                     )
                     .disabled(disabled),
                 ));
@@ -1007,14 +1020,17 @@ pub(crate) fn kit_items(
 
 #[cfg(test)]
 mod tests {
-    use super::{Control, KEYBOARD_SEND, NOTIFICATIONS, Settings, TABLES, kit_items};
+    use super::{
+        Control, KEYBOARD_SEND, NOTIFICATIONS_DESKTOP, NOTIFICATIONS_KEYWORDS, Settings, TABLES,
+        kit_items,
+    };
     use gpui_component::setting::SettingItem;
     use std::rc::Rc;
 
     fn convert(settings: &Settings) -> Vec<SettingItem> {
         let i18n = crate::localization::Localizer::new(Default::default());
         kit_items(
-            NOTIFICATIONS,
+            NOTIFICATIONS_DESKTOP,
             settings,
             &i18n,
             |_| None,
@@ -1029,7 +1045,7 @@ mod tests {
         // Text fields need an app context and are skipped here.
         let settings = Settings::default();
         let items = convert(&settings);
-        let toggles = NOTIFICATIONS
+        let toggles = NOTIFICATIONS_DESKTOP
             .iter()
             .filter(|item| item.visible && matches!(item.control, Control::Toggle { .. }))
             .count();
@@ -1050,13 +1066,20 @@ mod tests {
     }
 
     #[test]
-    fn notes_become_descriptions_of_the_item_above() {
-        let items = convert(&Settings::default());
-        // The trailing platform hint attaches to the last toggle.
-        let Some(SettingItem::Item { description, .. }) = items.last() else {
-            panic!("an item");
-        };
-        assert!(description.is_some());
+    fn every_notification_row_has_a_description() {
+        assert!(
+            NOTIFICATIONS_DESKTOP
+                .iter()
+                .chain(NOTIFICATIONS_KEYWORDS)
+                .all(|item| item.hint_key.is_some())
+        );
+        assert!(convert(&Settings::default()).iter().all(|item| matches!(
+            item,
+            SettingItem::Item {
+                description: Some(_),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -1088,7 +1111,7 @@ mod tests {
     fn keywords_round_trip_through_their_text() {
         let mut settings = Settings::default();
         settings.notifications.keywords = vec!["cat".into(), "dog".into()];
-        for item in NOTIFICATIONS {
+        for item in NOTIFICATIONS_KEYWORDS {
             if let Control::Text { show, store, .. } = &item.control {
                 let text = show(&settings);
                 let mut other = Settings::default();
@@ -1102,7 +1125,7 @@ mod tests {
     fn dependent_toggles_follow_the_master_switch() {
         let mut settings = Settings::default();
         settings.notifications.enabled = false;
-        let mentions = NOTIFICATIONS
+        let mentions = NOTIFICATIONS_DESKTOP
             .iter()
             .find(|item| item.id == "notify-mentions")
             .expect("declared");
