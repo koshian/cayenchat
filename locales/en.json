@@ -725,7 +725,7 @@
   "notify_mentions_hint": "Notify when someone mentions your nickname in a channel (e.g. nick: or @nick).",
   "notify_private_messages": "Private messages",
   "notify_private_messages_hint": "Notify when you receive a private message.",
-  "notify_keywords": "Keywords",
+  "notify_keywords": "Notify for keywords",
   "notify_keywords_hint": "Notify when a channel message contains one of the keywords below.",
   "notify_sound": "Sound and taskbar flash",
   "notify_sound_hint": "Play a sound and flash the taskbar button with a notification.",
