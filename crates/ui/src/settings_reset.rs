@@ -618,6 +618,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (form, cx) = form(SettingsTab::Connection, cx);
+        crate::support::scroll_settings_to(cx, "connection-button");
         let viewport = cx.update(|window, _| window.viewport_size());
         let button = cx.debug_bounds("connection-button").expect("drawn");
         // The page is at most 720 px wide beside the 190 px list, with 16 px
@@ -645,6 +646,7 @@ mod tests {
             form
         });
         cx.run_until_parked();
+        crate::support::scroll_settings_to(cx, "connection-button");
         let before = cx.debug_bounds("connection-button").expect("drawn");
         assert!(!form.read_with(cx, |form, _| form.connected_shown));
 
