@@ -507,19 +507,9 @@ impl SettingsWindow {
     ) -> SettingPage {
         let s = &self.settings;
         let mut pane_colors = vec![self.color_heading_item()];
+        // Panes in the order of importance: channel log, combined log,
+        // member list, channel tree (same as the fonts and wallpapers).
         for (label, hint, light, dark) in [
-            (
-                "member_list_background",
-                "member_list_background_hint",
-                &s.member_list_background,
-                &s.dark_member_list_background,
-            ),
-            (
-                "channel_tree_background",
-                "channel_tree_background_hint",
-                &s.channel_tree_background,
-                &s.dark_channel_tree_background,
-            ),
             (
                 "channel_log",
                 "channel_log_hint",
@@ -543,6 +533,18 @@ impl SettingsWindow {
                 "combined_log_alternate_hint",
                 &s.combined_log_alternate,
                 &s.dark_combined_log_alternate,
+            ),
+            (
+                "member_list_background",
+                "member_list_background_hint",
+                &s.member_list_background,
+                &s.dark_member_list_background,
+            ),
+            (
+                "channel_tree_background",
+                "channel_tree_background_hint",
+                &s.channel_tree_background,
+                &s.dark_channel_tree_background,
             ),
         ] {
             pane_colors.extend(self.color_items(this, label, hint, light, dark));
@@ -611,10 +613,10 @@ impl SettingsWindow {
 
         let mut transparency = Vec::new();
         for table in [
-            settings_items::OPACITY_MEMBER_LIST,
-            settings_items::OPACITY_CHANNEL_TREE,
             settings_items::OPACITY_CHANNEL_LOG,
             settings_items::OPACITY_COMBINED_LOG,
+            settings_items::OPACITY_MEMBER_LIST,
+            settings_items::OPACITY_CHANNEL_TREE,
             settings_items::OPACITY_URL_TOOLTIP,
         ] {
             transparency.extend(self.kit_table(table, this));

@@ -2605,6 +2605,11 @@ after the first in the Kit theme's `border` color (a top border on the
 `SettingGroup`, nothing of our own); the reset footer's button and status
 message sit at the left, apart from the right-aligned controls of the rows.
 
+Where the settings list the panes one by one (pane colors, opacities, fonts,
+wallpapers) the order is channel log, combined log, member list, channel tree,
+the panes by how much people look at them; an alternate row color follows its
+log.
+
 Tab follows the focus in the Kit's pages: the Kit gives no scroll handle, so
 `reveal_in_kit_page` sends the page the wheel event it listens to, by the least
 amount that shows the field. The field's bounds come from the patched gpui's

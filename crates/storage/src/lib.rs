@@ -1445,10 +1445,10 @@ impl Appearance {
             ));
         }
         for (label, percent) in [
-            ("Member list", self.member_list_opacity),
-            ("Channel tree", self.channel_tree_opacity),
             ("Channel log", self.channel_log_opacity),
             ("Combined log", self.combined_log_opacity),
+            ("Member list", self.member_list_opacity),
+            ("Channel tree", self.channel_tree_opacity),
         ] {
             if !(MIN_PANE_OPACITY..=100).contains(&percent) {
                 return Err(format!(
