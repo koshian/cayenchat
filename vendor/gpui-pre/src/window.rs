@@ -2639,6 +2639,28 @@ impl Window {
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
     }
 
+    /// Whether the focused text input holds marked (uncommitted IME) text
+    /// (CayenChat patch, #622). The GPUI Kit's inputs keep their state to
+    /// themselves, so the settings window cannot ask them directly.
+    pub fn focused_input_is_composing(&mut self, cx: &mut App) -> bool {
+        let Some(mut input_handler) = self.platform_window.take_input_handler() else {
+            return false;
+        };
+        let composing = input_handler.has_marked_text(self, cx);
+        self.platform_window.set_input_handler(input_handler);
+        composing
+    }
+
+    /// Starts an IME composition with `text` in the focused text input, for
+    /// tests (CayenChat patch, #622).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mark_focused_input_text(&mut self, text: &str, cx: &mut App) {
+        if let Some(mut input_handler) = self.platform_window.take_input_handler() {
+            input_handler.mark_text(text, self, cx);
+            self.platform_window.set_input_handler(input_handler);
+        }
+    }
+
     /// The bounds the element holding the focus painted last, when it tracks
     /// its focus handle (CayenChat patch, #622). `None` while it has not been
     /// painted since it took the focus, for example because a virtualized list

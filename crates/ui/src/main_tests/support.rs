@@ -47,3 +47,21 @@ pub(crate) fn window<'a>(
     cx.run_until_parked();
     (chat, cx)
 }
+
+/// Scrolls the Kit's settings page down until the element with the debug
+/// selector `id` is drawn: a tall page draws only what is near the viewport.
+pub(crate) fn scroll_settings_to(cx: &mut gpui::VisualTestContext, id: &'static str) {
+    let size = cx.update(|window, _| window.viewport_size());
+    for _ in 0..200 {
+        if cx.debug_bounds(id).is_some() {
+            return;
+        }
+        cx.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(size.width * 0.7, size.height * 0.5),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-300.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+    panic!("{id} is not reached by scrolling");
+}

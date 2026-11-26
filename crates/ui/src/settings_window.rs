@@ -5,10 +5,10 @@ use crate::channel_settings_dialog::CHAR_REF_CHOICES;
 use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, Disconnect, FocusNextField, FocusPreviousField, OpenSettings, Reconnect,
-    ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts, autostart, avatar_editor,
-    color_picker, decorations, delete_secrets, diagnostics, focus_reveal, i18n_error,
-    input::TextInput, ircv3_settings, localization::Localizer, notification_rules,
-    removed_secret_keys, secrets, settings_file, settings_theme, shortcut_settings, theme,
+    ShortcutPrefs, ToggleDebug, apply_shortcuts, autostart, avatar_editor, color_picker,
+    decorations, delete_secrets, diagnostics, focus_reveal, i18n_error, input::TextInput,
+    ircv3_settings, localization::Localizer, notification_rules, removed_secret_keys, secrets,
+    settings_file, settings_theme, shortcut_settings, theme,
 };
 use cayenchat_app::attachments::AttachmentFlow;
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
@@ -20,6 +20,8 @@ use cayenchat_storage::{
 use gpui::{prelude::*, *};
 
 use std::{collections::HashMap, time::Duration};
+
+mod connection;
 
 /// What was typed for a server that is not shown: its unsaved passwords and
 /// whether each is to be saved with the settings.
@@ -1309,6 +1311,7 @@ pub(crate) struct SettingsWindow {
     /// Tab being followed there (see `reveal_focused`).
     kit_bounds: Option<Bounds<Pixels>>,
     reveal_forward: bool,
+    tab_wrap: Option<TabWrap>,
     /// Imported themes and the state of the theme actions (#962).
     pub(crate) themes: crate::theme_settings::ThemeUi,
     /// Painted track and keyboard focus of the declared sliders (opacity,
@@ -1340,6 +1343,13 @@ pub(crate) struct SettingsWindow {
     pub(crate) saved: Settings,
     pub(crate) window: AnyWindowHandle,
     autosave: Option<Task<()>>,
+    /// The Kit input being typed in, with the subscription that commits the
+    /// shown server's text when it loses focus (see `watch_kit_input`).
+    kit_input_blur: Option<(FocusHandle, Subscription)>,
+    /// Set by the capture of an Escape that reached a Kit input holding
+    /// uncommitted IME text: the input ends the composition before the key
+    /// reaches `escape_key_down`, which must still leave the window alone.
+    kit_escape_composing: bool,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
     /// Secrets of removed servers that could not be deleted yet; every save
@@ -1432,6 +1442,27 @@ const KIT_REVEAL_FRAMES: u8 = 12;
 /// the rows below it.
 const KIT_PAGE_HEADER: Pixels = px(72.);
 
+/// The widest the Kit's sidebar can be dragged (see `settings_kit`); what
+/// lies to the right of it is the page.
+pub(crate) const KIT_SIDEBAR_MAX: Pixels = px(300.);
+
+/// How often a Tab that wrapped out of the page is tried again after the page
+/// scrolled, and the frames each try waits for the scrolled page to paint.
+const TAB_WRAP_RETRIES: u8 = 8;
+const TAB_WRAP_FRAMES: u8 = 3;
+
+/// A Tab that started in the Kit's page, followed until it lands in the page
+/// again or the page cannot scroll any further.
+struct TabWrap {
+    /// The field the Tab started at, and where its top was painted.
+    from: FocusHandle,
+    from_top: Pixels,
+    forward: bool,
+    left: u8,
+    /// Frames still to wait for the page to paint after a scroll.
+    wait: u8,
+}
+
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -1522,7 +1553,6 @@ impl SettingsWindow {
         window.os_set_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, cx);
-        window.focus(&settings.nickname.focus_handle(cx), cx);
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
@@ -1578,6 +1608,7 @@ impl SettingsWindow {
             reveal_focus: 0,
             kit_bounds: None,
             reveal_forward: true,
+            tab_wrap: None,
             themes: crate::theme_settings::ThemeUi::new(crate::theme::current(cx).dark, cx),
             sliders: crate::settings_items::SliderState::all(cx),
             blur_supported: true,
@@ -1594,6 +1625,8 @@ impl SettingsWindow {
             saved,
             window: window.window_handle(),
             autosave: None,
+            kit_input_blur: None,
+            kit_escape_composing: false,
             autosave_error: None,
             forget_pending: Vec::new(),
             host_change_open: false,
@@ -1628,11 +1661,10 @@ impl SettingsWindow {
                 this.paste_avatar_image(&paste.0, window, cx);
             },
         ));
-        // Without a server the form shows no fields, so the focus waits on
-        // the page itself and Escape still reaches the window.
-        if this.settings.values.servers.is_empty() {
-            window.focus(&this.nav_focus, cx);
-        }
+        // The Kit paints the form's fields lazily and as its own inputs, so
+        // the focus waits on the page itself and Escape still reaches the
+        // window.
+        window.focus(&this.nav_focus, cx);
         this.refresh_autostart(cx);
         this.probe_system_store(cx);
         this.refresh_upload_account(cx);
@@ -1651,7 +1683,7 @@ impl SettingsWindow {
         let mut subscriptions = Vec::new();
         for field in settings.server_text_fields() {
             let handle = field.focus_handle(cx);
-            subscriptions.push(cx.on_blur(&handle, window, |this, window, cx| {
+            subscriptions.push(cx.on_focus_out(&handle, window, |this, _, window, cx| {
                 this.autosave_now(Some(window), cx)
             }));
         }
@@ -2304,6 +2336,36 @@ impl SettingsWindow {
         }));
     }
 
+    /// Called when the Kit input of a text field changes: the text is
+    /// committed and saved once the focused input loses focus, as the form's
+    /// own fields were, so a value still being typed is never applied. The
+    /// setter has no window, so the subscription is made once it returns.
+    pub(crate) fn watch_kit_input(&mut self, cx: &mut Context<Self>) {
+        let window = self.window;
+        cx.spawn(async move |this, cx| {
+            let _ = cx.update_window(window, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    let Some(handle) = window.focused(cx) else {
+                        return;
+                    };
+                    if this
+                        .kit_input_blur
+                        .as_ref()
+                        .is_some_and(|(held, _)| *held == handle)
+                    {
+                        return;
+                    }
+                    let subscription = cx.on_focus_out(&handle, window, |this, _, window, cx| {
+                        this.kit_input_blur = None;
+                        this.autosave_now(Some(window), cx);
+                    });
+                    this.kit_input_blur = Some((handle, subscription));
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Whether the shown server is in the saved list. One that is not is a
     /// draft: it is saved by the Save button only and cannot be connected.
     pub(crate) fn shown_server_registered(&self) -> bool {
@@ -2674,7 +2736,9 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        let kit_composing = std::mem::take(&mut self.kit_escape_composing);
         if keystroke.key != "escape"
+            || kit_composing
             || keystroke.modifiers.modified()
             || keystroke.is_ime_in_progress()
             || self.shortcut_recording.is_some()
@@ -3744,7 +3808,29 @@ impl SettingsWindow {
 
     /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
     /// whichever pane holds the new target by the least amount that shows it.
+    ///
+    /// The Kit's page paints only the groups near its view, so the next field
+    /// of a lower group is not in the tab order yet and Tab from the last
+    /// painted field wraps to the sidebar. A Tab that starts in the page and
+    /// ends in the sidebar is therefore undone, the page scrolled by part of
+    /// a view and the Tab made again (see `TabWrap`).
     fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The page's own handle (where the focus waits while no field has
+        // it) covers the whole window and is no field of the page.
+        self.tab_wrap = focus_reveal::focused_bounds(window, cx)
+            .filter(|bounds| self.in_kit_page(*bounds) && !self.nav_focus.is_focused(window))
+            .zip(window.focused(cx))
+            .map(|(bounds, from)| TabWrap {
+                from,
+                from_top: bounds.top(),
+                forward,
+                left: TAB_WRAP_RETRIES,
+                wait: 0,
+            });
+        self.traverse_step(forward, window, cx);
+    }
+
+    fn traverse_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if forward {
             window.focus_next(cx);
         } else {
@@ -3756,6 +3842,47 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Whether `bounds` lie in the Kit's page and not in its sidebar.
+    fn in_kit_page(&self, bounds: Bounds<Pixels>) -> bool {
+        self.kit_bounds
+            .is_some_and(|view| bounds.right() > view.left() + KIT_SIDEBAR_MAX)
+    }
+
+    /// Asks for one more frame, which `reveal_focused` finds as it draws.
+    fn another_frame(window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity();
+        window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+    }
+
+    /// One frame of a Tab that wrapped out of the page. While the page scrolls
+    /// it waits; when it has, the Tab is made again from the field it started
+    /// at, unless that field did not move (the page is at its end, and the
+    /// wrap to the sidebar stands).
+    fn follow_tab_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(wrap) = self.tab_wrap.as_mut().filter(|wrap| wrap.wait > 0) else {
+            return false;
+        };
+        wrap.wait -= 1;
+        if wrap.wait > 0 {
+            Self::another_frame(window, cx);
+            return true;
+        }
+        let forward = wrap.forward;
+        let at = focus_reveal::focused_bounds(window, cx);
+        let moved = at.is_none_or(|at| (at.top() - wrap.from_top).abs() > px(1.));
+        if let Some(at) = at {
+            wrap.from_top = at.top();
+        }
+        if !moved {
+            self.tab_wrap = None;
+        }
+        let this = cx.entity();
+        window.defer(cx, move |window, cx| {
+            this.update(cx, |this, cx| this.traverse_step(forward, window, cx));
+        });
+        true
+    }
+
     /// While a Tab is being followed, scrolls to the field that has the focus
     /// unless it is already in view. The bounds are those the field painted at
     /// its new place, so the frame right after the Tab finds none and asks for
@@ -3764,7 +3891,7 @@ impl SettingsWindow {
     /// events the page itself listens to; a field the list has not painted
     /// yet is approached a view at a time.
     fn reveal_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.reveal_focus == 0 {
+        if self.follow_tab_wrap(window, cx) || self.reveal_focus == 0 {
             return;
         }
         self.reveal_focus -= 1;
@@ -3814,8 +3941,13 @@ impl SettingsWindow {
         view.origin.y += KIT_PAGE_HEADER;
         view.size.height = (view.size.height - KIT_PAGE_HEADER).max(px(0.));
         let delta = match target {
+            Some(target) if self.tab_wrapped_to_sidebar(target) => {
+                self.undo_tab_wrap(view, window, cx);
+                return;
+            }
             Some(target) => {
                 self.reveal_focus = 0;
+                self.tab_wrap = None;
                 focus_reveal::delta_to_reveal(view, target)
             }
             // The frame right after the Tab has not painted the field yet.
@@ -3826,6 +3958,17 @@ impl SettingsWindow {
         if delta == px(0.) {
             return;
         }
+        Self::scroll_kit_page(view, delta, window, cx);
+    }
+
+    /// Scrolls the Kit's page (shown in `view`) by `delta` through the wheel
+    /// event it listens to.
+    fn scroll_kit_page(
+        view: Bounds<Pixels>,
+        delta: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let event = ScrollEvent {
             position: point(view.right() - px(24.), view.center().y),
             delta: ScrollDelta::Pixels(point(px(0.), delta)),
@@ -3836,6 +3979,39 @@ impl SettingsWindow {
         window.defer(cx, move |window, cx| {
             window.dispatch_event(PlatformInput::Scroll(event), cx);
         });
+    }
+
+    /// Whether the Tab being followed started in the page and reached the
+    /// sidebar, which is where the order wraps to when the next field of the
+    /// page is not painted.
+    fn tab_wrapped_to_sidebar(&self, target: Bounds<Pixels>) -> bool {
+        self.tab_wrap.is_some() && !self.in_kit_page(target)
+    }
+
+    /// Puts the focus back where the Tab started and scrolls the page by part
+    /// of a view in the Tab's direction; `follow_tab_wrap` makes the Tab again
+    /// once that is painted. After `TAB_WRAP_RETRIES` tries the wrap stands.
+    fn undo_tab_wrap(&mut self, view: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_focus = 0;
+        let Some(wrap) = self.tab_wrap.as_mut() else {
+            return;
+        };
+        if wrap.left == 0 {
+            self.tab_wrap = None;
+            return;
+        }
+        wrap.left -= 1;
+        wrap.wait = TAB_WRAP_FRAMES;
+        let from = wrap.from.clone();
+        let delta = if wrap.forward {
+            -view.size.height * 0.6
+        } else {
+            view.size.height * 0.6
+        };
+        window.focus(&from, cx);
+        focus_reveal::clear(window, cx);
+        Self::scroll_kit_page(view, delta, window, cx);
+        Self::another_frame(window, cx);
     }
 
     /// Stores the dialog's rows in the `channels` field and in the shown
@@ -4002,913 +4178,6 @@ impl SettingsWindow {
             chat.network_of_profile(profile)
                 .is_some_and(|network| chat.can_disconnect(network))
         })
-    }
-
-    pub(crate) fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let connected = self.selected_connected(cx);
-        self.connected_shown = connected;
-        let profile = self.settings.values.selected_profile().cloned();
-        let no_server = profile.is_none();
-        // A server not in the saved list is a draft being added: only Save
-        // registers it, and only a registered server can be connected. A
-        // registered server's changes are saved as they are made (#634).
-        let adding = profile
-            .as_ref()
-            .is_some_and(|profile| self.saved.profile(&profile.id).is_none());
-        let selected_id = profile.as_ref().map(|profile| profile.id.clone());
-        let server_fields = profile
-            .as_ref()
-            .map(|profile| self.render_server_fields(profile, cx));
-        let quick_avatar = profile
-            .as_ref()
-            .map(|profile| self.render_quick_avatar(profile, cx));
-        let reiwa_mode = self.reiwa_mode_row("connection-reiwa-mode", cx);
-        let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
-        let current_port = self.settings.port.read(cx).text().trim().to_owned();
-        let saved_profile = selected_id.as_ref().and_then(|id| self.saved.profile(id));
-        let selected_label = if no_server {
-            self.i18n.text("no_servers")
-        } else if let Some(saved_profile) = saved_profile {
-            // A registered server reads the same as its entry in the list.
-            ircv3_settings::server_label(saved_profile, &self.i18n)
-        } else if current_host.is_empty() {
-            self.i18n.text("new_server")
-        } else {
-            format!("{current_host}:{current_port}")
-        };
-        let selected_label = display::neutralize_bidi(&selected_label).into_owned();
-        let mut server_selector = div().flex().flex_col().child(
-            div()
-                .id("server-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{selected_label}  ▾"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.server_list_open = !this.settings.server_list_open;
-                    this.settings.sasl_list_open = false;
-                    this.settings.encoding_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.server_list_open {
-            let mut menu = div()
-                .id("server-menu")
-                .max_h(px(260.))
-                .overflow_y_scroll()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            if adding {
-                // Adding offers only suggestions; existing servers stay out
-                // of the way so the list cannot be mistaken for editing one.
-                for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
-                    menu = menu.child(
-                        div()
-                            .id(("preset-option", index))
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|d| d.bg(theme.hover))
-                            .when(preset.host == current_host, |d| d.bg(theme.selected))
-                            .child(self.i18n.format(
-                                "preset_option",
-                                &[("name", preset.name), ("host", preset.host)],
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.choose_preset(preset.host, cx)
-                            })),
-                    );
-                }
-            } else {
-                for (index, server) in self.saved.ordered_servers().enumerate() {
-                    let id = server.id.clone();
-                    let label = ircv3_settings::server_label(server, &self.i18n);
-                    menu = menu.child(
-                        div()
-                            .id(("server-option", index))
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|d| d.bg(theme.hover))
-                            .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
-                            .child(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_server(id.clone(), cx)
-                            })),
-                    );
-                }
-                menu = menu.child(
-                    div()
-                        .id("add-server-option")
-                        .px_2()
-                        .py_1()
-                        .when(!no_server, |d| d.border_t_1().border_color(theme.border))
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .child(self.i18n.text("add_server"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.add_server(cayenchat_storage::PRESETS[0].host, cx)
-                        })),
-                );
-            }
-            server_selector = server_selector.child(menu);
-        }
-        account_settings::panel(cx)
-            .child(self.tab_heading("connection"))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text(if adding {
-                        "adding_server_intro"
-                    } else {
-                        "connection_intro"
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("destination")),
-                    )
-                    .child(server_selector.flex_1().min_w_0()),
-            )
-            .when_some(quick_avatar, |d, quick| d.child(quick))
-            // App-wide, so outside the icon section and its fold.
-            .child(reiwa_mode)
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("reiwa_mode_hint")),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("reiwa_mode_global_hint")),
-            )
-            .when_some(server_fields, |d, fields| d.child(fields))
-            .when(no_server, |d| {
-                d.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("no_servers_hint")),
-                )
-            })
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .when(connected && !adding, |d| {
-                d.child(
-                    div()
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("ircv3_next_connection")),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        settings_theme::button("back-button", false, cx)
-                            .debug_selector(|| "back-button".into())
-                            .child(self.i18n.text("back"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.close_settings(window, cx);
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .when(adding, |d| {
-                        d.child(
-                            settings_theme::button("save-button", false, cx)
-                                .debug_selector(|| "save-button".into())
-                                .child(self.i18n.text("save"))
-                                .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
-                        )
-                    })
-                    .when(!no_server && !adding, |d| {
-                        // One button in one place: Disconnect while the server
-                        // being edited is connected, being connected or
-                        // waiting to retry, Connect otherwise.
-                        d.child(
-                            settings_theme::button("connection-button", !connected, cx)
-                                .debug_selector(|| "connection-button".into())
-                                .child(self.i18n.text(if connected {
-                                    "disconnect"
-                                } else {
-                                    "connect"
-                                }))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if !connected {
-                                        this.connect_from_settings(window, cx);
-                                        return;
-                                    }
-                                    // Disconnects the server being edited.
-                                    let profile = this.settings.values.selected_server.clone();
-                                    let _ = this.owner.update(cx, |owner, _, cx| {
-                                        if let Some(network) = owner.network_of_profile(&profile) {
-                                            owner.disconnect(network, cx);
-                                        }
-                                    });
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            )
-    }
-
-    /// Everything on the Connection tab that belongs to `profile`.
-    fn render_server_fields(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let tls = profile.use_tls;
-        let sasl = profile.sasl_enabled;
-        let mut encoding_selector = div().flex().flex_col().child(
-            div()
-                .id("encoding-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{}  ▾", profile.encoding.label()))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.encoding_list_open = !this.settings.encoding_list_open;
-                    this.settings.sasl_list_open = false;
-                    this.settings.server_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.encoding_list_open {
-            let mut menu = div()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("encoding-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
-                        .child(encoding.label())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(profile) = this.settings.values.selected_profile_mut() {
-                                profile.encoding = encoding;
-                            }
-                            this.settings.encoding_list_open = false;
-                            cx.notify();
-                        })),
-                );
-            }
-            encoding_selector = encoding_selector.child(menu);
-        }
-        let sasl_label = profile.sasl_mechanism.name();
-        let mut sasl_selector = div().flex().flex_col().child(
-            div()
-                .id("sasl-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{sasl_label}  ▾"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.sasl_list_open = !this.settings.sasl_list_open;
-                    this.settings.server_list_open = false;
-                    this.settings.encoding_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.sasl_list_open {
-            let mut menu = div()
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, choice) in SaslMechanism::ALL.into_iter().enumerate() {
-                let selected = choice == profile.sasl_mechanism;
-                let label = choice.name();
-                menu = menu.child(
-                    div()
-                        .id(("sasl-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(selected, |d| d.bg(theme.selected))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_sasl_mechanism(choice, cx)
-                        })),
-                );
-            }
-            sasl_selector = sasl_selector.child(menu);
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(settings_field(
-                &self.i18n.text("display_name"),
-                self.settings.display_name.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("host"),
-                self.settings.custom_host.clone(),
-            ))
-            .child(
-                div()
-                    .id("remove-server")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_color(theme.warning)
-                    .child(
-                        self.i18n
-                            .text(if self.saved.profile(&profile.id).is_none() {
-                                "cancel_add_server"
-                            } else {
-                                "remove_server"
-                            }),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.remove_server(window, cx))),
-            )
-            .child(settings_field(
-                &self.i18n.text("port"),
-                self.settings.port.clone(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl(settings_theme::OPTION_INDENT)
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH - settings_theme::OPTION_INDENT)
-                            .flex_shrink_0()
-                            .child("TLS/SSL"),
-                    )
-                    .child(
-                        div()
-                            .id("tls-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(settings_theme::checkbox(tls, true, cx))
-                            .child(self.i18n.text(if tls { "on" } else { "off" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
-                    ),
-            )
-            .when(tls, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .pl(settings_theme::OPTION_INDENT * 2.)
-                        .child(
-                            div()
-                                .w(
-                                    settings_theme::LABEL_WIDTH
-                                        - settings_theme::OPTION_INDENT * 2.,
-                                )
-                                .flex_shrink_0()
-                                .child(self.i18n.text("verify_certificates")),
-                        )
-                        .child(
-                            div()
-                                .id("certificate-verification-toggle")
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(settings_theme::checkbox(
-                                    profile.verify_tls_certificates,
-                                    true,
-                                    cx,
-                                ))
-                                .child(self.i18n.text(if profile.verify_tls_certificates {
-                                    "on"
-                                } else {
-                                    "off"
-                                }))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_certificate_verification(cx)
-                                })),
-                        ),
-                )
-                .when(!profile.verify_tls_certificates, |d| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(self.i18n.text("certificate_warning")),
-                    )
-                })
-            })
-            .child(
-                div()
-                    .pt_2()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("server_auth_heading")),
-            )
-            .child(self.credential_row(Credential::Server, "server_password", cx))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("server_password_hint")),
-            )
-            .when(!tls, |d| {
-                d.child(
-                    div()
-                        .id("plaintext-pass")
-                        .ml(settings_theme::LABEL_INDENT)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor_pointer()
-                        .child(settings_theme::checkbox(
-                            profile.allow_plaintext_pass,
-                            true,
-                            cx,
-                        ))
-                        .child(self.i18n.text("plaintext_pass"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_plaintext_pass(window, cx)
-                        })),
-                )
-                .when(profile.allow_plaintext_pass, |d| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(self.i18n.text("plaintext_pass_warning")),
-                    )
-                })
-            })
-            .child(
-                div()
-                    .pt_2()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("sasl_heading")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL"))
-                    .child(
-                        div()
-                            .id("sasl-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(settings_theme::checkbox(sasl, true, cx))
-                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .items_start()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("sasl_mechanism")),
-                    )
-                    .child(sasl_selector.flex_1().min_w_0()),
-            )
-            .when(sasl, |d| {
-                d.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("sasl_tls_note")),
-                )
-            })
-            .when(sasl, |d| {
-                d.child(settings_field(
-                    &self.i18n.text("sasl_account"),
-                    self.settings.sasl_username.clone(),
-                ))
-                .child(if profile.sasl_mechanism.uses_key() {
-                    self.sasl_key_section(profile.sasl_key_saved, cx)
-                } else {
-                    self.credential_row(Credential::Sasl, "sasl_password", cx)
-                })
-            })
-            .child(settings_field(
-                &self.i18n.text("nickname"),
-                self.settings.nickname.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("username"),
-                self.settings.username.clone(),
-            ))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("username_hint")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("encoding")),
-                    )
-                    .child(encoding_selector.flex_1().min_w_0()),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("encoding_hint")),
-            )
-            .child(
-                div()
-                    .id("iso2022jp-char-refs")
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("iso2022jp_char_refs")),
-                    )
-                    .child(
-                        div().flex().flex_wrap().gap_1().children(
-                            CHAR_REF_CHOICES
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, (mode, key))| {
-                                    settings_theme::button(
-                                        ("char-refs-mode", index),
-                                        profile.char_refs == mode,
-                                        cx,
-                                    )
-                                    .child(self.i18n.text(key))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            if let Some(profile) =
-                                                this.settings.values.selected_profile_mut()
-                                            {
-                                                profile.char_refs = mode;
-                                            }
-                                            cx.notify();
-                                        },
-                                    ))
-                                }),
-                        ),
-                    ),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("iso2022jp_char_refs_hint")),
-            )
-            .child(settings_field(
-                &self.i18n.text("realname"),
-                self.settings.realname.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("quit_message"),
-                self.settings.quit_message.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("sleep_quit_message"),
-                self.settings.sleep_quit_message.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("part_message"),
-                self.settings.part_message.clone(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("auto_join_channels")),
-                    )
-                    .child(
-                        div()
-                            .id("auto-join-summary")
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(self.auto_join_summary(cx)),
-                    )
-                    .child(
-                        settings_theme::button("auto-join-edit", false, cx)
-                            .child(self.i18n.text("auto_join_edit"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_auto_join(window, cx)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .id("connect-on-startup")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        profile.connect_on_startup,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("connect_on_startup"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(profile) = this.settings.values.selected_profile_mut() {
-                            profile.connect_on_startup = !profile.connect_on_startup;
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("user-avatars")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(profile.user_avatars, true, cx))
-                    .child(self.i18n.text("user_avatars"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(profile) = this.settings.values.selected_profile_mut() {
-                            profile.user_avatars = !profile.user_avatars;
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("user_avatars_hint")),
-            )
-            .child(
-                div()
-                    .id("regain-ops")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(profile.regain_ops, true, cx))
-                    .child(self.i18n.text("regain_ops"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(profile) = this.settings.values.selected_profile_mut() {
-                            profile.regain_ops = !profile.regain_ops;
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("regain_ops_hint")),
-            )
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .child(self.i18n.text("nick_collision")),
-            )
-            .children(NickCollision::ALL.into_iter().map(|choice| {
-                div()
-                    .id(("nick-collision", choice as usize))
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        profile.nick_collision == choice,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text(match choice {
-                        NickCollision::Underscore => "nick_collision_underscore",
-                        NickCollision::Underscores => "nick_collision_underscores",
-                        NickCollision::Digits => "nick_collision_digits",
-                        NickCollision::Alternates => "nick_collision_alternates",
-                        NickCollision::Dialog => "nick_collision_dialog",
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(profile) = this.settings.values.selected_profile_mut() {
-                            profile.nick_collision = choice;
-                        }
-                        cx.notify();
-                    }))
-            }))
-            .child(div().ml(settings_theme::LABEL_INDENT).child(settings_field(
-                &self.i18n.text("alt_nicks"),
-                self.settings.alt_nicks.clone(),
-            )))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("nick_collision_hint")),
-            )
-    }
-
-    /// A password of a draft server: a "save password" box beside the field
-    /// (its own Save writes it). Of a registered server: Save beside an empty
-    /// field while none is saved; Change and Delete beside "Saved" once one
-    /// is; Save and Cancel beside a field while it is being changed. A saved
-    /// value is never shown.
-    fn credential_row(
-        &self,
-        which: Credential,
-        label_key: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let (saved, changing) = self.settings.credential_state(which);
-        let slot = which as usize;
-        let row = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(settings_theme::label_column().child(self.i18n.text(label_key)));
-        if saved && !changing {
-            return row
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(self.i18n.text("credential_saved")),
-                )
-                .child(
-                    settings_theme::button(("credential-change", slot), false, cx)
-                        .child(self.i18n.text("credential_change"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.change_credential(which, window, cx)
-                        })),
-                )
-                .child(
-                    settings_theme::button(("credential-delete", slot), false, cx)
-                        .child(self.i18n.text("credential_delete"))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.delete_credential(which, cx)),
-                        ),
-                );
-        }
-        let row = row.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(self.settings.credential_field(which).clone()),
-        );
-        if !changing && !self.shown_server_registered() {
-            // A draft server: the box makes its own Save write the password.
-            return row.child(
-                div()
-                    .id(("credential-remember", slot))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.remember(which),
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("credential_remember"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_remember(which, window, cx)
-                    })),
-            );
-        }
-        row.child(
-            settings_theme::button(("credential-save", slot), true, cx)
-                .child(self.i18n.text("credential_save"))
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.save_credential(which, window, cx)),
-                ),
-        )
-        .when(changing, |row| {
-            row.child(
-                settings_theme::button(("credential-cancel", slot), false, cx)
-                    .child(self.i18n.text("cancel"))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
-                    ),
-            )
-        })
-    }
-
-    /// The key management that takes the place of the password row for
-    /// ECDSA-NIST256P-CHALLENGE: make, load, show and delete. The private key
-    /// is never shown, copied or exported.
-    fn sasl_key_section(&self, saved: bool, cx: &mut Context<Self>) -> Div {
-        let button = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
-            settings_theme::button(id, false, cx).child(self.i18n.text(label))
-        };
-        let mut actions = div().flex().flex_wrap().items_center().gap_2().child(
-            button("sasl-key-generate", "sasl_key_generate", cx)
-                .on_click(cx.listener(|this, _, window, cx| this.generate_key(window, cx))),
-        );
-        actions = actions.child(
-            button("sasl-key-import", "sasl_key_import", cx)
-                .on_click(cx.listener(|this, _, window, cx| this.import_key(window, cx))),
-        );
-        if saved {
-            actions = actions
-                .child(
-                    button("sasl-key-show", "sasl_key_show_public", cx)
-                        .on_click(cx.listener(|this, _, _, cx| this.show_public_key(cx))),
-                )
-                .child(
-                    button("sasl-key-delete", "credential_delete", cx)
-                        .on_click(cx.listener(|this, _, window, cx| this.delete_key(window, cx))),
-                );
-        }
-        let theme = settings_theme::palette(cx);
-        let mut section = div().flex().flex_col().gap_2().child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(settings_theme::label_column().child(self.i18n.text("sasl_key")))
-                .child(div().child(self.i18n.text(if saved {
-                    "credential_saved"
-                } else {
-                    "sasl_key_none"
-                })))
-                .child(actions),
-        );
-        if let Some(public) = self.settings.sasl_public_key.clone() {
-            section =
-                section.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_color(theme.text_secondary)
-                                .child(self.i18n.text("sasl_key_public")),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(div().min_w_0().child(public))
-                                .child(button("sasl-key-copy", "sasl_key_copy", cx).on_click(
-                                    cx.listener(|this, _, _, cx| this.copy_public_key(cx)),
-                                )),
-                        ),
-                );
-        }
-        section.child(
-            div()
-                .ml(settings_theme::LABEL_INDENT)
-                .text_color(theme.text_secondary)
-                .child(self.i18n.text("sasl_key_note")),
-        )
     }
 
     pub(crate) fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
@@ -5239,6 +4508,11 @@ impl SettingsWindow {
                 this.traverse(false, window, cx)
             }))
             .key_context("SettingsWindow")
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
+                    this.kit_escape_composing = window.focused_input_is_composing(cx);
+                }),
+            )
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.escape_key_down(event, window, cx)),
             )
@@ -6185,6 +5459,98 @@ mod escape_tests {
         let windows = |app: &mut TestAppContext| app.update(|app| app.windows().len());
         assert_eq!(windows(&mut app), 2);
         cx.update(|window, cx| nickname.update(cx, |input, cx| input.unmark_text(window, cx)));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(windows(&mut app), 1);
+    }
+
+    /// Clicks into the Connection tab's display name input (the Kit's own
+    /// state is out of reach, so it is found by typing: a letter typed
+    /// elsewhere is taken back).
+    fn focus_display_name(form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext) {
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, cx| {
+                form.settings.display_name.read(cx).text().to_owned()
+            })
+        };
+        let before = shown(cx);
+        for y in (60..600).step_by(10) {
+            // The input sits at the right of its row (the Kit's layout).
+            for x in (500..1900).step_by(60) {
+                cx.simulate_click(
+                    gpui::point(gpui::px(x as f32), gpui::px(y as f32)),
+                    gpui::Modifiers::default(),
+                );
+                cx.run_until_parked();
+                cx.simulate_input("Z");
+                cx.run_until_parked();
+                if shown(cx) != before {
+                    return;
+                }
+                cx.simulate_keystrokes("backspace");
+            }
+        }
+        panic!("the display name input is not reached by a click");
+    }
+
+    /// The Connection tab draws the Kit's inputs. Their getter and setter
+    /// stay as the first draw made them, so an input that is still shown
+    /// when the settings file is reloaded (which makes a new form) must keep
+    /// taking edits.
+    #[gpui::test]
+    fn kit_input_takes_edits_after_the_settings_are_reloaded(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().display_name = "Before".into();
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings.clone());
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
+        cx.run_until_parked();
+        // The pause of a pending autosave is over, so that the reload runs.
+        cx.executor().advance_clock(super::AUTOSAVE_DELAY * 2);
+        cx.run_until_parked();
+        let mut changed = settings.clone();
+        changed.selected_profile_mut().unwrap().realname = "External".into();
+        crate::settings_file::save(&changed).unwrap();
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.reload_changed_settings(window, cx))
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            form.read_with(cx, |form, cx| form
+                .settings
+                .realname
+                .read(cx)
+                .text()
+                .to_owned()),
+            "External"
+        );
+        focus_display_name(&form, cx);
+        let shown = form.read_with(cx, |form, cx| {
+            form.settings.display_name.read(cx).text().to_owned()
+        });
+        assert!(shown.contains('Z'), "the edit reached the form: {shown}");
+        drop(file);
+    }
+
+    /// Escape ends an IME composition in a Kit input and must not also close
+    /// the window.
+    #[gpui::test]
+    fn escape_during_composition_in_a_kit_input_keeps_the_window(cx: &mut TestAppContext) {
+        let (form, cx, mut app) = open(cx, crate::settings_with_channels("#a"));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
+        cx.run_until_parked();
+        focus_display_name(&form, cx);
+        cx.update(|window, cx| window.mark_focused_input_text("あ", cx));
+        cx.run_until_parked();
+        // A redraw while composing leaves the composition alone.
+        assert!(cx.update(|window, cx| window.focused_input_is_composing(cx)));
+        cx.simulate_keystrokes("escape");
+        let windows = |app: &mut TestAppContext| app.update(|app| app.windows().len());
+        assert_eq!(windows(&mut app), 2);
+        assert!(!cx.update(|window, cx| window.focused_input_is_composing(cx)));
         cx.simulate_keystrokes("escape");
         assert_eq!(windows(&mut app), 1);
     }

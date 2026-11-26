@@ -244,6 +244,7 @@ impl SettingsWindow {
                     SettingsTab::Application => self.application_page(title, &this, cx),
                     SettingsTab::Experimental => self.experimental_page(title, &this, cx),
                     SettingsTab::Keyboard => self.keyboard_page(title, &this, cx),
+                    SettingsTab::Connection => self.connection_page(title, &this, cx),
                     SettingsTab::Credentials => self.credentials_page(title, &this),
                     SettingsTab::ImageUpload => self.image_upload_page(title, &this, cx),
                     _ => self.panel_page(tab, title, &this),
@@ -261,7 +262,7 @@ impl SettingsWindow {
             self.kit_generation
         )))
         .sidebar_width(px(190.))
-        .sidebar_size_range(px(140.)..px(300.))
+        .sidebar_size_range(px(140.)..crate::settings_window::KIT_SIDEBAR_MAX)
         .default_selected_index(SelectIndex {
             page_ix: selected,
             group_ix: None,
@@ -314,7 +315,8 @@ impl SettingsWindow {
     /// The panel the tab drew before the Kit's pages.
     fn render_tab_panel(&mut self, tab: SettingsTab, cx: &mut Context<Self>) -> AnyElement {
         match tab {
-            SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
+            // Drawn as groups by `connection_page`.
+            SettingsTab::Connection => div().into_any_element(),
             // Drawn as groups by `application_page`.
             SettingsTab::Application => div().into_any_element(),
             // Drawn as groups by `appearance_page`.

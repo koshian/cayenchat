@@ -554,6 +554,7 @@ mod tests {
     fn a_mouse_click_on_the_heading_toggles_without_focusing_it(cx: &mut TestAppContext) {
         let (form, cx) = open(cx, two_servers());
         let focus = form.read_with(cx, |form, _| form.avatar_toggle_focus.clone());
+        crate::support::scroll_settings_to(cx, "avatar-quick-toggle");
         let at = cx.debug_bounds("avatar-quick-toggle").unwrap().center();
         cx.simulate_mouse_move(at, None, Modifiers::default());
         cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
