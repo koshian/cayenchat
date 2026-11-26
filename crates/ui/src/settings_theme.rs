@@ -35,10 +35,27 @@ struct KitApplied {
 }
 impl Global for KitApplied {}
 
+/// The key bindings the Kit added when it was initialised.
+struct KitBindings(Vec<KeyBinding>);
+impl Global for KitBindings {}
+
+/// Binds the Kit's own keys again, then the app's Emacs-style ones for its
+/// `Input`. For after the keymap was cleared; a Kit that is not set up yet
+/// binds its keys itself in [`sync_kit`].
+pub fn rebind_kit_keys(emacs: bool, cx: &mut App) {
+    let Some(kit) = cx.try_global::<KitBindings>() else {
+        return;
+    };
+    let bindings = kit.0.clone();
+    cx.bind_keys(bindings);
+    crate::input::bind_kit_keys(emacs, cx);
+}
+
 /// Makes the `gpui-component` theme the Kit's `Settings` draws with follow the
 /// settings palette: the native theme when it is loaded, the Kit's own light or
 /// dark colors otherwise. Cheap when nothing changed, so it runs from render.
 pub fn sync_kit(cx: &mut App) {
+    let bindings_before = cx.key_bindings().borrow().bindings().len();
     let dark = crate::theme::current(cx).dark;
     let generation = cx
         .try_global::<NativeSettingsTheme>()
@@ -62,6 +79,20 @@ pub fn sync_kit(cx: &mut App) {
             gpui_component::theme::ThemeMode::Light
         };
         gpui_component::Theme::change(mode, None, cx);
+    }
+    // The Kit binds its own keys when it is initialised, above. Keep a copy,
+    // since rebinding the shortcuts clears the whole keymap, and put the app's
+    // Emacs-style keys for its `Input` after them so they win.
+    if !cx.has_global::<KitBindings>() {
+        let added = cx
+            .key_bindings()
+            .borrow()
+            .bindings()
+            .skip(bindings_before)
+            .cloned()
+            .collect();
+        cx.set_global(KitBindings(added));
+        crate::input::bind_kit_keys(crate::emacs_keys_now(cx), cx);
     }
     cx.set_global(KitApplied { generation, dark });
 }
