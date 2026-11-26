@@ -1476,7 +1476,7 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
 }
 
 /// Width of the `#RRGGBB` field of a color row: seven characters and padding.
-const COLOR_FIELD_WIDTH: f32 = 96.;
+const COLOR_FIELD_WIDTH: f32 = 88.;
 /// Width of a font name field.
 pub(crate) const FONT_FIELD_WIDTH: f32 = 200.;
 /// Width of one color cell: the swatch, the gap and the field.

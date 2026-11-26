@@ -49,8 +49,12 @@ pub(crate) fn field_item(
     SettingItem::new(
         title,
         SettingField::render(move |_, window, cx| {
-            this.update(cx, |this, cx| build(this, window, cx))
-                .unwrap_or_else(|_| div().into_any_element())
+            // The Kit's field box may shrink; a long description would
+            // squeeze the control, so it keeps its own width.
+            let control = this
+                .update(cx, |this, cx| build(this, window, cx))
+                .unwrap_or_else(|_| div().into_any_element());
+            div().flex_none().child(control).into_any_element()
         }),
     )
     .description(description.into())
@@ -408,7 +412,7 @@ impl SettingsWindow {
             move |this, _, cx| {
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_2()
                     .child(this.color_input(&light, cx))
                     .child(this.color_input(&dark, cx))
                     .into_any_element()
@@ -438,7 +442,7 @@ impl SettingsWindow {
             };
             div()
                 .flex()
-                .gap_4()
+                .gap_2()
                 .when(options.layout() == Axis::Horizontal, |d| d.justify_end())
                 .child(cell(&light))
                 .child(cell(&dark))
