@@ -294,7 +294,7 @@ impl SettingsWindow {
                 )
             },
         )];
-        if provider.is_some() {
+        if shows_avatar_image_row(provider.is_some(), self.avatar_upload.uploading().is_some()) {
             items.push(field_item(
                 this,
                 i18n.text("ircv3_avatar_image"),
@@ -1002,6 +1002,12 @@ impl SettingsWindow {
     }
 }
 
+/// The image row appears when an image host is set up, and also while an
+/// upload runs so it can still be cancelled after the host was cleared.
+fn shows_avatar_image_row(has_provider: bool, uploading: bool) -> bool {
+    has_provider || uploading
+}
+
 /// Whether the finished upload `id` registers the icon. Only the job that
 /// recorded the intent consumes it: the late completion of an ignored
 /// (cancelled) upload leaves another job's intent alone.
@@ -1280,6 +1286,13 @@ pub(crate) fn server_label(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_row_stays_while_uploading_without_a_host() {
+        assert!(super::shows_avatar_image_row(true, false));
+        assert!(super::shows_avatar_image_row(false, true));
+        assert!(!super::shows_avatar_image_row(false, false));
+    }
+
     use super::{
         IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, peer_avatar_url_problem,
         peer_reconnect_needed, place_uploaded_avatar, share_draft_with_peers,
