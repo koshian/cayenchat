@@ -462,7 +462,13 @@ class Client:
 
 async def serve(script, port, played, ready=None):
     async def accept(reader, writer):
-        await Client(script, reader, writer, played).run()
+        try:
+            await Client(script, reader, writer, played).run()
+        except ConnectionError:
+            # The app closing its socket, which is how a run ends, is not an error.
+            pass
+        finally:
+            writer.close()
 
     server = await asyncio.start_server(accept, "127.0.0.1", port)
     if ready:
