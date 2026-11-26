@@ -6,9 +6,9 @@
 //! `switch`, `dropdown` and `number_input` fields draw the matching settings.
 //! What the Kit has no part for goes into a Kit row through
 //! `SettingField::render` or `SettingItem::render`: the color swatches and
-//! the light/dark columns, the sliders, the wallpapers, the theme library
-//! and the tabs that are not rebuilt yet (each is one item holding its
-//! previous panel, so what it shows and does is unchanged).
+//! the light/dark columns, the sliders, the wallpapers, the theme library,
+//! the avatar and credential controls and the shortcut recorder. Every tab
+//! is a Kit page of groups and rows.
 //!
 //! The Kit's setters get only `&mut App`, so a setter reaches the window
 //! through a weak handle and does what the previous control did: change the
@@ -251,7 +251,7 @@ impl SettingsWindow {
                     SettingsTab::Connection => self.connection_page(title, &this, cx),
                     SettingsTab::Credentials => self.credentials_page(title, &this),
                     SettingsTab::ImageUpload => self.image_upload_page(title, &this, cx),
-                    _ => self.panel_page(tab, title, &this),
+                    SettingsTab::Ircv3 => self.ircv3_page(title, &this, cx),
                 };
                 // The page being drawn is the tab being shown.
                 let follow = this.clone();
@@ -300,43 +300,6 @@ impl SettingsWindow {
             ],
             cx,
         )
-    }
-
-    /// A tab not rebuilt yet: its panel as one item of one group.
-    fn panel_page(
-        &mut self,
-        tab: SettingsTab,
-        title: String,
-        this: &WeakEntity<Self>,
-    ) -> SettingPage {
-        SettingPage::new(title).group(
-            SettingGroup::new().item(element_item(this, move |this, _, cx| {
-                this.render_tab_panel(tab, cx)
-            })),
-        )
-    }
-
-    /// The panel the tab drew before the Kit's pages.
-    fn render_tab_panel(&mut self, tab: SettingsTab, cx: &mut Context<Self>) -> AnyElement {
-        match tab {
-            // Drawn as groups by `connection_page`.
-            SettingsTab::Connection => div().into_any_element(),
-            // Drawn as groups by `application_page`.
-            SettingsTab::Application => div().into_any_element(),
-            // Drawn as groups by `appearance_page`.
-            SettingsTab::Appearance => div().into_any_element(),
-            // Drawn as groups by `keyboard_page`.
-            SettingsTab::Keyboard => div().into_any_element(),
-            // Drawn as groups by `notifications_page`.
-            SettingsTab::Notifications => div().into_any_element(),
-            SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
-            // Drawn as groups by `image_upload_page`.
-            SettingsTab::ImageUpload => div().into_any_element(),
-            // Drawn as groups by `credentials_page`.
-            SettingsTab::Credentials => div().into_any_element(),
-            // Drawn as groups by `experimental_page`.
-            SettingsTab::Experimental => div().into_any_element(),
-        }
     }
 
     /// Kit items for a table of declared items: the setters change the form
