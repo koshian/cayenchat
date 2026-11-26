@@ -412,7 +412,7 @@ impl SettingsWindow {
             move |this, _, cx| {
                 div()
                     .flex()
-                    .gap_2()
+                    .gap_1()
                     .child(this.color_input(&light, cx))
                     .child(this.color_input(&dark, cx))
                     .into_any_element()
@@ -442,7 +442,7 @@ impl SettingsWindow {
             };
             div()
                 .flex()
-                .gap_2()
+                .gap_1()
                 .when(options.layout() == Axis::Horizontal, |d| d.justify_end())
                 .child(cell(&light))
                 .child(cell(&dark))

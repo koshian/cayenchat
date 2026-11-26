@@ -25,10 +25,10 @@ use gpui::{prelude::*, *};
 use crate::{SettingsWindow, input::TextInput, settings_theme, settings_window::SettingsForm};
 
 /// Width of a slider's track.
-const SLIDER_WIDTH: f32 = 190.;
+const SLIDER_WIDTH: f32 = 130.;
 
 /// Width of a text field inside a Kit row.
-const TEXT_FIELD_WIDTH: f32 = 200.;
+pub(crate) const TEXT_FIELD_WIDTH: f32 = 200.;
 
 /// What a declared slider needs between renders: where its track was last
 /// painted (to turn the pointer position into a value) and its keyboard
