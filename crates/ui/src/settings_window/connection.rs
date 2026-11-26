@@ -20,8 +20,6 @@ use crate::settings_kit::{element_item, field_item, group, page};
 
 /// Value of the dropdown entry that adds a server.
 const ADD_SERVER: &str = "\u{1}add";
-/// Width of a password field in a row.
-const FIELD_WIDTH: f32 = 260.;
 
 impl SettingsWindow {
     /// The Connection tab: the shown server's settings in groups.
@@ -156,9 +154,12 @@ impl SettingsWindow {
                     .aria_label(aria.clone())
                     .disabled(options.is_disabled())
                     .with_size(options.size());
-                // The width of the Kit's `SettingField::input`.
+                // One width for every text field of a row (a Kit row would squeeze a
+                // wider one when its description is long).
                 if options.layout() == Axis::Horizontal {
-                    input.w_64().into_any_element()
+                    input
+                        .w(px(crate::settings_items::TEXT_FIELD_WIDTH))
+                        .into_any_element()
                 } else {
                     input.w_full().into_any_element()
                 }
@@ -751,7 +752,7 @@ impl SettingsWindow {
         }
         let row = row.child(
             div()
-                .w(px(FIELD_WIDTH))
+                .w(px(crate::settings_items::TEXT_FIELD_WIDTH))
                 .child(self.settings.credential_field(which).clone()),
         );
         if !changing && !self.shown_server_registered() {

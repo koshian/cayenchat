@@ -49,8 +49,12 @@ pub(crate) fn field_item(
     SettingItem::new(
         title,
         SettingField::render(move |_, window, cx| {
-            this.update(cx, |this, cx| build(this, window, cx))
-                .unwrap_or_else(|_| div().into_any_element())
+            // The Kit's field box may shrink; a long description would
+            // squeeze the control, so it keeps its own width.
+            let control = this
+                .update(cx, |this, cx| build(this, window, cx))
+                .unwrap_or_else(|_| div().into_any_element());
+            div().flex_none().child(control).into_any_element()
         }),
     )
     .description(description.into())
@@ -408,7 +412,7 @@ impl SettingsWindow {
             move |this, _, cx| {
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_1()
                     .child(this.color_input(&light, cx))
                     .child(this.color_input(&dark, cx))
                     .into_any_element()
@@ -438,7 +442,7 @@ impl SettingsWindow {
             };
             div()
                 .flex()
-                .gap_4()
+                .gap_1()
                 .when(options.layout() == Axis::Horizontal, |d| d.justify_end())
                 .child(cell(&light))
                 .child(cell(&dark))
@@ -507,19 +511,9 @@ impl SettingsWindow {
     ) -> SettingPage {
         let s = &self.settings;
         let mut pane_colors = vec![self.color_heading_item()];
+        // Panes in the order of importance: channel log, combined log,
+        // member list, channel tree (same as the fonts and wallpapers).
         for (label, hint, light, dark) in [
-            (
-                "member_list_background",
-                "member_list_background_hint",
-                &s.member_list_background,
-                &s.dark_member_list_background,
-            ),
-            (
-                "channel_tree_background",
-                "channel_tree_background_hint",
-                &s.channel_tree_background,
-                &s.dark_channel_tree_background,
-            ),
             (
                 "channel_log",
                 "channel_log_hint",
@@ -543,6 +537,18 @@ impl SettingsWindow {
                 "combined_log_alternate_hint",
                 &s.combined_log_alternate,
                 &s.dark_combined_log_alternate,
+            ),
+            (
+                "member_list_background",
+                "member_list_background_hint",
+                &s.member_list_background,
+                &s.dark_member_list_background,
+            ),
+            (
+                "channel_tree_background",
+                "channel_tree_background_hint",
+                &s.channel_tree_background,
+                &s.dark_channel_tree_background,
             ),
         ] {
             pane_colors.extend(self.color_items(this, label, hint, light, dark));
@@ -611,10 +617,10 @@ impl SettingsWindow {
 
         let mut transparency = Vec::new();
         for table in [
-            settings_items::OPACITY_MEMBER_LIST,
-            settings_items::OPACITY_CHANNEL_TREE,
             settings_items::OPACITY_CHANNEL_LOG,
             settings_items::OPACITY_COMBINED_LOG,
+            settings_items::OPACITY_MEMBER_LIST,
+            settings_items::OPACITY_CHANNEL_TREE,
             settings_items::OPACITY_URL_TOOLTIP,
         ] {
             transparency.extend(self.kit_table(table, this));

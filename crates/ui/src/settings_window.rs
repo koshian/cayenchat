@@ -1476,11 +1476,11 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
 }
 
 /// Width of the `#RRGGBB` field of a color row: seven characters and padding.
-const COLOR_FIELD_WIDTH: f32 = 96.;
+const COLOR_FIELD_WIDTH: f32 = 76.;
 /// Width of a font name field.
 pub(crate) const FONT_FIELD_WIDTH: f32 = 200.;
 /// Width of one color cell: the swatch, the gap and the field.
-pub(crate) const COLOR_CELL_WIDTH: f32 = 24. + 8. + COLOR_FIELD_WIDTH;
+pub(crate) const COLOR_CELL_WIDTH: f32 = 24. + 4. + COLOR_FIELD_WIDTH;
 
 impl SettingsWindow {
     pub(crate) fn select_language(
@@ -4205,7 +4205,7 @@ impl SettingsWindow {
             .w(px(COLOR_CELL_WIDTH))
             .flex_shrink_0()
             .items_center()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
                     .id(("color-swatch", input.entity_id().as_u64() as usize))
