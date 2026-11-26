@@ -802,7 +802,7 @@ def main():
     command.add_argument("--size", default="1280x800",
                          help="window size in logical pixels (restored from window.json)")
     command.add_argument("--dir", help="working directory (default target/tmp/screenshots-...)")
-    command.set_defaults(func=command_run)
+    command.set_defaults(func=command_run, variant="standard")  # run has no --variant
 
     command = commands.add_parser(
         "readme", help="build, take the README picture under Xvfb, check the toolbar is on it")
