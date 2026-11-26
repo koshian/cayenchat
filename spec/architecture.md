@@ -2508,7 +2508,7 @@ the text fields (`SettingsForm::item_fields`), reads and validates them for the
 autosave snapshot (`read_item_fields`, called by `snapshot`), includes them in
 `text_fields` (autosave trigger, IME check), re-translates their placeholders
 on a language change, restores their defaults and draws the rows
-(`SettingsWindow::render_items`). Autosave, secrets and server drafts are
+(`settings_items::kit_items`, into Kit rows). Autosave, secrets and server drafts are
 unchanged (D021); secret values and screens with their own behaviour
 (auto-join list, avatar editor, color picker, shortcut recorder) are not
 declared and stay separate widgets. Rows use the existing settings palette and
@@ -2520,8 +2520,9 @@ unmet condition becomes `disabled`, a slider is drawn by a caller-supplied
 control inside the Kit row, a `hint_key` becomes the description) and is covered
 by conversion tests. The Appearance tab is drawn through it (see "Settings
 window on the GPUI Kit"), and so are the Notifications tab (`NOTIFICATIONS_DESKTOP`,
-`NOTIFICATIONS_KEYWORDS`, one group each) and the Application tab; the other
-tabs still draw through `render_items`. Other tabs move over one by one. The
+`NOTIFICATIONS_KEYWORDS`, one group each) and the Application tab; the
+tabs with their own behaviour build their rows by hand (see the list of
+CayenChat parts under "Settings window on the GPUI Kit"). The
 Application tab declares its switches, dropdowns and hints in four tables, one
 group each (`APPLICATION_WINDOW`, `APPLICATION_BEHAVIOR`, `APPLICATION_TEXT`,
 `APPLICATION_LOG`); `application_settings.rs` builds the rows no table can
@@ -2590,8 +2591,36 @@ Parts the Kit lacks, drawn inside a Kit row with `SettingField::render`
 `SettingItem::render` (`element_item`): the color swatches with the
 light/dark columns and the picker, the sliders (`ui::slider`, via
 `settings_items::kit_items`), the theme library buttons, the wallpaper miniature and its controls and
-the tabs not rebuilt yet. Text fields stay `TextInput` (IME, direct input,
-validation at the sink); the Kit's `Input` has none of that.
+the rest of the list below. No tab is left outside the Kit: every tab is a
+`SettingPage` (the old `render_items`, `panel` and `tab_heading` are gone).
+
+CayenChat parts that stay inside Kit rows, and why (a part the Kit has is not
+on this list; add to it only with a reason):
+
+| Part | Where | Why the Kit's part is not used |
+| --- | --- | --- |
+| `TextInput` (`input.rs`) | declared text items (Notifications, Application), password / token / key rows, the avatar URL | secret fields are masked and go through `storage::credentials`; the URL field pastes images itself; validation is at the sink |
+| Kit `Input` via `text_item` | Connection text fields | the input is drawn by `text_item`, not `SettingField::input` (see Connection below) |
+| `ui::slider` (`slider_control`) | opacities, blur strength, log line heights | the Kit has no slider |
+| color swatch, light/dark columns, picker (`color_picker.rs`) | Appearance | no color field in the Kit |
+| wallpaper miniature and controls | Appearance | no counterpart |
+| theme library buttons (`settings_theme.rs`) | Appearance | actions, not values |
+| shortcut recorder row (`key_recorder.rs`, `keyboard_page`) | Keyboard | records a key chord |
+| credentials and account rows, auto-join summary, avatar editor | Credential Storage, Image Upload, Connection, IRCv3 | secrets and screens with their own behaviour (D021) |
+| reset footer (`settings_reset.rs`) | every page | one Reset all per tab, placed at the left |
+
+The Kit has its own `Input`, `Select` and `NumberInput`; the font name and the
+font sizes use them. Where a Kit part has the same job as a former CayenChat
+one, the former is deleted, not kept behind `render`.
+
+Checked on Linux/Xvfb, English (dark) and Japanese (light) at 900 px and
+520 px (760 px for Connection, the narrowest the window opens), tab by tab as
+each moved: Appearance (all groups, number input, font dropdown, sidebar
+search), Notifications, Startup & Behavior, Experimental, Keyboard, Credential
+Storage, Image Upload, Connection and IRCv3. Not checked outside a person's
+hands: macOS blur slider, the native file choosers (debug log, conversation
+log folder, avatar image), moving secrets out of the system store, sending an
+avatar to a server and dropping an image.
 
 The Appearance tab is rebuilt: groups Theme, Pane colors, Text and link
 colors, Hover popup, Transparency and blur, Fonts and spacing, Standard
