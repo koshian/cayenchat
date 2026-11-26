@@ -169,8 +169,22 @@ impl SettingsWindow {
     }
 
     /// A line of text under a row, in the warning color or not.
-    fn note_item(&self, this: &WeakEntity<Self>, key: &str, warning: bool) -> SettingItem {
-        let text = self.i18n.text(key);
+    pub(crate) fn note_item(
+        &self,
+        this: &WeakEntity<Self>,
+        key: &str,
+        warning: bool,
+    ) -> SettingItem {
+        self.note_text_item(this, self.i18n.text(key), warning)
+    }
+
+    /// A line of already localized text under a row.
+    pub(crate) fn note_text_item(
+        &self,
+        this: &WeakEntity<Self>,
+        text: String,
+        warning: bool,
+    ) -> SettingItem {
         element_item(this, move |_, _, cx| {
             let theme = settings_theme::palette(cx);
             div()

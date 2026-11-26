@@ -21,18 +21,20 @@ use cayenchat_model::attachment::{Attachment, AttachmentError, AttachmentSource}
 use cayenchat_storage::{Ircv3Preferences, ServerProfile, Settings, TextEncoding};
 use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use crate::os_text::WindowOsText;
 
 use crate::{
     ChatWindow, SettingsTab, SettingsWindow,
-    account_settings::panel,
     image_upload::{
         acceptable_attachment, clipboard_attachment, configured_uploader, read_in_background,
         upload_failure_text, upload_in_background,
     },
     input,
     session::PeerAvatarConnection,
+    settings_items::TEXT_FIELD_WIDTH,
+    settings_kit::{element_item, field_item, group, page},
     settings_theme,
     tooltip::TextTooltip,
 };
@@ -43,7 +45,6 @@ const MAX_SHOWN_DESCRIPTION: usize = 200;
 
 /// One opt-in preference as the settings window shows it.
 pub(crate) struct Ircv3Feature {
-    pub id: &'static str,
     pub label_key: &'static str,
     pub hint_key: &'static str,
     pub get: fn(&Ircv3Preferences) -> bool,
@@ -57,7 +58,6 @@ pub(crate) struct Ircv3Feature {
 /// Features shown on the IRCv3 tab, in display order.
 pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
     Ircv3Feature {
-        id: "ircv3-server-time",
         label_key: "ircv3_server_time",
         hint_key: "ircv3_server_time_hint",
         get: |preferences| preferences.server_time,
@@ -65,7 +65,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-message-tags",
         label_key: "ircv3_message_tags",
         hint_key: "ircv3_message_tags_hint",
         get: |preferences| preferences.message_tags,
@@ -73,7 +72,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-batch",
         label_key: "ircv3_batch",
         hint_key: "ircv3_batch_hint",
         get: |preferences| preferences.batch,
@@ -81,7 +79,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-chathistory",
         label_key: "ircv3_chathistory",
         hint_key: "ircv3_chathistory_hint",
         get: |preferences| preferences.chathistory,
@@ -89,7 +86,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-confirmed-sending",
         label_key: "ircv3_confirmed_sending",
         hint_key: "ircv3_confirmed_sending_hint",
         get: |preferences| preferences.confirmed_sending,
@@ -97,7 +93,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-accounts",
         label_key: "ircv3_accounts",
         hint_key: "ircv3_accounts_hint",
         get: |preferences| preferences.accounts,
@@ -105,7 +100,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         warning: |_| None,
     },
     Ircv3Feature {
-        id: "ircv3-peer-avatars",
         label_key: "ircv3_peer_avatars",
         hint_key: "ircv3_peer_avatars_hint",
         get: |preferences| preferences.peer_avatars,
@@ -125,171 +119,147 @@ pub(crate) fn toggle_feature(profile: &mut ServerProfile, toggle: fn(&mut Ircv3P
 }
 
 impl SettingsWindow {
-    pub(crate) fn render_ircv3_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let hint = |key: &str| {
-            div()
-                .ml(px(26.))
-                .text_color(theme.text_secondary)
-                .child(self.i18n.text(key))
-        };
-        let mut panel = panel(cx).child(self.tab_heading("ircv3_tab")).child(
-            div()
-                .text_color(theme.text_secondary)
-                .child(self.i18n.text("ircv3_intro")),
-        );
+    /// The IRCv3 tab as Kit groups (#622): which server is configured, the
+    /// features of that server and our own avatar on it. Each row has a name
+    /// and a one-sentence description; the switches and the dropdown are the
+    /// Kit's, and what it has no part for (the URL field, the buttons) sits
+    /// in a Kit row through `SettingField::render`.
+    pub(crate) fn ircv3_page(
+        &mut self,
+        title: String,
+        this: &WeakEntity<Self>,
+        cx: &mut Context<Self>,
+    ) -> SettingPage {
         // A changed icon stops sharing the old one at once.
-        let draft = self.settings.avatar_url.read(cx).text().trim().to_owned();
-        if let Some(profile) = self.settings.values.selected_profile_mut() {
-            stop_sharing_if_avatar_differs(profile, &draft);
-        }
-        let Some(profile) = self.settings.values.selected_profile().cloned() else {
-            return panel.child(div().child(self.i18n.text("ircv3_no_server")));
-        };
-
-        // Which server is being configured, and a way to pick another.
-        let mut servers = div().flex().flex_col().child(
-            div()
-                .id("ircv3-server-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{}  ▾", server_label(&profile, &self.i18n)))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.ircv3_server_list_open = !this.settings.ircv3_server_list_open;
-                    cx.notify();
-                })),
-        );
-        if self.settings.ircv3_server_list_open {
-            let mut menu = div()
-                .on_scroll(|_, _, cx| cx.stop_propagation())
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, server) in self.settings.values.ordered_servers().enumerate() {
-                let id = server.id.clone();
-                menu = menu.child(
-                    div()
-                        .id(("ircv3-server", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(id == profile.id, |d| d.bg(theme.selected))
-                        .child(server_label(server, &self.i18n))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.settings.ircv3_server_list_open = false;
-                            this.select_server(id.clone(), cx)
-                        })),
-                );
+        if self.tab == SettingsTab::Ircv3 {
+            let draft = self.settings.avatar_url.read(cx).text().trim().to_owned();
+            if let Some(profile) = self.settings.values.selected_profile_mut() {
+                stop_sharing_if_avatar_differs(profile, &draft);
             }
-            servers = servers.child(menu);
         }
-        panel = panel
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(settings_theme::LABEL_WIDTH)
-                            .flex_shrink_0()
-                            .child(self.i18n.text("ircv3_server")),
-                    )
-                    .child(servers),
-            )
-            .child(div().font_weight(FontWeight::BOLD).child(self.i18n.format(
-                "ircv3_configuring",
-                &[("server", &server_label(&profile, &self.i18n))],
-            )));
+        let profile = self.settings.values.selected_profile().cloned();
+        let mut groups = vec![group(
+            self.i18n.text("group_ircv3_server"),
+            Some(self.i18n.text("ircv3_intro")),
+            self.ircv3_server_items(profile.as_ref(), this),
+        )];
+        if let Some(profile) = &profile {
+            groups.push(group(
+                self.i18n.text("group_ircv3_features"),
+                None,
+                self.ircv3_feature_items(profile, this),
+            ));
+            groups.push(group(
+                self.i18n.text("group_ircv3_avatar"),
+                None,
+                self.own_avatar_items(profile, this, cx),
+            ));
+            groups.push(SettingGroup::new().item(self.ircv3_footer(this)));
+        }
+        page(title, groups, cx)
+    }
 
-        for feature in &IRCV3_FEATURES {
-            let toggle = feature.toggle;
-            panel = panel
-                .child(
-                    div()
-                        .id(feature.id)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor_pointer()
-                        .child(settings_theme::checkbox(
-                            (feature.get)(&profile.ircv3),
-                            true,
-                            cx,
-                        ))
-                        .child(self.i18n.text(feature.label_key))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(profile) = this.settings.values.selected_profile_mut() {
-                                toggle_feature(profile, toggle);
-                                cx.notify();
-                            }
-                        })),
+    /// Which server's settings the page shows, and a way to pick another.
+    fn ircv3_server_items(
+        &self,
+        profile: Option<&ServerProfile>,
+        this: &WeakEntity<Self>,
+    ) -> Vec<SettingItem> {
+        let Some(profile) = profile else {
+            return vec![self.note_item(this, "ircv3_no_server", false)];
+        };
+        let i18n = &self.i18n;
+        let mut options: Vec<(SharedString, SharedString)> = self
+            .settings
+            .values
+            .ordered_servers()
+            .map(|server| {
+                (
+                    SharedString::from(server.id.clone()),
+                    SharedString::from(server_label(server, i18n)),
                 )
-                .child(hint(feature.hint_key))
-                .when_some((feature.warning)(&profile.ircv3), |panel, key| {
-                    panel.child(
-                        div()
-                            .ml(px(26.))
-                            .text_color(theme.warning)
-                            .child(self.i18n.text(key)),
-                    )
-                });
+            })
+            .collect();
+        if !options.iter().any(|(id, _)| id.as_ref() == profile.id) {
+            options.push((
+                profile.id.clone().into(),
+                server_label(profile, i18n).into(),
+            ));
         }
-        // Notes about the options above stay with them; our own avatar,
-        // which is not an option, comes last.
+        let current = SharedString::from(profile.id.clone());
+        let target = this.clone();
+        vec![
+            SettingItem::new(
+                i18n.text("ircv3_server"),
+                SettingField::scrollable_dropdown(
+                    options,
+                    move |_| current.clone(),
+                    move |value, cx| {
+                        let _ =
+                            target.update(cx, |this, cx| this.select_server(value.to_string(), cx));
+                    },
+                ),
+            )
+            .description(i18n.text("ircv3_server_desc")),
+        ]
+    }
+
+    /// One Kit switch for each opt-in feature, then the notes about them.
+    fn ircv3_feature_items(
+        &self,
+        profile: &ServerProfile,
+        this: &WeakEntity<Self>,
+    ) -> Vec<SettingItem> {
+        let i18n = &self.i18n;
+        let mut items = Vec::new();
+        for feature in &IRCV3_FEATURES {
+            let (toggle, on) = (feature.toggle, (feature.get)(&profile.ircv3));
+            let target = this.clone();
+            items.push(
+                SettingItem::new(
+                    i18n.text(feature.label_key),
+                    SettingField::switch(
+                        move |_| on,
+                        move |_, cx| {
+                            let _ = target.update(cx, |this, cx| {
+                                if let Some(profile) = this.settings.values.selected_profile_mut() {
+                                    toggle_feature(profile, toggle);
+                                    cx.notify();
+                                }
+                            });
+                        },
+                    ),
+                )
+                .description(i18n.text(feature.hint_key)),
+            );
+            if let Some(key) = (feature.warning)(&profile.ircv3) {
+                items.push(self.note_item(this, key, true));
+            }
+        }
+        // Notes about the options above stay with them.
         if profile.encoding != TextEncoding::Utf8 {
             let encoding = [("encoding", profile.encoding.label())];
-            panel = panel.child(
-                div()
-                    .text_color(theme.warning)
-                    .child(self.i18n.format("ircv3_legacy_encoding", &encoding)),
-            );
+            items.push(self.note_text_item(
+                this,
+                i18n.format("ircv3_legacy_encoding", &encoding),
+                true,
+            ));
         }
-        panel
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("ircv3_next_connection")),
-            )
-            .child(self.render_own_avatar(&profile, cx))
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            // Only a new server waits for Save; a registered one saves as
-            // it is edited (#634).
-            .when(!self.shown_server_registered(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            settings_theme::button("ircv3-save-button", false, cx)
-                                .child(self.i18n.text("save"))
-                                .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
-                        )
-                        .child(
-                            div()
-                                .text_color(theme.text_secondary)
-                                .child(self.i18n.text("unsaved_server_changes")),
-                        ),
-                )
-            })
-            .child(self.reset_footer(SettingsTab::Ircv3, cx))
+        items.push(self.note_item(this, "ircv3_next_connection", false));
+        items
     }
-}
 
-impl SettingsWindow {
-    /// Our own avatar on the selected server, without explanations: the
-    /// URL field, "Choose Image…" (and dropping) when an image host is set
-    /// up, and "Send to IRC Server" / "Remove from IRC Server" when they
-    /// would change something on the connected server.
-    fn render_own_avatar(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
+    /// Our own avatar on the shown server: the URL field, "Choose Image…"
+    /// (and dropping) when an image host is set up, "Send to IRC Server" /
+    /// "Remove from IRC Server" when they would change something on the
+    /// connected server, and sharing with peers when that is on.
+    fn own_avatar_items(
+        &self,
+        profile: &ServerProfile,
+        this: &WeakEntity<Self>,
+        cx: &mut Context<Self>,
+    ) -> Vec<SettingItem> {
+        let i18n = &self.i18n;
         let status = self
             .owner
             .read(cx)
@@ -310,187 +280,254 @@ impl SettingsWindow {
             .as_deref()
             .and_then(cayenchat_upload::provider)
             .map(|provider| provider.name);
-        let uploading = self.avatar_upload.uploading().map(str::to_owned);
-        let button = |id: &'static str, key: &str, primary: bool| {
-            settings_theme::button(id, primary, cx).child(self.i18n.text(key))
-        };
-        let buttons = div()
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .when(provider.is_some() && uploading.is_none(), |row| {
-                row.child(
-                    button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
-                        cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
-                    ),
+        let accepts_drop = provider.is_some();
+        let input = self.settings.avatar_url.clone();
+        let mut items = vec![field_item(
+            this,
+            i18n.text("ircv3_avatar_url"),
+            i18n.text("ircv3_avatar_url_desc"),
+            move |_, _, cx| {
+                avatar_drop_target(
+                    div().w(px(TEXT_FIELD_WIDTH)).child(input.clone()),
+                    accepts_drop,
+                    cx,
                 )
-            })
-            .when_some(uploading, |row, provider| {
-                row.child(
-                    self.i18n
-                        .format("ircv3_avatar_uploading", &[("provider", &provider)]),
-                )
-                .child(
-                    button("ircv3-avatar-upload-cancel", "cancel", false)
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel_avatar_upload(cx))),
-                )
-            })
-            .when(can_send, |row| {
-                // Sending exposes the URL to the whole network.
-                let warning: SharedString = self.i18n.text("ircv3_avatar_exposure").into();
-                row.child(
-                    button("ircv3-avatar-publish", "ircv3_avatar_publish", true)
-                        .tooltip(move |_, cx| {
-                            let text = warning.clone();
-                            cx.new(|_| TextTooltip(text)).into()
+            },
+        )];
+        if shows_avatar_image_row(provider.is_some(), self.avatar_upload.uploading().is_some()) {
+            items.push(field_item(
+                this,
+                i18n.text("ircv3_avatar_image"),
+                i18n.text("ircv3_avatar_image_desc"),
+                |this, _, cx| {
+                    let uploading = this.avatar_upload.uploading().map(str::to_owned);
+                    let button = |id: &'static str, key: &str| {
+                        settings_theme::button(id, false, cx).child(this.i18n.text(key))
+                    };
+                    let row = div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .when(uploading.is_none(), |row| {
+                            row.child(
+                                button("ircv3-avatar-choose", "ircv3_avatar_choose").on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.choose_avatar_image(window, cx)
+                                    }),
+                                ),
+                            )
                         })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.request_own_avatar(Action::Publish, cx)
-                        })),
-                )
-            })
-            // Removal is at the far end, in the warning color, and asks
-            // first.
-            .when(can_remove, |row| {
-                row.child(div().flex_1()).child(
-                    button("ircv3-avatar-remove", "ircv3_avatar_remove", false)
-                        .text_color(theme.warning)
-                        .border_color(theme.warning)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.confirm_avatar_removal(window, cx)
-                        })),
-                )
-            });
+                        .when_some(uploading, |row, provider| {
+                            row.child(
+                                this.i18n
+                                    .format("ircv3_avatar_uploading", &[("provider", &provider)]),
+                            )
+                            .child(
+                                button("ircv3-avatar-upload-cancel", "cancel").on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_avatar_upload(cx)),
+                                ),
+                            )
+                        });
+                    avatar_drop_target(row, true, cx)
+                },
+            ));
+        }
+        if can_send || can_remove {
+            items.push(field_item(
+                this,
+                i18n.text("ircv3_avatar_server"),
+                i18n.text("ircv3_avatar_server_desc"),
+                move |this, _, cx| {
+                    let warning = settings_theme::palette(cx).warning;
+                    // Sending exposes the URL to the whole network.
+                    let exposure: SharedString = this.i18n.text("ircv3_avatar_exposure").into();
+                    let button = |id: &'static str, key: &str, primary: bool| {
+                        settings_theme::button(id, primary, cx).child(this.i18n.text(key))
+                    };
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .when(can_send, |row| {
+                            row.child(
+                                button("ircv3-avatar-publish", "ircv3_avatar_publish", true)
+                                    .tooltip(move |_, cx| {
+                                        let text = exposure.clone();
+                                        cx.new(|_| TextTooltip(text)).into()
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request_own_avatar(Action::Publish, cx)
+                                    })),
+                            )
+                        })
+                        // Removal is in the warning color and asks first.
+                        .when(can_remove, |row| {
+                            row.child(
+                                button("ircv3-avatar-remove", "ircv3_avatar_remove", false)
+                                    .text_color(warning)
+                                    .border_color(warning)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_avatar_removal(window, cx)
+                                    })),
+                            )
+                        })
+                        .into_any_element()
+                },
+            ));
+        }
         // Only what needs attention: a request in progress or a failure.
-        let outcome = status
+        if status.unsupported {
+            items.push(self.note_item(this, "ircv3_avatar_unsupported", false));
+        }
+        if let Some((text, failed)) = status
             .outcome
             .as_ref()
             .filter(|outcome| !matches!(outcome, Outcome::Published(_) | Outcome::Removed))
-            .map(|outcome| outcome_text(&self.i18n, outcome));
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .pt_2()
-            .when(provider.is_some(), |section| {
-                section
-                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                        this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
-                    }))
-            })
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("ircv3_avatar_heading")),
-            )
-            .child(crate::settings_field(
-                &self.i18n.text("ircv3_avatar_url"),
-                self.settings.avatar_url.clone(),
-            ))
-            .child(buttons)
-            .when(status.unsupported, |section| {
-                section.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("ircv3_avatar_unsupported")),
-                )
-            })
-            .when_some(outcome, |section, (text, failed)| {
-                section.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .when(failed, |d| d.text_color(theme.warning))
-                        .child(text),
-                )
-            })
-            .when(profile.ircv3.peer_avatars, |section| {
-                section.child(self.render_peer_sharing(profile, &draft, &status, cx))
-            })
-            .when_some(self.avatar_feedback.clone(), |section, feedback| {
-                section.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.warning)
-                        .child(feedback_line(&feedback)),
-                )
-            })
-            .when(self.avatar_opening, |section| {
-                section.child(
-                    div()
-                        .ml(settings_theme::LABEL_INDENT)
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("ircv3_avatar_edit_loading")),
-                )
-            })
-            .children(provider.and_then(|name| self.render_avatar_editor(name, false, cx)))
+            .map(|outcome| outcome_text(i18n, outcome))
+        {
+            items.push(self.note_text_item(this, text, failed));
+        }
+        if profile.ircv3.peer_avatars {
+            items.extend(self.peer_sharing_items(profile, &draft, &status, this));
+        }
+        if let Some(feedback) = &self.avatar_feedback {
+            items.push(self.note_text_item(this, feedback_line(feedback), true));
+        }
+        if self.avatar_opening {
+            items.push(self.note_item(this, "ircv3_avatar_edit_loading", false));
+        }
+        if let (Some(name), true) = (provider, self.avatar_editor.is_some()) {
+            items.push(element_item(this, move |this, _, cx| {
+                this.render_avatar_editor(name, false, cx)
+                    .map(IntoElement::into_any_element)
+                    .unwrap_or_else(|| div().into_any_element())
+            }));
+        }
+        items
     }
 
     /// Sharing with other clients through CTCP AVATAR, separate from the
-    /// server: which URL is shared, "Share with Peers" when the draft
-    /// differs from it, "Stop Sharing", and a note when the realname mark of
-    /// the current connection no longer matches.
-    fn render_peer_sharing(
+    /// server: "Share with Peers" when the draft differs from the shared URL,
+    /// "Stop Sharing", which URL is shared, and a note when the realname
+    /// mark of the current connection no longer matches.
+    fn peer_sharing_items(
         &self,
         profile: &ServerProfile,
         draft: &str,
         status: &OwnAvatarStatus,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let theme = settings_theme::palette(cx);
-        let shared = profile.peer_avatar_url.as_str();
+        this: &WeakEntity<Self>,
+    ) -> Vec<SettingItem> {
+        let shared = profile.peer_avatar_url.clone();
         let can_share = !draft.is_empty() && draft != shared;
-        let warning: SharedString = self.i18n.text("ircv3_peer_share_exposure").into();
-        let reconnect = peer_reconnect_needed(status, profile);
-        div()
-            .ml(settings_theme::LABEL_INDENT)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .when(!shared.is_empty(), |section| {
-                section.child(
+        let stoppable = !shared.is_empty();
+        let mut items = Vec::new();
+        if can_share || stoppable {
+            items.push(field_item(
+                this,
+                self.i18n.text("ircv3_avatar_peers"),
+                self.i18n.text("ircv3_avatar_peers_desc"),
+                move |this, _, cx| {
+                    let warning: SharedString = this.i18n.text("ircv3_peer_share_exposure").into();
                     div()
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.format("ircv3_peer_sharing", &[("url", shared)])),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .when(can_share, |row| {
-                        row.child(
-                            settings_theme::button("ircv3-peer-share", false, cx)
-                                .child(self.i18n.text("ircv3_peer_share"))
-                                .tooltip(move |_, cx| {
-                                    let text = warning.clone();
-                                    cx.new(|_| TextTooltip(text)).into()
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| this.share_with_peers(cx))),
-                        )
-                    })
-                    .when(!shared.is_empty(), |row| {
-                        row.child(
-                            settings_theme::button("ircv3-peer-stop", false, cx)
-                                .child(self.i18n.text("ircv3_peer_stop"))
-                                .on_click(cx.listener(|this, _, _, cx| this.stop_sharing(cx))),
-                        )
-                    }),
-            )
-            .when(reconnect, |section| {
-                section.child(
-                    div()
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("ircv3_peer_reconnect")),
-                )
-            })
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .when(can_share, |row| {
+                            row.child(
+                                settings_theme::button("ircv3-peer-share", false, cx)
+                                    .child(this.i18n.text("ircv3_peer_share"))
+                                    .tooltip(move |_, cx| {
+                                        let text = warning.clone();
+                                        cx.new(|_| TextTooltip(text)).into()
+                                    })
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.share_with_peers(cx)),
+                                    ),
+                            )
+                        })
+                        .when(stoppable, |row| {
+                            row.child(
+                                settings_theme::button("ircv3-peer-stop", false, cx)
+                                    .child(this.i18n.text("ircv3_peer_stop"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.stop_sharing(cx))),
+                            )
+                        })
+                        .into_any_element()
+                },
+            ));
+        }
+        if stoppable {
+            items.push(
+                self.note_text_item(
+                    this,
+                    self.i18n
+                        .format("ircv3_peer_sharing", &[("url", shared.as_str())]),
+                    false,
+                ),
+            );
+        }
+        if peer_reconnect_needed(status, profile) {
+            items.push(self.note_item(this, "ircv3_peer_reconnect", false));
+        }
+        items
     }
 
+    /// The status message, Save for a server not yet registered (a registered
+    /// one saves as it is edited, #634) and the reset button.
+    fn ircv3_footer(&self, this: &WeakEntity<Self>) -> SettingItem {
+        let unsaved = !self.shown_server_registered();
+        element_item(this, move |this, _, cx| {
+            let theme = settings_theme::palette(cx);
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when_some(this.status_message(), |d, feedback| {
+                    d.child(div().text_color(theme.warning).child(feedback))
+                })
+                .when(unsaved, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                settings_theme::button("ircv3-save-button", false, cx)
+                                    .child(this.i18n.text("save"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_secondary)
+                                    .child(this.i18n.text("unsaved_server_changes")),
+                            ),
+                    )
+                })
+                .child(this.reset_footer(SettingsTab::Ircv3, cx))
+                .into_any_element()
+        })
+    }
+}
+
+/// Makes `control` take image files dropped on it when `accepts` (an image
+/// host is set up): they open in the avatar editor like a chosen file.
+fn avatar_drop_target(control: Div, accepts: bool, cx: &mut Context<SettingsWindow>) -> AnyElement {
+    let selected = settings_theme::palette(cx).selected;
+    control
+        .when(accepts, |control| {
+            control
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(selected))
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                    this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
+                }))
+        })
+        .into_any_element()
+}
+
+impl SettingsWindow {
     /// "Share with Peers": the draft, checked, becomes the shared URL. It is
     /// the only way a URL reaches other clients; editing the draft never
     /// does.
@@ -965,6 +1002,12 @@ impl SettingsWindow {
     }
 }
 
+/// The image row appears when an image host is set up, and also while an
+/// upload runs so it can still be cancelled after the host was cleared.
+fn shows_avatar_image_row(has_provider: bool, uploading: bool) -> bool {
+    has_provider || uploading
+}
+
 /// Whether the finished upload `id` registers the icon. Only the job that
 /// recorded the intent consumes it: the late completion of an ignored
 /// (cancelled) upload leaves another job's intent alone.
@@ -1243,6 +1286,13 @@ pub(crate) fn server_label(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_row_stays_while_uploading_without_a_host() {
+        assert!(super::shows_avatar_image_row(true, false));
+        assert!(super::shows_avatar_image_row(false, true));
+        assert!(!super::shows_avatar_image_row(false, false));
+    }
+
     use super::{
         IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, peer_avatar_url_problem,
         peer_reconnect_needed, place_uploaded_avatar, share_draft_with_peers,
@@ -1317,7 +1367,7 @@ mod tests {
         let id = settings.add_server("irc.example.org").id.clone();
         let peer = IRCV3_FEATURES
             .iter()
-            .find(|feature| feature.id == "ircv3-peer-avatars")
+            .find(|feature| feature.label_key == "ircv3_peer_avatars")
             .unwrap();
         let profile = settings.servers.iter_mut().find(|p| p.id == id).unwrap();
         // Off by default; a draft alone shares nothing.
@@ -1566,6 +1616,54 @@ mod tests {
         }
     }
 
+    /// Every row of the Kit page has a name and a one-sentence description in
+    /// both languages (#622).
+    #[test]
+    fn every_row_of_the_page_has_a_one_sentence_description_in_both_languages() {
+        use crate::localization::Localizer;
+        let mut rows: Vec<(&str, &str)> = IRCV3_FEATURES
+            .iter()
+            .map(|feature| (feature.label_key, feature.hint_key))
+            .collect();
+        rows.extend([
+            ("ircv3_server", "ircv3_server_desc"),
+            ("ircv3_avatar_url", "ircv3_avatar_url_desc"),
+            ("ircv3_avatar_image", "ircv3_avatar_image_desc"),
+            ("ircv3_avatar_server", "ircv3_avatar_server_desc"),
+            ("ircv3_avatar_peers", "ircv3_avatar_peers_desc"),
+        ]);
+        for language in [Language::Japanese, Language::English] {
+            let i18n = Localizer::new(language);
+            for key in [
+                "group_ircv3_server",
+                "group_ircv3_features",
+                "group_ircv3_avatar",
+            ] {
+                assert_ne!(i18n.text(key), key, "{key}");
+            }
+            for (name, description) in &rows {
+                assert_ne!(i18n.text(name), *name, "{name}");
+                let text = i18n.text(description);
+                assert_ne!(text, *description, "{description}");
+                // One sentence: the only full stop (a dot followed by a space
+                // or the end, so "znc.in" does not count) is the last character.
+                let chars: Vec<char> = text.chars().collect();
+                let stops = chars
+                    .iter()
+                    .enumerate()
+                    .filter(|&(at, &c)| {
+                        c == '。'
+                            || (c == '.' && chars.get(at + 1).is_none_or(|n| n.is_whitespace()))
+                    })
+                    .count();
+                assert!(
+                    stops == 1 && text.ends_with(['。', '.']),
+                    "{description}: {text}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn each_feature_row_toggles_only_its_own_preference() {
         let catalogs = [
@@ -1579,7 +1677,11 @@ mod tests {
             assert!((feature.get)(&preferences));
             for (other_index, other) in IRCV3_FEATURES.iter().enumerate() {
                 if other_index != index {
-                    assert!(!(other.get)(&preferences), "{} is independent", other.id);
+                    assert!(
+                        !(other.get)(&preferences),
+                        "{} is independent",
+                        other.label_key
+                    );
                 }
             }
             for catalog in catalogs {
@@ -1823,7 +1925,7 @@ mod own_avatar_tests {
             let mut next = chat.saved.clone();
             let peer = super::IRCV3_FEATURES
                 .iter()
-                .find(|feature| feature.id == "ircv3-peer-avatars")
+                .find(|feature| feature.label_key == "ircv3_peer_avatars")
                 .unwrap();
             super::toggle_feature(&mut next.servers[0], peer.toggle);
             chat.apply_servers(next, cx);

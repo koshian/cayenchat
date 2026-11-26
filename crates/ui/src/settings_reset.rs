@@ -280,14 +280,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// A tab's heading.
-    pub(crate) fn tab_heading(&self, title_key: &str) -> Div {
-        div()
-            .text_size(px(20.))
-            .font_weight(FontWeight::BOLD)
-            .child(self.i18n.text(title_key))
-    }
-
     /// The end of a tab with its reset at the left, apart from the setting rows, in the same place on
     /// every tab. It is disabled while everything the tab shows has its
     /// default.

@@ -54,7 +54,6 @@ pub(crate) struct SettingsForm {
     server_list_open: bool,
     encoding_list_open: bool,
     sasl_list_open: bool,
-    pub(crate) ircv3_server_list_open: bool,
     pub(crate) custom_host: Entity<TextInput>,
     pub(crate) port: Entity<TextInput>,
     pub(crate) nickname: Entity<TextInput>,
@@ -425,7 +424,6 @@ impl SettingsForm {
             server_list_open: false,
             encoding_list_open: false,
             sasl_list_open: false,
-            ircv3_server_list_open: false,
             values,
         };
         for input in form.color_inputs() {
@@ -888,7 +886,6 @@ impl SettingsForm {
         self.server_list_open = false;
         self.sasl_list_open = false;
         self.encoding_list_open = false;
-        self.ircv3_server_list_open = false;
     }
 }
 
@@ -2756,12 +2753,10 @@ impl SettingsWindow {
             self.color_picker = None;
             cx.notify();
         } else if self.settings.server_list_open
-            || self.settings.ircv3_server_list_open
             || self.settings.encoding_list_open
             || self.settings.sasl_list_open
         {
             self.settings.server_list_open = false;
-            self.settings.ircv3_server_list_open = false;
             self.settings.sasl_list_open = false;
             self.settings.encoding_list_open = false;
             cx.notify();

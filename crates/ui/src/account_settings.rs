@@ -635,11 +635,6 @@ impl SettingsWindow {
     }
 }
 
-/// The bordered panel below the settings tabs.
-pub(crate) fn panel(_: &App) -> Div {
-    div().w_full().flex().flex_col().gap_2()
-}
-
 #[cfg(test)]
 mod move_tests {
     use super::move_secrets;
