@@ -579,6 +579,21 @@ damaged streams: it exposes only a C ABI, and an `unwrap` in an error path of
 about 3.8 million mutated files (four seeds, release build). That is evidence, not proof:
 a further abort path would end the process, and the vendored copy is the place
 to fix it (see "Switch back when" in `vendor/README.md`).
+#1145 widened the checks (audit F-1) without finding a new abort. The test file
+now also has `av1_structure_damage_never_aborts_or_exceeds_limits` (normal run, 400
+rounds per small fixture): it scans the OBUs of the coded data and damages sequence
+and frame header bits, OBU types and size fields, and drops or repeats OBUs. The
+ignored `large_avif_damage_never_aborts_or_exceeds_limits` does the same plus byte
+noise and truncation on the two 4096 × 4096 fixtures (`cargo test --release -p
+cayenchat-media --test avif_mutations -- --ignored`, about 1 minute at the default
+40 rounds). The normal run adds about 5 s in a debug build, so it stays in CI; the
+large run is manual. `AVIF_LAST_CASE=<absolute path>` saves the case about to be
+decoded, so an abort leaves its input behind. Run once with seed 7, 3000 / 5000 / 200
+rounds (small bytes / structured / large), release: no abort, no limit exceeded.
+Not covered: grid images, other encoders' streams (only the four small and two
+large fixtures from one encoder are mutated; tools such as 128-pixel superblocks,
+scalability and multiple tile groups are barely present), long-running coverage-guided
+fuzzing, and the `asm` code, which is off. No finding is a proof of safety.
 What is shown: the primary item (with its separate alpha item, rotated by
 `irot`), reduced straight to the thumbnail by averaging, so there is never a
 full-size RGBA copy. Grid (tiled) images, files without a primary item, and

@@ -19,3 +19,11 @@ decode untrusted files with it.
 - Not copied: `src/x86` and `src/arm` (the assembly, used only with the `asm`
   feature, which the workspace leaves off so that no assembler is needed),
   tests, CI files and the upstream `Cargo.lock`.
+
+## Verification (no patch added)
+
+#1145 added structure-aware mutation tests (`av1_structure_damage_never_aborts_or_exceeds_limits`,
+and the ignored `large_avif_damage_never_aborts_or_exceeds_limits` on the 4096² fixtures) to
+`crates/media/tests/avif_mutations.rs`. They found no further abort, so no new patch was needed.
+Details and what stays uncovered are in `spec/decisions.md` (AVIF, D018). Any new abort found
+this way gets a patch here and a regression case in that test.
