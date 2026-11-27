@@ -37,22 +37,36 @@ impl From<cayenchat_storage::CredentialError> for MoveError {
     }
 }
 
+/// What a completed switch did.
+#[derive(Debug, PartialEq, Eq)]
+struct Moved {
+    /// The old store could not be read, so nothing was moved from it.
+    source_unavailable: bool,
+    count: usize,
+    /// Originals the old store refused to delete; the switch itself stands.
+    left_behind: usize,
+}
+
 /// Runs on the store thread: copies the secrets from `from` to `to`, records
 /// `kind` in the settings file, then deletes the originals (or, if the
-/// choice cannot be recorded, the copies). The file is read after the copy,
-/// right before it is written (see below). Returns
-/// whether the old store was unreadable, and how many secrets moved.
+/// choice cannot be recorded, the copies). A failed deletion of an original
+/// is reported in [`Moved`], not undone. The file is read after the copy,
+/// right before it is written (see below). Returns what moved.
 fn move_secrets(
     from: &cayenchat_storage::CredentialStore,
     to: &cayenchat_storage::CredentialStore,
     kind: CredentialBackendKind,
     form: &Settings,
     mut keys: Vec<SecretKey>,
-) -> Result<(bool, usize), MoveError> {
+) -> Result<Moved, MoveError> {
     // Moving to the store already in use changes nothing; copying onto
     // itself and deleting the originals would erase the secrets.
     if from.kind() == kind {
-        return Ok((false, 0));
+        return Ok(Moved {
+            source_unavailable: false,
+            count: 0,
+            left_behind: 0,
+        });
     }
     let saved = settings_file::load().map_err(MoveError::Settings)?;
     keys.extend(all_secret_keys(saved.as_ref().unwrap_or(form)));
@@ -77,9 +91,14 @@ fn move_secrets(
         }
         return Err(MoveError::Settings(error));
     }
-    let moved = (copied.source_unavailable, copied.count());
-    copied.remove_originals(from);
-    Ok(moved)
+    // The choice is saved: whatever happens to the originals, the new store
+    // stays (no rollback, no deletion of the copies).
+    let left_behind = copied.remove_originals(from);
+    Ok(Moved {
+        source_unavailable: copied.source_unavailable,
+        count: copied.count(),
+        left_behind,
+    })
 }
 
 impl SettingsWindow {
@@ -202,10 +221,14 @@ impl SettingsWindow {
         &mut self,
         kind: CredentialBackendKind,
         to: cayenchat_storage::CredentialStore,
-        moved: Result<(bool, usize), MoveError>,
+        moved: Result<Moved, MoveError>,
         cx: &mut Context<Self>,
     ) {
-        let (source_unavailable, count) = match moved {
+        let Moved {
+            source_unavailable,
+            count,
+            left_behind,
+        } = match moved {
             Ok(moved) => moved,
             Err(error) => {
                 self.feedback = Some(match error {
@@ -222,7 +245,14 @@ impl SettingsWindow {
         if !cx.has_global::<secrets::Worker>() {
             cx.set_global(secrets::Credentials(to));
         }
-        self.feedback = Some(if source_unavailable {
+        self.feedback = Some(if left_behind > 0 {
+            // Distinct from a normal completion: the switch is done, but
+            // secrets may remain (in plaintext, for the local file).
+            self.i18n.format(
+                "credential_switched_originals_left",
+                &[("count", &left_behind.to_string())],
+            )
+        } else if source_unavailable {
             self.i18n.text("credential_switched_source_unavailable")
         } else {
             self.i18n
@@ -684,6 +714,67 @@ mod move_tests {
         );
         assert!(to.contains(&key).unwrap(), "the copy is kept");
         assert!(from.contains(&key).unwrap(), "the original is kept");
+    }
+
+    /// Only the deletion from the old store fails (CREDN-1): the switch
+    /// stands (new value and settings kept) and the leftovers are reported.
+    #[gpui::test]
+    fn a_failed_original_deletion_is_reported_and_keeps_the_switch(_cx: &mut gpui::TestAppContext) {
+        let key = SecretKey::uploader_token("imgbb");
+        let mut settings = Settings::default();
+        settings.credential_backend = CredentialBackendKind::LocalFile;
+        let _file = settings_file::TestFile::with(&settings);
+        let from = CredentialStore::with_backend(Arc::new(MemoryBackend::failing_deletes(
+            CredentialBackendKind::LocalFile,
+        )));
+        let to = memory(CredentialBackendKind::System);
+        from.set(&key, &Secret::new("v")).unwrap();
+
+        let moved = move_secrets(
+            &from,
+            &to,
+            CredentialBackendKind::System,
+            &settings,
+            vec![key.clone()],
+        )
+        .ok()
+        .expect("the switch succeeds");
+        assert_eq!(
+            moved,
+            super::Moved {
+                source_unavailable: false,
+                count: 1,
+                left_behind: 1
+            }
+        );
+        assert_eq!(to.get(&key).unwrap().unwrap().expose(), "v");
+        assert_eq!(
+            settings_file::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::System
+        );
+    }
+
+    /// A normal move leaves nothing behind.
+    #[gpui::test]
+    fn a_normal_move_leaves_nothing_behind(_cx: &mut gpui::TestAppContext) {
+        let key = SecretKey::uploader_token("imgbb");
+        let mut settings = Settings::default();
+        settings.credential_backend = CredentialBackendKind::LocalFile;
+        let _file = settings_file::TestFile::with(&settings);
+        let from = memory(CredentialBackendKind::LocalFile);
+        let to = memory(CredentialBackendKind::System);
+        from.set(&key, &Secret::new("v")).unwrap();
+        let moved = move_secrets(
+            &from,
+            &to,
+            CredentialBackendKind::System,
+            &settings,
+            vec![key.clone()],
+        )
+        .ok()
+        .unwrap();
+        assert_eq!((moved.count, moved.left_behind), (1, 0));
+        assert!(!from.contains(&key).unwrap());
     }
 
     /// A failure that changed nothing still removes the copies.

@@ -289,12 +289,16 @@ impl Copied {
         self.keys.len()
     }
 
-    /// Deletes the originals from `from`. A leftover original is harmless
-    /// compared with failing the whole switch, so errors are ignored.
-    pub fn remove_originals(&self, from: &CredentialStore) {
-        for key in &self.keys {
-            let _ = from.delete(key);
-        }
+    /// Deletes the originals from `from` and returns how many could not be
+    /// deleted. A leftover original must not fail the switch (the new store
+    /// is already committed), but the caller has to tell the user, since a
+    /// plaintext original may remain. Error values are dropped, never shown.
+    #[must_use]
+    pub fn remove_originals(&self, from: &CredentialStore) -> usize {
+        self.keys
+            .iter()
+            .filter(|key| from.delete(key).is_err())
+            .count()
     }
 
     /// Deletes the copies from `to` after a switch was abandoned, so no secret
@@ -788,6 +792,7 @@ impl CredentialBackend for LocalFileBackend {
 pub struct MemoryBackend {
     kind: CredentialBackendKind,
     unavailable: bool,
+    fail_deletes: bool,
     secrets: Mutex<BTreeMap<String, String>>,
 }
 
@@ -796,6 +801,7 @@ impl MemoryBackend {
         Self {
             kind,
             unavailable: false,
+            fail_deletes: false,
             secrets: Mutex::new(BTreeMap::new()),
         }
     }
@@ -803,6 +809,14 @@ impl MemoryBackend {
     pub fn unavailable(kind: CredentialBackendKind) -> Self {
         Self {
             unavailable: true,
+            ..Self::new(kind)
+        }
+    }
+
+    /// Reads and writes work but every delete fails.
+    pub fn failing_deletes(kind: CredentialBackendKind) -> Self {
+        Self {
+            fail_deletes: true,
             ..Self::new(kind)
         }
     }
@@ -840,6 +854,9 @@ impl CredentialBackend for MemoryBackend {
 
     fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
         self.check()?;
+        if self.fail_deletes {
+            return Err(CredentialError::Access("test delete failure".into()));
+        }
         let mut secrets = self.secrets.lock().unwrap_or_else(|e| e.into_inner());
         secrets.remove(&key.name());
         Ok(())
@@ -923,7 +940,7 @@ mod tests {
         system.set(&keys[2], &Secret::new("token")).unwrap();
         let copied = copy_secrets(&system, &local, &keys).unwrap();
         // The switch is committed (settings saved) before the originals go.
-        copied.remove_originals(&system);
+        assert_eq!(copied.remove_originals(&system), 0);
         assert_eq!(copied.count(), 2);
         assert!(!copied.source_unavailable);
         assert!(system.get(&keys[0]).unwrap().is_none());
@@ -950,7 +967,7 @@ mod tests {
         // Committed: the original goes, the copy stays.
         let copied = copy_secrets(&system, &local, std::slice::from_ref(&key)).unwrap();
         assert_eq!(copied.count(), 1);
-        copied.remove_originals(&system);
+        assert_eq!(copied.remove_originals(&system), 0);
         assert!(system.get(&key).unwrap().is_none());
         assert!(local.get(&key).unwrap().is_some());
     }
@@ -1031,7 +1048,7 @@ mod tests {
         ));
         let local = memory(CredentialBackendKind::LocalFile);
         let copied = copy_secrets(&broken, &local, &[key]).unwrap();
-        copied.remove_originals(&broken);
+        assert_eq!(copied.remove_originals(&broken), 0);
         assert!(copied.source_unavailable);
         assert_eq!(copied.count(), 0);
     }

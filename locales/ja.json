@@ -739,6 +739,7 @@
   "credential_switch_detail": "資格情報は {path} に暗号化せずに保存されます。システムの安全な保存場所より安全性が低くなります。",
   "credential_switch_confirm": "ローカルファイルを使う",
   "credential_switched": "資格情報の保存先を変更し、保存済みの {count} 件を移しました。",
+  "credential_switched_originals_left": "資格情報の保存先は変更しましたが、以前の保存先から {count} 件を削除できませんでした。以前の保存先に資格情報が残っている可能性があります。必要なら手動で削除してください。",
   "credential_switched_source_unavailable": "資格情報の保存先を変更しました。以前の保存先を読めなかったため、保存済みの項目は移していません。",
   "credential_store_waiting": "資格情報の保存を待っています。OS の確認画面が出ている場合は応答してください。それまでは、閉じる操作、サーバーの切り替え、終了を受け付けません。",
   "group_credentials_storage": "保存先",

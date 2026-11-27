@@ -2993,7 +2993,7 @@ mod tests {
         from.set(&key, &Secret::new("hunter2")).unwrap();
         let copied =
             credentials::copy_secrets(&from, &to, &settings.connection_secret_keys()).unwrap();
-        copied.remove_originals(&from);
+        assert_eq!(copied.remove_originals(&from), 0);
         assert_eq!(copied.count(), 1);
         assert!(from.get(&key).unwrap().is_none());
         assert_eq!(to.get(&key).unwrap().unwrap().expose(), "hunter2");
