@@ -59,7 +59,7 @@ pub fn rows(info: &BuildInfo, i18n: &Localizer) -> Vec<(String, String)> {
 }
 
 /// Height of the macOS title bar. GPUI's macOS backend takes the opening
-/// bounds as the frame, title bar included (`vendor/gpui/PATCHES.md`, #801),
+/// bounds as the frame, title bar included (`vendor/gpui-pre-macos/PATCHES.md`, #801),
 /// so a window sized for its content adds this to keep that content (#809).
 const MACOS_TITLEBAR_HEIGHT: f32 = 28.;
 
