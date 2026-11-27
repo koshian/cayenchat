@@ -27,13 +27,14 @@ all='Linux x86_64,Windows x86_64,Windows ARM64,macOS ARM64'
 
 expect 'no changes' '' false
 expect 'documentation' '' false README.md spec/development.md .claude/x licenses/a
-expect 'linux platform' 'Linux x86_64' true vendor/gpui/src/platform/linux/x11/client.rs
-expect 'windows platform' 'Windows x86_64,Windows ARM64' false vendor/gpui/src/platform/windows/a.rs
 expect 'windows script' 'Windows x86_64,Windows ARM64' false scripts/check-windows-subsystem.ps1
-expect 'mac platform' 'macOS ARM64' false vendor/gpui/src/platform/mac/a.rs
 expect 'e2e only' '' true scripts/e2e/history_gui.py scripts/ergo-metadata-interop.sh
-expect 'linux and docs' 'Linux x86_64' true vendor/gpui/src/platform/linux.rs spec/a.md
-expect 'linux and mac' 'Linux x86_64,macOS ARM64' true vendor/gpui/src/platform/linux.rs vendor/gpui/src/platform/mac/a.rs
+expect 'windows script and docs' 'Windows x86_64,Windows ARM64' false scripts/check-windows-subsystem.ps1 spec/a.md
+expect 'windows script and e2e' 'Windows x86_64,Windows ARM64' true scripts/check-windows-subsystem.ps1 scripts/e2e/a.py
+expect 'vendored linux platform' "$all" true vendor/gpui-pre-linux/src/lib.rs
+expect 'vendored windows platform' "$all" true vendor/gpui-pre-windows/src/clipboard_data.rs
+expect 'vendored macos platform' "$all" true vendor/gpui-pre-macos/src/lib.rs
+expect 'removed vendor/gpui path' "$all" true vendor/gpui/src/platform/linux.rs
 expect 'unknown path' "$all" true crates/app/src/lib.rs
 expect 'unknown with docs' "$all" true README.md crates/app/src/lib.rs
 expect 'rename out of unknown path' "$all" true crates/app/src/lib.rs README.md

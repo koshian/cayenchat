@@ -7,8 +7,9 @@
 # With --all (pushes to master) every job runs.
 #
 # A path the cases below do not name runs everything. Documentation runs
-# nothing; GPUI's per-platform sources, which only compile for that target, and
-# scripts used by one job run only that platform or job.
+# nothing; scripts used by one job run only that platform or job. The vendored
+# crates under vendor/ run everything: gpui-pre-windows's clipboard_data.rs is
+# also compiled into the ui tests on every platform.
 set -euo pipefail
 
 linux=false windows=false macos=false gui=false
@@ -20,9 +21,7 @@ else
   while IFS= read -r path; do
     case $path in
       '' | *.md | spec/* | .claude/* | licenses/*) ;;
-      vendor/gpui/src/platform/linux*) linux=true gui=true ;;
-      vendor/gpui/src/platform/windows* | scripts/check-windows-subsystem.ps1) windows=true ;;
-      vendor/gpui/src/platform/mac*) macos=true ;;
+      scripts/check-windows-subsystem.ps1) windows=true ;;
       scripts/e2e/* | scripts/ergo-metadata-interop.sh) gui=true ;;
       *) all ;;
     esac
