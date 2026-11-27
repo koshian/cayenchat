@@ -1387,6 +1387,11 @@ pub(crate) struct SettingsWindow {
     /// The quick icon section at the top of the Connection tab is expanded.
     /// Only a view state: it is never saved and sends nothing.
     pub(crate) avatar_quick_open: bool,
+    /// The registered icon the quick section draws, the only one this
+    /// window keeps; a replaced one waits in `icon_retired` for the next
+    /// render to free its texture.
+    pub(crate) icon_image: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub(crate) icon_retired: Vec<std::sync::Arc<gpui::RenderImage>>,
     /// Keyboard focus of that section's disclosure header.
     pub(crate) avatar_toggle_focus: FocusHandle,
     /// Id of the running upload that was started in the quick
@@ -1594,6 +1599,16 @@ impl SettingsWindow {
             secrets::flush(cx, std::time::Duration::from_secs(2));
             async {}
         }));
+        // The registered icon needs the chat's avatar cache even while avatars
+        // are off; it is released again when this window closes.
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |chat, _, _| chat.avatars.set_icon_wanted(true));
+        });
+        subscriptions.push(cx.on_release(move |_, cx| {
+            cx.defer(move |cx| {
+                let _ = owner.update(cx, |chat, _, _| chat.avatars.set_icon_wanted(false));
+            });
+        }));
         let saved = settings.values.clone();
         let mut this = Self {
             owner,
@@ -1638,6 +1653,8 @@ impl SettingsWindow {
             auto_join: None,
             avatar_opening: false,
             avatar_quick_open: false,
+            icon_image: None,
+            icon_retired: Vec::new(),
             avatar_toggle_focus: cx.focus_handle().tab_stop(true),
             avatar_upload_registers: None,
             avatar_setup_link: false,
@@ -4578,6 +4595,9 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for image in self.icon_retired.drain(..) {
+            let _ = window.drop_image(image);
+        }
         let title = self.i18n.text("settings_title");
         let content = self.render_settings(window, cx).into_any_element();
         decorations::window_frame(window, cx, title, content)

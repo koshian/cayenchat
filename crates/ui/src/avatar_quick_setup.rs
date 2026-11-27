@@ -11,9 +11,11 @@ use cayenchat_app::own_avatar::Confirmed;
 use cayenchat_irc_core::MAX_PUBLISHED_AVATAR_BYTES;
 use cayenchat_storage::{ServerProfile, TextEncoding};
 use gpui::{prelude::*, *};
+use std::sync::Arc;
 
 use crate::{
     SettingsTab, SettingsWindow,
+    avatars::Shown,
     ircv3_settings::{
         OwnAvatarStatus, feedback_line, outcome_text, peer_avatar_url_problem,
         peer_reconnect_needed,
@@ -61,6 +63,25 @@ fn ctcp_state_key(
     } else {
         "avatar_quick_ctcp_ready"
     })
+}
+
+/// Side of the icon box in logical pixels.
+const ICON_SLOT: f32 = 64.;
+
+/// The registered image to draw for `avatar_url`, or `None` for the default
+/// avatar: when nothing is registered (no lookup is made), and while the
+/// image loads or could not be loaded.
+fn icon_content(
+    avatar_url: &str,
+    lookup: impl FnOnce() -> Shown,
+) -> Option<Arc<gpui::RenderImage>> {
+    if avatar_url.is_empty() {
+        return None;
+    }
+    match lookup() {
+        Shown::Image(image) => Some(image),
+        Shown::Pending | Shown::None => None,
+    }
 }
 
 impl SettingsWindow {
@@ -172,9 +193,78 @@ impl SettingsWindow {
         lines
     }
 
+    /// The icon box: the registered image, or the default avatar of the
+    /// nick typed in the nick field now. Only draws; nothing is saved or sent.
+    fn quick_avatar_icon(
+        &mut self,
+        profile: &ServerProfile,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = settings_theme::palette(cx);
+        let nick = self.settings.nickname.read(cx).text().trim().to_owned();
+        let pixels = crate::avatars::pixels_for(ICON_SLOT, window.scale_factor());
+        let mut pending = false;
+        let mut wanted = true;
+        let mut registered = None;
+        let mut fallback = None;
+        if let Ok(chat) = self.owner.read(cx) {
+            wanted = chat.avatars.icon_wanted();
+            registered = icon_content(&profile.avatar_url, || {
+                let shown = chat.avatars.lookup_icon(&profile.avatar_url, pixels);
+                pending = matches!(shown, Shown::Pending);
+                shown
+            });
+            if registered.is_none() {
+                fallback = Some(chat.avatars.default_sized(&nick, pixels));
+            }
+        }
+        // Holds the one registered image this window draws, and queues a
+        // replaced one for release in this window's own atlas (the chat
+        // window's release does not reach it).
+        let changed = match (&self.icon_image, &registered) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            self.icon_retired
+                .extend(std::mem::replace(&mut self.icon_image, registered.clone()));
+            if !self.icon_retired.is_empty() {
+                cx.notify();
+            }
+        }
+        let image = registered.map(img).or_else(|| fallback.map(img));
+        if pending || !wanted {
+            // The cache is made live and the load is started by the owner,
+            // which a draw cannot update.
+            let owner = self.owner;
+            cx.defer(move |cx| {
+                let _ = owner.update(cx, |chat, _, cx| {
+                    chat.avatars.set_icon_wanted(true);
+                    chat.pump_avatars(cx);
+                });
+            });
+        }
+        div()
+            .id("avatar-quick-icon")
+            .debug_selector(|| "avatar-quick-icon".into())
+            .size(px(ICON_SLOT))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .rounded_md()
+            .border_2()
+            .border_color(theme.text_secondary)
+            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                style.border_color(theme.text).bg(theme.selected)
+            })
+            .children(image.map(|image| image.size_full()))
+    }
+
     pub(crate) fn render_quick_avatar(
         &mut self,
         profile: &ServerProfile,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = settings_theme::palette(cx);
@@ -274,6 +364,7 @@ impl SettingsWindow {
         let draft = self.settings.avatar_url.read(cx).text().trim().to_owned();
         let uploading = self.avatar_upload.uploading().map(str::to_owned);
         let lines = self.quick_avatar_status(profile, &status);
+        let icon = self.quick_avatar_icon(profile, window, cx);
         let provider = self
             .settings
             .values
@@ -343,6 +434,13 @@ impl SettingsWindow {
                 }))
                 .child(
                     right()
+                        .child(
+                            div().flex().items_center().gap_3().child(icon).child(
+                                div()
+                                    .text_color(theme.text_secondary)
+                                    .child(self.i18n.text("avatar_quick_drop_hint")),
+                            ),
+                        )
                         .child(
                             div()
                                 .text_color(theme.warning)
@@ -426,12 +524,13 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{ctcp_state_key, register_in_profile};
+    use super::{ctcp_state_key, icon_content, register_in_profile};
     use crate::ircv3_settings::OwnAvatarStatus;
     use crate::session::PeerAvatarConnection;
     use crate::{SettingsTab, SettingsWindow};
     use cayenchat_storage::{ServerProfile, Settings, TextEncoding};
     use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+    use std::sync::Arc;
 
     const URL: &str = "https://img.example/me.png";
 
@@ -507,10 +606,45 @@ mod tests {
         cx: &mut TestAppContext,
         settings: Settings,
     ) -> (Entity<SettingsWindow>, &mut VisualTestContext) {
+        open_with(cx, settings, None)
+    }
+
+    /// Serves every URL with a small PNG, never touching the network.
+    struct PngFetcher;
+
+    impl cayenchat_media::Fetcher for PngFetcher {
+        fn fetch(
+            &self,
+            _: &cayenchat_media::MediaRef,
+            _: &cayenchat_media::Limits,
+            _: &cayenchat_media::CancelFlag,
+        ) -> Result<Vec<u8>, cayenchat_media::LoadError> {
+            let mut bytes = Vec::new();
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 20, 20, 255]))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            Ok(bytes)
+        }
+    }
+
+    fn open_with(
+        cx: &mut TestAppContext,
+        settings: Settings,
+        fetcher: Option<Arc<dyn cayenchat_media::Fetcher>>,
+    ) -> (Entity<SettingsWindow>, &mut VisualTestContext) {
         crate::support::install_test_globals(cx);
         let owner = cx.add_window({
             let settings = settings.clone();
-            move |window, cx| crate::ChatWindow::with_settings(settings, None, window, cx)
+            move |window, cx| {
+                let mut chat = crate::ChatWindow::with_settings(settings, None, window, cx);
+                if let Some(fetcher) = fetcher {
+                    chat.avatars.use_fetcher(fetcher);
+                }
+                chat
+            }
         });
         let (form, vcx) = cx
             .add_window_view(|window, cx| SettingsWindow::new(owner, settings.clone(), window, cx));
@@ -627,6 +761,139 @@ mod tests {
             assert!(form.avatar_feedback.is_some());
             assert_eq!(form.settings.values, before);
         });
+    }
+
+    #[test]
+    fn the_icon_shows_the_default_unless_a_registered_image_is_ready() {
+        use crate::avatars::Shown;
+        // Nothing registered: the default, and no lookup is made.
+        assert!(icon_content("", || panic!("looked up")).is_none());
+        // Registered and ready: that image.
+        let ready = Arc::new(gpui::RenderImage::new(Vec::new()));
+        let shown = icon_content(URL, || Shown::Image(ready.clone())).unwrap();
+        assert!(Arc::ptr_eq(&shown, &ready));
+        // Loading or failed: the default again.
+        assert!(icon_content(URL, || Shown::Pending).is_none());
+        assert!(icon_content(URL, || Shown::None).is_none());
+    }
+
+    #[gpui::test]
+    fn the_registered_icon_shows_with_chat_avatars_off_and_keeps_one_image(
+        cx: &mut TestAppContext,
+    ) {
+        let mut settings = two_servers();
+        settings.servers[0].avatar_url = URL.into();
+        let (form, cx) = open_with(cx, settings, Some(Arc::new(PngFetcher)));
+        form.update(cx, |form, cx| {
+            form.avatar_quick_open = true;
+            cx.notify();
+        });
+        crate::support::scroll_settings_to(cx, "avatar-quick-toggle");
+        let wait = |cx: &mut VisualTestContext| {
+            for _ in 0..40 {
+                cx.run_until_parked();
+                if form.read_with(cx, |form, _| form.icon_image.is_some()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        wait(cx);
+        let owner = form.read_with(cx, |form, _| form.owner);
+        let (chat_on, icon_on) = owner
+            .read_with(cx, |chat, _| {
+                (chat.avatars.enabled(), chat.avatars.icon_wanted())
+            })
+            .unwrap();
+        assert!(!chat_on && icon_on, "the chat setting must stay off");
+        let first = form.read_with(cx, |form, _| form.icon_image.clone().unwrap());
+        // Fetching it again replaces the image; the window frees the old
+        // texture and keeps only the new one.
+        for _ in 0..3 {
+            let previous = form.read_with(cx, |form, _| form.icon_image.clone().unwrap());
+            owner
+                .update(cx, |chat, _, cx| {
+                    chat.avatars.refresh(URL);
+                    cx.notify();
+                })
+                .unwrap();
+            form.update(cx, |_, cx| cx.notify());
+            for _ in 0..40 {
+                cx.run_until_parked();
+                let now = form.read_with(cx, |form, _| form.icon_image.clone());
+                if now.is_some_and(|now| !Arc::ptr_eq(&now, &previous)) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            cx.run_until_parked();
+            form.read_with(cx, |form, _| {
+                let now = form.icon_image.clone().unwrap();
+                assert!(!Arc::ptr_eq(&now, &previous), "not fetched again");
+                assert!(form.icon_retired.is_empty(), "replaced image not freed");
+            });
+        }
+        assert!(!Arc::ptr_eq(
+            &first,
+            &form.read_with(cx, |form, _| form.icon_image.clone().unwrap())
+        ));
+    }
+
+    #[gpui::test]
+    fn the_default_icon_follows_the_nick_field_and_a_drop_on_it_starts_the_flow(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, cx) = open(cx, two_servers());
+        form.update(cx, |form, cx| {
+            form.avatar_quick_open = true;
+            cx.notify();
+        });
+        crate::support::scroll_settings_to(cx, "avatar-quick-toggle");
+        cx.run_until_parked();
+        let nick = form.read_with(cx, |form, _| form.settings.nickname.clone());
+        let state = |form: &SettingsWindow, cx: &gpui::App| {
+            (
+                form.owner.read(cx).unwrap().avatars.defaults_made(),
+                form.settings.values.clone(),
+            )
+        };
+        let before = form.read_with(cx, state);
+        // A different nick (unsaved) draws a different default avatar.
+        nick.update(cx, |field, cx| field.set_text("zzz-another-nick", cx));
+        cx.run_until_parked();
+        let after = form.read_with(cx, state);
+        assert!(after.0 > before.0, "no new default avatar was drawn");
+        assert_eq!(after.1, before.1, "drawing the icon changed a setting");
+
+        // Dropping an image on the icon starts the same flow as choosing
+        // one; with no upload service set up it says so.
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/tmp/avatar-drop"
+        ));
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("a.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([9, 9, 9, 255]))
+            .save(&path)
+            .unwrap();
+        let at = cx.debug_bounds("avatar-quick-icon").unwrap().center();
+        let paths = gpui::ExternalPaths(
+            std::iter::once(path.canonicalize().unwrap()).collect(),
+            None,
+        );
+        cx.simulate_event(gpui::FileDropEvent::Entered {
+            position: at,
+            paths,
+        });
+        cx.simulate_event(gpui::FileDropEvent::Submit { position: at });
+        for _ in 0..40 {
+            cx.run_until_parked();
+            if form.read_with(cx, |form, _| form.avatar_setup_link) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(form.read_with(cx, |form, _| form.avatar_setup_link));
     }
 
     #[gpui::test]
