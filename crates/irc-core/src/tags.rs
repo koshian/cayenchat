@@ -156,91 +156,30 @@ pub fn server_time(message: &IrcMessage, enabled: bool) -> Option<SystemTime> {
 }
 
 /// Parses `YYYY-MM-DDThh:mm:ss.sssZ` (UTC). Any number of fraction digits,
-/// or none, is accepted; other offsets, dates before 1970 and out-of-range
-/// fields are rejected. A leap second (`:60`) counts as `:59`.
+/// or none, is accepted and cut at the millisecond; other offsets, dates
+/// before 1970 and out-of-range fields are rejected. A leap second (`:60`)
+/// counts as `:59`.
 pub fn parse_server_time(value: &str) -> Option<SystemTime> {
-    let bytes = value.as_bytes();
-    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
-        let slice = bytes.get(range)?;
-        if slice.is_empty() || !slice.iter().all(u8::is_ascii_digit) {
+    // jiff also takes `t`, `z`, a space and numeric offsets; only the
+    // uppercase `T` and `Z` form of server-time is valid.
+    let body = value.strip_suffix('Z')?;
+    if body.as_bytes().get(10) != Some(&b'T') {
+        return None;
+    }
+    // jiff reads at most nine fraction digits; cut the rest (digits only).
+    let mut text = body;
+    if let Some(dot) = body.find('.') {
+        let (kept, rest) = body[dot..]
+            .split_at_checked(10)
+            .unwrap_or((&body[dot..], ""));
+        if !rest.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        slice
-            .iter()
-            .try_fold(0u32, |acc, byte| Some(acc * 10 + u32::from(byte - b'0')))
-    };
-    if bytes.len() < 20
-        || bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || bytes[10] != b'T'
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-        || *bytes.last()? != b'Z'
-    {
-        return None;
+        text = &body[..dot + kept.len()];
     }
-    let year = digits(0..4)?;
-    let month = digits(5..7)?;
-    let day = digits(8..10)?;
-    let hour = digits(11..13)?;
-    let minute = digits(14..16)?;
-    let second = digits(17..19)?.min(59);
-    let millis = match &bytes[19..bytes.len() - 1] {
-        [] => 0,
-        [b'.', fraction @ ..]
-            if !fraction.is_empty() && fraction.iter().all(u8::is_ascii_digit) =>
-        {
-            fraction
-                .iter()
-                .chain(std::iter::repeat(&b'0'))
-                .take(3)
-                .fold(0u32, |acc, byte| acc * 10 + u32::from(byte - b'0'))
-        }
-        _ => return None,
-    };
-    if year < 1970
-        || !(1..=12).contains(&month)
-        || day == 0
-        || day > days_in_month(year, month)
-        || hour > 23
-        || minute > 59
-    {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + u64::from(hour * 3600 + minute * 60 + second);
-    let time = SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_millis(seconds * 1000 + u64::from(millis)))?;
-    // Beyond jiff's `Timestamp::MAX` (the last day of year 9999) no real
-    // server sends a time; it counts as invalid like any other bad value,
-    // so every accepted time converts and formats without a fallback.
-    jiff::Timestamp::try_from(time).ok()?;
-    Some(time)
-}
-
-fn is_leap(year: u32) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-}
-
-fn days_in_month(year: u32, month: u32) -> u32 {
-    match month {
-        2 if is_leap(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian date from 1970 on
-/// (Howard Hinnant's `days_from_civil`).
-fn days_from_civil(year: u32, month: u32, day: u32) -> u64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year / 400;
-    let year_of_era = year - era * 400;
-    let month_index = (month + 9) % 12;
-    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    u64::from(era) * 146_097 + u64::from(day_of_era) - 719_468
+    let timestamp: jiff::Timestamp = format!("{text}Z").parse().ok()?;
+    let millis = u64::try_from(timestamp.as_millisecond()).ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(millis))
 }
 
 #[cfg(test)]
@@ -382,7 +321,17 @@ mod tests {
             unix("2026-09-27T12:34:56.1234Z"),
             unix("2026-09-27T12:34:56.123Z")
         );
+        // Fractions of any length are accepted and cut at the millisecond.
+        assert_eq!(
+            unix("2026-09-27T12:34:56.123456789012Z"),
+            unix("2026-09-27T12:34:56.123Z")
+        );
         for invalid in [
+            "2026-09-27t12:34:56.000Z",
+            "2026-09-27T12:34:56.000z",
+            "2026-09-27T12:34:56.000+00:00",
+            "2026-09-27T12:34:56.123456789012xZ",
+            "2026-09-27 12:34:56.000Z",
             "",
             "2026-09-27",
             "2026-09-27T12:34:56.000",
