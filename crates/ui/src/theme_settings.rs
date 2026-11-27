@@ -28,7 +28,7 @@ use crate::{
     SettingsWindow, channel_look,
     image_upload::{acceptable_attachment, read_in_background},
     input::TextInput,
-    settings_kit::{element_item, field_item},
+    settings_kit::{EnglishSearch as _, element_item, field_item},
     settings_theme,
     wallpaper_crop::CropState,
 };
@@ -944,6 +944,10 @@ impl SettingsWindow {
                     }
                 }),
             )
+            .english(&[
+                &self.i18n.text("wallpaper_shared"),
+                &self.i18n.text("wallpaper_shared_hint"),
+            ])
             .description(self.i18n.text("wallpaper_shared_hint")),
         ];
         if split {
@@ -971,6 +975,10 @@ impl SettingsWindow {
                         },
                     ),
                 )
+                .english(&[
+                    &self.i18n.text("wallpaper_editing"),
+                    &self.i18n.text("wallpaper_editing_hint"),
+                ])
                 .description(self.i18n.text("wallpaper_editing_hint")),
             );
         }

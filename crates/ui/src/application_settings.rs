@@ -10,7 +10,7 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 
 use crate::{
     ExportSettings, ImportSettings, SettingsTab, SettingsWindow, autostart, settings_items,
-    settings_kit::{element_item, field_item, group, page},
+    settings_kit::{EnglishSearch as _, element_item, field_item, group, page},
     settings_theme,
 };
 
@@ -135,6 +135,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text("language"),
+            &self.i18n.text("language_hint"),
+        ])
         .description(self.i18n.text("language_hint"))
     }
 
@@ -181,6 +185,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text("autostart"),
+            &self.i18n.text("autostart_hint"),
+        ])
         .description(description)
         .disabled(!usable)
     }

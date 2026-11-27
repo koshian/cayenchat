@@ -16,7 +16,7 @@ use gpui_component::{
 };
 
 use super::*;
-use crate::settings_kit::{element_item, field_item, group, page};
+use crate::settings_kit::{EnglishSearch as _, element_item, field_item, group, page};
 
 /// Value of the dropdown entry that adds a server.
 const ADD_SERVER: &str = "\u{1}add";
@@ -165,6 +165,10 @@ impl SettingsWindow {
                 }
             }),
         )
+        .english(&[
+            &self.i18n.text(key),
+            &self.i18n.text(&format!("{key}_desc")),
+        ])
         .description(self.i18n.text(&format!("{key}_desc")))
     }
 
@@ -221,6 +225,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text(key),
+            &self.i18n.text(&format!("{key}_desc")),
+        ])
         .description(self.i18n.text(&format!("{key}_desc")))
     }
 
@@ -242,6 +250,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text(key),
+            &self.i18n.text(&format!("{key}_desc")),
+        ])
         .description(self.i18n.text(&format!("{key}_desc")))
     }
 
@@ -277,6 +289,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text(key),
+            &self.i18n.text(&format!("{key}_desc")),
+        ])
         .description(self.i18n.text(&format!("{key}_desc")))
     }
 
@@ -358,6 +374,7 @@ impl SettingsWindow {
                     },
                 ),
             )
+            .english(&[&i18n.text("destination"), &i18n.text("destination_desc")])
             .description(i18n.text("destination_desc")),
         ];
         let Some(profile) = profile else {
@@ -435,6 +452,10 @@ impl SettingsWindow {
                         },
                     ),
                 )
+                .english(&[
+                    &i18n.text("plaintext_pass"),
+                    &i18n.text("plaintext_pass_desc"),
+                ])
                 .description(i18n.text("plaintext_pass_desc")),
             );
             if profile.allow_plaintext_pass {
@@ -632,6 +653,10 @@ impl SettingsWindow {
                     },
                 ),
             )
+            .english(&[
+                &self.i18n.text("reiwa_mode"),
+                &self.i18n.text("reiwa_mode_global_desc"),
+            ])
             .description(self.i18n.text("reiwa_mode_global_desc")),
         ]
     }
