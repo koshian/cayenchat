@@ -1524,10 +1524,14 @@ the default avatar of the text now in the nick field, saved or not
 highlight while files are dragged over it, and the drop takes the existing
 `drop_avatar_image` path. A draw only reads the cache; the owner starts
 pending loads (deferred) and redraws the settings window when one ends.
-Nothing is saved or sent by showing it. Limitation: with avatars off the
-cache does not load, so a registered icon shows as the default; the
-settings window's own copy of a decoded image stays in its texture atlas
-until the window closes.
+Nothing is saved or sent by showing it. While a settings window is open the
+cache and fetcher are live even if every server has avatars off
+(`Avatars::set_icon_wanted`, cleared when the window closes), and the icon
+reads through `lookup_icon`; chat rows still ask only while some server
+shows avatars (`enabled`), and no setting changes. The settings window keeps
+exactly one registered image (`icon_image`); a replaced one goes to
+`icon_retired` and is dropped from that window's own atlas on its next
+render (the chat window's `release` does not reach it).
 
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),

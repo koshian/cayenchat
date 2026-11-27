@@ -188,7 +188,11 @@ pub struct Avatars {
     cache: RefCell<PreviewCache<Arc<RenderImage>, (), Key>>,
     originals: RefCell<Originals>,
     limits: Limits,
-    /// Present only while avatars are shown.
+    /// Some server shows avatars in the chat.
+    chat_on: bool,
+    /// A settings window shows our registered icon (#1139).
+    icon_on: bool,
+    /// Present only while the cache is live (`chat_on || icon_on`).
     fetcher: Option<Arc<dyn Fetcher>>,
     released: RefCell<Vec<Released>>,
     /// The one timer that redraws the avatar panes when a transient failure
@@ -211,6 +215,8 @@ impl Avatars {
             originals: RefCell::default(),
             // The thumbnail size is set per load, from the key.
             limits: Limits::avatar(ORIGINAL_PIXELS),
+            chat_on: false,
+            icon_on: false,
             fetcher: None,
             released: RefCell::new(Vec::new()),
             retry_wake: None,
@@ -224,8 +230,9 @@ impl Avatars {
         avatars
     }
 
+    /// Whether the chat shows avatars (some server has them on).
     pub fn enabled(&self) -> bool {
-        self.fetcher.is_some()
+        self.chat_on
     }
 
     /// The default avatar of `nickname` rasterized at `pixels` × `pixels`
@@ -256,6 +263,26 @@ impl Avatars {
     /// Off cancels loads, forgets every record and queues the images for
     /// release once both panes have redrawn without them.
     pub fn set_enabled(&mut self, enabled: bool) {
+        self.chat_on = enabled;
+        self.sync_live();
+    }
+
+    /// A settings window is open and shows our registered icon, which needs
+    /// the cache and fetcher even while every server has avatars off. Chat
+    /// rows still ask only while `enabled`.
+    pub fn set_icon_wanted(&mut self, wanted: bool) {
+        if self.icon_on != wanted {
+            self.icon_on = wanted;
+            self.sync_live();
+        }
+    }
+
+    pub fn icon_wanted(&self) -> bool {
+        self.icon_on
+    }
+
+    fn sync_live(&mut self) {
+        let enabled = self.chat_on || self.icon_on;
         self.cache.get_mut().set_enabled(enabled);
         if !enabled {
             self.fetcher = None;
@@ -283,6 +310,19 @@ impl Avatars {
     /// for rows being drawn.
     pub fn lookup(&self, avatar: &str, pixels: u32) -> Shown {
         if !self.enabled() {
+            return Shown::None;
+        }
+        self.lookup_live(avatar, pixels)
+    }
+
+    /// [`Self::lookup`] for the settings icon: needs only the live cache,
+    /// not the chat's avatar setting.
+    pub fn lookup_icon(&self, avatar: &str, pixels: u32) -> Shown {
+        self.lookup_live(avatar, pixels)
+    }
+
+    fn lookup_live(&self, avatar: &str, pixels: u32) -> Shown {
+        if self.fetcher.is_none() {
             return Shown::None;
         }
         #[cfg(test)]

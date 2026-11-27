@@ -205,21 +205,45 @@ impl SettingsWindow {
         let nick = self.settings.nickname.read(cx).text().trim().to_owned();
         let pixels = crate::avatars::pixels_for(ICON_SLOT, window.scale_factor());
         let mut pending = false;
-        let image = self.owner.read(cx).ok().map(|chat| {
-            match icon_content(&profile.avatar_url, || {
-                let shown = chat.avatars.lookup(&profile.avatar_url, pixels);
+        let mut wanted = true;
+        let mut registered = None;
+        let mut fallback = None;
+        if let Ok(chat) = self.owner.read(cx) {
+            wanted = chat.avatars.icon_wanted();
+            registered = icon_content(&profile.avatar_url, || {
+                let shown = chat.avatars.lookup_icon(&profile.avatar_url, pixels);
                 pending = matches!(shown, Shown::Pending);
                 shown
-            }) {
-                Some(image) => img(image),
-                None => img(chat.avatars.default_sized(&nick, pixels)),
+            });
+            if registered.is_none() {
+                fallback = Some(chat.avatars.default_sized(&nick, pixels));
             }
-        });
-        if pending {
-            // The load is started by the owner, which a draw cannot update.
+        }
+        // Holds the one registered image this window draws, and queues a
+        // replaced one for release in this window's own atlas (the chat
+        // window's release does not reach it).
+        let changed = match (&self.icon_image, &registered) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            self.icon_retired
+                .extend(std::mem::replace(&mut self.icon_image, registered.clone()));
+            if !self.icon_retired.is_empty() {
+                cx.notify();
+            }
+        }
+        let image = registered.map(img).or_else(|| fallback.map(img));
+        if pending || !wanted {
+            // The cache is made live and the load is started by the owner,
+            // which a draw cannot update.
             let owner = self.owner;
             cx.defer(move |cx| {
-                let _ = owner.update(cx, |chat, _, cx| chat.pump_avatars(cx));
+                let _ = owner.update(cx, |chat, _, cx| {
+                    chat.avatars.set_icon_wanted(true);
+                    chat.pump_avatars(cx);
+                });
             });
         }
         div()
@@ -582,10 +606,45 @@ mod tests {
         cx: &mut TestAppContext,
         settings: Settings,
     ) -> (Entity<SettingsWindow>, &mut VisualTestContext) {
+        open_with(cx, settings, None)
+    }
+
+    /// Serves every URL with a small PNG, never touching the network.
+    struct PngFetcher;
+
+    impl cayenchat_media::Fetcher for PngFetcher {
+        fn fetch(
+            &self,
+            _: &cayenchat_media::MediaRef,
+            _: &cayenchat_media::Limits,
+            _: &cayenchat_media::CancelFlag,
+        ) -> Result<Vec<u8>, cayenchat_media::LoadError> {
+            let mut bytes = Vec::new();
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 20, 20, 255]))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            Ok(bytes)
+        }
+    }
+
+    fn open_with(
+        cx: &mut TestAppContext,
+        settings: Settings,
+        fetcher: Option<Arc<dyn cayenchat_media::Fetcher>>,
+    ) -> (Entity<SettingsWindow>, &mut VisualTestContext) {
         crate::support::install_test_globals(cx);
         let owner = cx.add_window({
             let settings = settings.clone();
-            move |window, cx| crate::ChatWindow::with_settings(settings, None, window, cx)
+            move |window, cx| {
+                let mut chat = crate::ChatWindow::with_settings(settings, None, window, cx);
+                if let Some(fetcher) = fetcher {
+                    chat.avatars.use_fetcher(fetcher);
+                }
+                chat
+            }
         });
         let (form, vcx) = cx
             .add_window_view(|window, cx| SettingsWindow::new(owner, settings.clone(), window, cx));
@@ -716,6 +775,68 @@ mod tests {
         // Loading or failed: the default again.
         assert!(icon_content(URL, || Shown::Pending).is_none());
         assert!(icon_content(URL, || Shown::None).is_none());
+    }
+
+    #[gpui::test]
+    fn the_registered_icon_shows_with_chat_avatars_off_and_keeps_one_image(
+        cx: &mut TestAppContext,
+    ) {
+        let mut settings = two_servers();
+        settings.servers[0].avatar_url = URL.into();
+        let (form, cx) = open_with(cx, settings, Some(Arc::new(PngFetcher)));
+        form.update(cx, |form, cx| {
+            form.avatar_quick_open = true;
+            cx.notify();
+        });
+        crate::support::scroll_settings_to(cx, "avatar-quick-toggle");
+        let wait = |cx: &mut VisualTestContext| {
+            for _ in 0..40 {
+                cx.run_until_parked();
+                if form.read_with(cx, |form, _| form.icon_image.is_some()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        wait(cx);
+        let owner = form.read_with(cx, |form, _| form.owner);
+        let (chat_on, icon_on) = owner
+            .read_with(cx, |chat, _| {
+                (chat.avatars.enabled(), chat.avatars.icon_wanted())
+            })
+            .unwrap();
+        assert!(!chat_on && icon_on, "the chat setting must stay off");
+        let first = form.read_with(cx, |form, _| form.icon_image.clone().unwrap());
+        // Fetching it again replaces the image; the window frees the old
+        // texture and keeps only the new one.
+        for _ in 0..3 {
+            let previous = form.read_with(cx, |form, _| form.icon_image.clone().unwrap());
+            owner
+                .update(cx, |chat, _, cx| {
+                    chat.avatars.refresh(URL);
+                    cx.notify();
+                })
+                .unwrap();
+            form.update(cx, |_, cx| cx.notify());
+            for _ in 0..40 {
+                cx.run_until_parked();
+                let now = form.read_with(cx, |form, _| form.icon_image.clone());
+                if now.is_some_and(|now| !Arc::ptr_eq(&now, &previous)) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            cx.run_until_parked();
+            form.read_with(cx, |form, _| {
+                let now = form.icon_image.clone().unwrap();
+                assert!(!Arc::ptr_eq(&now, &previous), "not fetched again");
+                assert!(form.icon_retired.is_empty(), "replaced image not freed");
+            });
+        }
+        assert!(!Arc::ptr_eq(
+            &first,
+            &form.read_with(cx, |form, _| form.icon_image.clone().unwrap())
+        ));
     }
 
     #[gpui::test]
