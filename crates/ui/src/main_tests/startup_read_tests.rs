@@ -382,7 +382,7 @@ fn a_write_queued_during_a_move_lands_in_the_new_store(cx: &mut TestAppContext) 
                 &to,
                 std::slice::from_ref(&moved),
             );
-            copied.unwrap().remove_originals(from);
+            let _ = copied.unwrap().remove_originals(from);
             ((), Some(to))
         }));
         let key = key.clone();

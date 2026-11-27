@@ -1888,4 +1888,46 @@ mod tests {
         );
         drop(file);
     }
+
+    /// The warning about originals the old store kept survives the form's
+    /// refresh (CREDN-1), and the switch stands.
+    #[gpui::test]
+    fn a_switch_that_left_originals_behind_shows_the_warning(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let key = cayenchat_storage::SecretKey::uploader_token("imgbb");
+        let from = CredentialStore::with_backend(Arc::new(MemoryBackend::failing_deletes(
+            CredentialBackendKind::LocalFile,
+        )));
+        let to = CredentialStore::with_backend(Arc::new(MemoryBackend::new(
+            CredentialBackendKind::System,
+        )));
+        from.set(&key, &Secret::new("v")).unwrap();
+        let moved = crate::account_settings::move_secrets(
+            &from,
+            &to,
+            CredentialBackendKind::System,
+            &settings,
+            vec![key.clone()],
+        )
+        .ok()
+        .expect("the switch succeeds");
+        assert_eq!(moved.left_behind, 1);
+
+        form.update(cx, |form, cx| {
+            form.credential_backend_moved(CredentialBackendKind::System, to.clone(), Ok(moved), cx);
+            let expected = form
+                .i18n
+                .format("credential_switched_originals_left", &[("count", "1")]);
+            assert_eq!(form.status_message(), Some(expected));
+        });
+        assert_eq!(to.get(&key).unwrap().unwrap().expose(), "v");
+        assert!(from.contains(&key).unwrap(), "the original stays");
+        assert_eq!(
+            super::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::System
+        );
+        drop(file);
+    }
 }

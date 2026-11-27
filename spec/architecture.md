@@ -2258,7 +2258,12 @@ when it is unavailable; switching requires confirmation for the local file and
 moves known secrets, channel keys included (D052): `copy_secrets` copies all,
 the new choice is saved, and only then are the originals deleted, so a failed
 copy or settings save leaves every secret in the store still in use (the
-copies are removed again). Removing a profile deletes its channel keys too.
+copies are removed again). Once the choice is saved the switch stands: if the
+old store refuses to delete some originals (`Copied::remove_originals` returns
+the count), nothing is rolled back and the new copies stay, but the settings
+window shows a distinct warning that credentials may remain in the previous
+location (plaintext for the local file), without the secret or the error
+detail (CREDN-1); there is no retry queue. Removing a profile deletes its channel keys too.
 Startup
 does not migrate plaintext passwords; settings versions that could contain
 them are rejected by the reader (D014). The settings form never shows saved
