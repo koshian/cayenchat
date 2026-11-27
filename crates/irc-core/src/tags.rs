@@ -162,22 +162,29 @@ pub fn server_time(message: &IrcMessage, enabled: bool) -> Option<SystemTime> {
 pub fn parse_server_time(value: &str) -> Option<SystemTime> {
     // jiff also takes `t`, `z`, a space and numeric offsets; only the
     // uppercase `T` and `Z` form of server-time is valid.
+    // It also drops seconds, the date/time separators and takes comma
+    // fractions, so the fixed shape is checked here and jiff judges the
+    // calendar values.
     let body = value.strip_suffix('Z')?;
-    if body.as_bytes().get(10) != Some(&b'T') {
+    let (head, fraction) = body.split_at_checked(19)?;
+    let shape = b"nnnn-nn-nnTnn:nn:nn";
+    let fixed = head.bytes().zip(shape).all(|(byte, &kind)| match kind {
+        b'n' => byte.is_ascii_digit(),
+        kind => byte == kind,
+    });
+    let fraction_ok = match fraction.strip_prefix('.') {
+        Some(digits) => !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()),
+        None => fraction.is_empty(),
+    };
+    if !fixed || !fraction_ok {
         return None;
     }
-    // jiff reads at most nine fraction digits; cut the rest (digits only).
-    let mut text = body;
-    if let Some(dot) = body.find('.') {
-        let (kept, rest) = body[dot..]
-            .split_at_checked(10)
-            .unwrap_or((&body[dot..], ""));
-        if !rest.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        text = &body[..dot + kept.len()];
-    }
+    // jiff reads at most nine fraction digits; cut the rest.
+    let text = &body[..body.len().min(29)];
     let timestamp: jiff::Timestamp = format!("{text}Z").parse().ok()?;
+    if timestamp < jiff::Timestamp::UNIX_EPOCH {
+        return None;
+    }
     let millis = u64::try_from(timestamp.as_millisecond()).ok()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(millis))
 }
@@ -344,6 +351,12 @@ mod tests {
             "2026-09-27T12:34:56.Z",
             "2026-09-27T12:34:5x.000Z",
             "+026-09-27T12:34:56.000Z",
+            "2026-09-27T12Z",
+            "2026-09-27T12:34Z",
+            "2026-09-27T123456Z",
+            "2026-09-27T12:34:56,123Z",
+            "1969-12-31T23:59:59.999999999Z",
+            "1969-12-31T23:59:59.9999Z",
         ] {
             assert_eq!(unix(invalid), None, "{invalid}");
         }
