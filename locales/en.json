@@ -739,6 +739,7 @@
   "credential_switch_detail": "Credentials will be stored unencrypted in {path}. This is less secure than system secure storage.",
   "credential_switch_confirm": "Use Local File",
   "credential_switched": "Credential storage changed; {count} saved item(s) moved.",
+  "credential_switched_originals_left": "Credential storage changed, but {count} item(s) could not be deleted from the previous location. Credentials may remain there; delete them manually if needed.",
   "credential_switched_source_unavailable": "Credential storage changed. Items in the previous location could not be read, so they were not moved.",
   "credential_store_waiting": "Waiting for the credential store to finish saving. If the operating system is asking for confirmation, please respond to it. Closing, switching servers and quitting are on hold until then.",
   "group_credentials_storage": "Storage location",
