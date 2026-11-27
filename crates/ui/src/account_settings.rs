@@ -26,7 +26,7 @@ pub fn all_secret_keys(settings: &Settings) -> Vec<SecretKey> {
 }
 
 /// Why moving the secrets to another store failed.
-enum MoveError {
+pub(crate) enum MoveError {
     Store(cayenchat_storage::CredentialError),
     Settings(String),
 }
@@ -39,12 +39,12 @@ impl From<cayenchat_storage::CredentialError> for MoveError {
 
 /// What a completed switch did.
 #[derive(Debug, PartialEq, Eq)]
-struct Moved {
+pub(crate) struct Moved {
     /// The old store could not be read, so nothing was moved from it.
-    source_unavailable: bool,
-    count: usize,
+    pub(crate) source_unavailable: bool,
+    pub(crate) count: usize,
     /// Originals the old store refused to delete; the switch itself stands.
-    left_behind: usize,
+    pub(crate) left_behind: usize,
 }
 
 /// Runs on the store thread: copies the secrets from `from` to `to`, records
@@ -52,7 +52,7 @@ struct Moved {
 /// choice cannot be recorded, the copies). A failed deletion of an original
 /// is reported in [`Moved`], not undone. The file is read after the copy,
 /// right before it is written (see below). Returns what moved.
-fn move_secrets(
+pub(crate) fn move_secrets(
     from: &cayenchat_storage::CredentialStore,
     to: &cayenchat_storage::CredentialStore,
     kind: CredentialBackendKind,
@@ -217,7 +217,7 @@ impl SettingsWindow {
 
     /// The store thread moved the secrets (or failed to): shows the outcome
     /// and, once moved, makes the new store the one the UI asks about.
-    fn credential_backend_moved(
+    pub(crate) fn credential_backend_moved(
         &mut self,
         kind: CredentialBackendKind,
         to: cayenchat_storage::CredentialStore,
@@ -245,6 +245,8 @@ impl SettingsWindow {
         if !cx.has_global::<secrets::Worker>() {
             cx.set_global(secrets::Credentials(to));
         }
+        // Refresh first: it clears the feedback, which the result sets below.
+        self.show_selected_server(cx);
         self.feedback = Some(if left_behind > 0 {
             // Distinct from a normal completion: the switch is done, but
             // secrets may remain (in plaintext, for the local file).
@@ -258,7 +260,7 @@ impl SettingsWindow {
             self.i18n
                 .format("credential_switched", &[("count", &count.to_string())])
         });
-        self.show_selected_server(cx);
+        cx.notify();
         self.refresh_upload_account(cx);
     }
 
