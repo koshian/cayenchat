@@ -167,18 +167,14 @@ updates. Locally:
 RustSec does not list every advisory: GitHub-only ones (GHSA, such as
 grid's GHSA-38c5-483c-4qqp) are absent, and unmaintained or unsound
 transitive crates pass on purpose. The weekly "OSV advisories" workflow
-(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock` and
-`vendor/gpui/Cargo.lock` against OSV, which includes GHSA. The second one
-belongs to the separate GPUI workspace that CI builds its GPUI unit tests
-from; it pins some versions differently (libc, for example) and never ships.
-cargo-deny does not read it: the job checks the root workspace only, and
-`deny.toml` (license and ban policy) is written for that tree, so for the GPUI
-test build the OSV scan is the only advisory check. It is not a pull request check, so a
+(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock`
+against OSV, which includes GHSA (it also scanned a separate GPUI 0.2.2
+workspace lock file until `vendor/gpui` was removed, #1144). It is not a pull request check, so a
 finding in a transitive GPUI dependency does not block unrelated changes. When
 it fails, decide whether the crate is reachable from our code: update it, or
 record the finding and why it is accepted in the issue. Nothing detects an
-advisory in the five vendored crates (`gpui`, `irc`, `irc-proto`, `zed-xim`,
-`native-theme`), which are path dependencies outside any database; when the
+advisory in the vendored crates (`gpui-pre*`, `irc`, `irc-proto`, `zed-xim`,
+`rav1d`), which are path dependencies outside any database; when the
 OSV job runs, also check their upstreams' releases and security advisories and
 compare with `vendor/README.md`. The packaging
 workflow installs a pinned cargo-deb version, since it writes the published
@@ -224,10 +220,11 @@ reports as usual:
 
 On pull requests, CI runs only the jobs the changed paths can affect
 (`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
-`licenses/`) runs nothing, GPUI's per-platform sources under
-`vendor/gpui/src/platform/{linux,windows,mac}` run only that platform (Linux
-also runs the GUI end-to-end test and the FreeBSD build check), and the E2E scripts run only the GUI
-end-to-end test. Any other path runs every job, so a new file that matters to
+`licenses/`) runs nothing, `scripts/check-windows-subsystem.ps1` runs only
+the Windows jobs, and the E2E scripts run only the GUI
+end-to-end test. Any other path, including every vendored crate under
+`vendor/` (`gpui-pre-windows`'s `clipboard_data.rs` is compiled into the `ui`
+tests on every platform), runs every job, so a new file that matters to
 several platforms is covered until the script names it. Pushes to master always
 run every job. The paths come from `git diff` of the checked-out pull request
 merge commit against its first parent (renames count as both paths), so they

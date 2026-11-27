@@ -9,7 +9,7 @@ publish = false
 
 [features]
 cache = ["cosmic-text/shape-run-cache"]
-# Build against a copy of vendor/gpui 0.2.2 instead; see src/main.rs.
+# Build against a copy of GPUI 0.2.2 (removed from vendor/ in #1144; see Git history) instead; see src/main.rs.
 legacy = []
 
 [dependencies]

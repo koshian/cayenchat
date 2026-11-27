@@ -3,9 +3,9 @@
 The application uses [GPUI](https://github.com/zed-industries/zed) through the
 `gpui-pre` 0.3.12 and `gpui-pre-platform` 0.3.12 crates of GPUI Kit (Cargo
 dependencies, Copyright Zed Industries, licensed under Apache License 2.0).
-CayenChat's patches to GPUI 0.2.2, kept for reference in `vendor/gpui`
-(`vendor/gpui/PATCHES.md`), are re-applied to the split crates in later steps
-of the migration (#1081). In addition,
+CayenChat's patches to GPUI 0.3.12 are in `vendor/gpui-pre*` (see each
+`PATCHES.md`); the older GPUI 0.2.2 copy was removed (#1144) and remains in
+Git history. In addition,
 `crates/ui/src/input.rs` adapts its
 [text input example](https://docs.rs/crate/gpui/0.2.2/source/examples/input.rs)
 and remains under Apache License 2.0. The license is retained in

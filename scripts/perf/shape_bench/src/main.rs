@@ -2,7 +2,7 @@
 //!
 //! Default build: GPUI 0.3.12 (`gpui-pre-wgpu`, cosmic-text 0.19); `--features
 //! cache` turns on cosmic-text's `shape-run-cache`. The `legacy` feature is for
-//! a copy of `vendor/gpui` 0.2.2 (the master backend) whose `CosmicTextSystem`
+//! a copy of GPUI 0.2.2 (the old `vendor/gpui`, now in Git history) whose `CosmicTextSystem`
 //! was made public; see `spec/performance.md`.
 
 use gpui::{FontRun, PlatformTextSystem, font, px};
@@ -101,7 +101,7 @@ fn main() {
         } else {
             "gpui-0.3.12"
         },
-        // vendor/gpui 0.2.2 always enables the cache.
+        // GPUI 0.2.2 always enables the cache.
         cfg!(any(feature = "cache", feature = "legacy")),
         median(&mut first),
         median(&mut again.clone()),
