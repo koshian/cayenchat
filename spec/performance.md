@@ -1649,3 +1649,25 @@ Limits: this is `layout_line` only. It does not include GPUI's line layout
 cache, wrapping, painting, GPU glyph upload or a real window, and only Linux
 was run (no macOS or Windows). Scrolling is measured as the cost of shaping
 new lines, not as a frame time of a scrolling window.
+
+## AVIF decode time and the decode gate (2026-11-27, #1146)
+
+Question: `rav1d` cannot be cancelled inside a frame and the process-wide `DECODE` gate is held for the whole decode, so does a large AVIF make other previews, avatars and wallpapers wait for too long in a release build? Measured without changing any code (no gate split, no limit change).
+
+Conditions: Linux x86_64, AMD Ryzen 7 PRO 8840U (12 threads), `cargo test --release` (the `release` profile, not `dist`; `rav1d` without `asm`, one thread, as shipped), warm file cache, otherwise idle machine. A temporary ignored integration test (not committed) called `decode::thumbnail` with `Limits::default()` ten times per file and recorded wall time. Inputs were made with ImageMagick 1.23.6 (`-depth 8 -define heic:chroma=420`): ImageMagick `plasma:fractal` (smooth), the same with Gaussian noise and blur at 4032 × 3024 (photo-like), and uniform random noise (worst case for AV1 entropy decoding). Only files that pass the budget can be decoded at all; the 48 MiB estimate counts two copies of the file, so a 4096 × 4096 4:2:0 file is accepted only up to about 4 MB, and noise at 4096² is refused at any quality that fits the 8 MiB download cap.
+
+| Input (8-bit 4:2:0 AVIF unless noted) | File | Decode, min / median / max of 10 |
+| --- | --- | --- |
+| 2000 × 1500 photo-like | 0.46 MB | 0.112 / 0.125 / 0.151 s |
+| 4032 × 3024 photo-like, q60 | 0.33 MB | 0.293 / 0.294 / 0.320 s |
+| 4032 × 3024 photo-like, q90 | 1.8 MB | 0.370 / 0.390 / 0.429 s |
+| 4096 × 4096 plasma, q60 | 0.39 MB | 0.439 / 0.442 / 0.458 s |
+| 3584 × 3584 random noise, 5.5 MB (largest accepted) | 5.5 MB | 0.639 / 0.660 / 0.767 s |
+| control: 4032 × 3024 JPEG q85 | 1.4 MB | 0.059 / 0.060 / 0.066 s |
+| control: 4096 × 4096 JPEG q85 (plasma) | 2.1 MB | 0.081 / 0.086 / 0.101 s |
+| control: 3584 × 3584 JPEG q85 (noise) | 9.1 MB | 0.117 / 0.121 / 0.127 s |
+| control: 2000 × 1500 PNG | 4.3 MB | 0.020 / 0.020 / 0.021 s |
+
+Gate wait and cancellation: a 640 × 480 PNG requested 5 ms after a large AVIF began waited as long as the AVIF still needed (0.30 s behind the 4096² plasma, 0.53–0.65 s behind the 3584² noise file). A cancel request is only seen before decoding starts and in the reduction loop afterwards, so after a request the gate was released 0.08–0.29 s later (plasma) and 0.34–0.52 s later (noise), i.e. the cost of finishing the `rav1d` frame; a cancel that arrives early saves only the reduction part (0.29 s instead of 0.44 s total). All decoding runs on background threads (`load_thumbnail*`, `load_avatar_thumbnail`), so the UI thread is not blocked; the cost is a delay of other previews.
+
+Assessment: the worst accepted AVIF holds the gate for under 0.8 s in release (typical large photos 0.3–0.4 s), 4–7 times a JPEG of the same size but well below the tens of seconds seen in unoptimized builds (which `[profile.dev.package.rav1d] opt-level = 3` already addresses). Previews are loaded when scrolled into view and are off by default, so a queue of such images adds up to about 0.5 s each, not an unresponsive UI. No change is made: splitting the gate or cancelling inside `rav1d` is not justified. Should it ever be needed, `rav1d` offers no cancel hook (the vendored copy would need a check in its frame loop), and the smallest fix would be that check rather than a separate gate. Not measured: other CPUs (macOS arm64, Windows), `dist` (fat LTO) builds, and a real UI frame time while a decode runs.
