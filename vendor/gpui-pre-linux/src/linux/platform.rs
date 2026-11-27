@@ -1366,25 +1366,35 @@ pub(super) fn read_fd_with_timeout(
     fd: filedescriptor::FileDescriptor,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
-    read_fd_bounded(fd, timeout, PIPE_READ_MAX_BYTES)
+    read_fd_bounded(fd, timeout, CLIPBOARD_READ_DEADLINE, PIPE_READ_MAX_BYTES)
 }
 
+/// Reads `fd` until EOF. `timeout` is the longest wait for more data (it
+/// restarts with each chunk), `total` the longest the whole read may take
+/// however steadily the other end sends, and `max_bytes` the most accepted.
+/// No single wait outlasts what remains of `total` (CayenChat #1142).
 #[cfg(any(feature = "wayland", feature = "x11"))]
 fn read_fd_bounded(
     mut fd: filedescriptor::FileDescriptor,
     timeout: Duration,
+    total: Duration,
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
     fd.set_non_blocking(true)?;
+    let deadline = std::time::Instant::now() + total;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out reading pipe after {total:?} in total");
+        }
         let mut poll_fds = [filedescriptor::pollfd {
             fd: fd.as_raw_fd(),
             events: filedescriptor::POLLIN,
             revents: 0,
         }];
-        let ready = match filedescriptor::poll(&mut poll_fds, Some(timeout)) {
+        let ready = match filedescriptor::poll(&mut poll_fds, Some(timeout.min(remaining))) {
             Ok(ready) => ready,
             Err(filedescriptor::Error::Poll(err))
                 if err.kind() == std::io::ErrorKind::Interrupted =>
@@ -1394,7 +1404,12 @@ fn read_fd_bounded(
             Err(err) => return Err(err.into()),
         };
         if ready == 0 {
-            anyhow::bail!("timed out waiting for data on pipe after {timeout:?}");
+            if timeout <= remaining {
+                anyhow::bail!("timed out waiting for data on pipe after {timeout:?}");
+            }
+            // The wait was cut to the deadline; poll rounds to milliseconds,
+            // so check the deadline again at the top instead of reading.
+            continue;
         }
         match fd.read(&mut chunk) {
             Ok(0) => return Ok(buffer),
@@ -2088,6 +2103,40 @@ mod tests {
         }
 
         #[test]
+        fn steady_trickle_ends_at_the_total_deadline_and_releases_the_pipe() {
+            let pipe = filedescriptor::Pipe::new().unwrap();
+            let idle = Duration::from_millis(400);
+            let total = Duration::from_millis(200);
+
+            // Sends every 20 ms, never idle for long, until the reader's end
+            // is closed (the write then fails). Stops itself after 5 s.
+            let writer = std::thread::spawn({
+                let mut write = pipe.write;
+                move || {
+                    let started = Instant::now();
+                    while started.elapsed() < Duration::from_secs(5) {
+                        if write.write_all(b"x").is_err() {
+                            return true;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    false
+                }
+            });
+            let started = Instant::now();
+            let err = read_fd_bounded(pipe.read, idle, total, usize::MAX).unwrap_err();
+            let elapsed = started.elapsed();
+
+            assert!(
+                err.to_string().contains("timed out"),
+                "unexpected error: {err}"
+            );
+            assert!(elapsed >= total, "returned before the deadline");
+            assert!(elapsed < idle, "waited past the deadline: {elapsed:?}");
+            assert!(writer.join().unwrap(), "the pipe was not closed");
+        }
+
+        #[test]
         fn slow_writer_resets_deadline_between_chunks() {
             let pipe = filedescriptor::Pipe::new().unwrap();
             let chunks = 12;
@@ -2116,7 +2165,7 @@ mod tests {
             pipe.write.write_all(&[b'x'; 100]).unwrap();
             let _open_writer = pipe.write;
 
-            let err = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 99).unwrap_err();
+            let err = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, PIPE_READ_TIMEOUT, 99).unwrap_err();
             assert!(
                 err.to_string().contains("limit"),
                 "unexpected error: {err}"
@@ -2129,7 +2178,7 @@ mod tests {
             pipe.write.write_all(&[b'x'; 100]).unwrap();
             drop(pipe.write);
 
-            let bytes = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, 100).unwrap();
+            let bytes = read_fd_bounded(pipe.read, PIPE_READ_TIMEOUT, PIPE_READ_TIMEOUT, 100).unwrap();
             assert_eq!(bytes.len(), 100);
         }
 

@@ -49,8 +49,13 @@ grew memory without bound.
   which ends the read and closes the pipe. Tests run the real function on a
   real Linux dispatcher: a steady trickle hits the deadline, more waiting reads
   than workers leave an unrelated task running, and cancelling closes the pipes.
-  (The synchronous read keeps its 4 second idle timeout; it blocks the caller
-  anyway.)
+  The synchronous read keeps its 4 second idle timeout and 32 MiB limit and
+  also ends at one 5 second deadline from its start (`read_fd_bounded`'s
+  `total`, `CLIPBOARD_READ_DEADLINE`), so a peer sending a little at a time
+  cannot hold the caller or the drag-and-drop task for long (CayenChat #1142).
+  No wait outlasts what is left of the deadline, and the pipe is closed when
+  the read returns. A test sends steadily and checks it ends at the deadline
+  with the writer's end failing.
 Check on Wayland: pasting text and an image still works, and the UI stays
 responsive while a selection owner stalls.
 
