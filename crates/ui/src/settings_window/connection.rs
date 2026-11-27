@@ -633,10 +633,12 @@ impl SettingsWindow {
                 profile.user_avatars = on
             }),
             self.note_item(this, "user_avatars_hint", false),
-            element_item(this, |this, _, cx| {
+            element_item(this, |this, window, cx| {
                 let profile = this.settings.values.selected_profile().cloned();
                 match profile {
-                    Some(profile) => this.render_quick_avatar(&profile, cx).into_any_element(),
+                    Some(profile) => this
+                        .render_quick_avatar(&profile, window, cx)
+                        .into_any_element(),
                     None => div().into_any_element(),
                 }
             }),

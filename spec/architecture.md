@@ -1515,7 +1515,19 @@ the label column and the fold mark and state in the right column; when
 unfolded, everything else (summary, notices, the small "Avatar URL" label,
 the input, buttons, status lines, crop editor) starts at the right column
 (`LABEL_INDENT`) and wraps within it. Folded, only the header row shows. No
-border, background or separator.
+border, background or separator. At the top of the unfolded part
+(#1139) a square icon box shows the registered image (read from the chat
+window's avatar cache, so with the same loading and cache as the log) or,
+when nothing is registered, while it loads or when it cannot be loaded,
+the default avatar of the text now in the nick field, saved or not
+(`icon_content`, `Avatars::default_sized`); it is also a drop target with a
+highlight while files are dragged over it, and the drop takes the existing
+`drop_avatar_image` path. A draw only reads the cache; the owner starts
+pending loads (deferred) and redraws the settings window when one ends.
+Nothing is saved or sent by showing it. Limitation: with avatars off the
+cache does not load, so a registered icon shows as the default; the
+settings window's own copy of a decoded image stays in its texture atlas
+until the window closes.
 
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),

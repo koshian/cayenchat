@@ -443,6 +443,8 @@ impl ChatWindow {
         if finished.applied {
             // Both avatar panes are cached; the slot size does not change.
             self.refresh_whois_avatars(cx);
+            // The settings icon draws from this cache too.
+            self.refresh_settings(cx);
             cx.notify();
         }
         self.schedule_avatar_retry(cx);
