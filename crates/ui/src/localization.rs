@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use cayenchat_storage::Language;
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 const ENGLISH: &str = include_str!("../../../locales/en.json");
 const JAPANESE: &str = include_str!("../../../locales/ja.json");
@@ -133,6 +138,30 @@ fn language_for_tag(tag: Option<&str>) -> Language {
     }
 }
 
+/// The English texts of the bundled catalog whose Japanese text is `shown`
+/// (#623): the Japanese settings search also finds a setting by its English
+/// name or description. It reads the bundled catalogs, so no second list of
+/// names exists; a text that is not a bundled Japanese one (English mode, a
+/// formatted text, a catalog edited on disk) has none.
+pub fn english_of(shown: &str) -> &'static [String] {
+    static REVERSE: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+    let reverse = REVERSE.get_or_init(|| {
+        let (english, japanese) = (parse(ENGLISH), parse(JAPANESE));
+        let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
+        for (key, text) in &japanese {
+            let Some(en) = english.get(key).filter(|en| *en != text) else {
+                continue;
+            };
+            let entry = reverse.entry(text.clone()).or_default();
+            if !entry.contains(en) {
+                entry.push(en.clone());
+            }
+        }
+        reverse
+    });
+    reverse.get(shown).map_or(&[], Vec::as_slice)
+}
+
 fn parse(source: &str) -> HashMap<String, String> {
     serde_json::from_str(source).expect("bundled locale catalog must be valid JSON")
 }
@@ -160,6 +189,17 @@ fn read_catalog(language: &str) -> Option<HashMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn english_of_gives_the_english_text_of_a_japanese_one() {
+        let japanese = Localizer::new(Language::Japanese);
+        let english = Localizer::new(Language::English);
+        let shown = japanese.text("ircv3_avatar_url");
+        assert_eq!(english_of(&shown), [english.text("ircv3_avatar_url")]);
+        // English text and an unknown text have nothing to add.
+        assert!(english_of(&english.text("ircv3_avatar_url")).is_empty());
+        assert!(english_of("no such text").is_empty());
+    }
 
     #[test]
     fn catalogs_have_matching_keys_and_locale_detection_is_specific() {

@@ -35,6 +35,30 @@ use crate::{
     settings_window::{FontTarget, SettingsTab},
 };
 
+/// Makes a row findable by the English wording of its name and description
+/// (#623). The Kit searches the shown title and description plus the row's
+/// keywords, so in Japanese mode the English texts go into the keywords. The
+/// English mode shows English and adds nothing.
+pub(crate) trait EnglishSearch {
+    /// `texts` are the shown name and description of the row.
+    fn english(self, texts: &[&str]) -> Self;
+}
+
+impl EnglishSearch for SettingItem {
+    fn english(self, texts: &[&str]) -> Self {
+        let keywords: Vec<SharedString> = texts
+            .iter()
+            .flat_map(|text| crate::localization::english_of(text))
+            .map(|text| SharedString::from(text.clone()))
+            .collect();
+        if keywords.is_empty() {
+            self
+        } else {
+            self.keywords(keywords)
+        }
+    }
+}
+
 /// A row whose control `build` draws, with `description` under the name.
 /// `build` runs with the window, so it may use `cx.listener` as the
 /// previous controls did.
@@ -46,8 +70,9 @@ pub(crate) fn field_item(
     + 'static,
 ) -> SettingItem {
     let this = this.clone();
+    let (title, description) = (title.into(), description.into());
     SettingItem::new(
-        title,
+        title.clone(),
         SettingField::render(move |_, window, cx| {
             // The Kit's field box may shrink; a long description would
             // squeeze the control, so it keeps its own width.
@@ -57,7 +82,8 @@ pub(crate) fn field_item(
             div().flex_none().child(control).into_any_element()
         }),
     )
-    .description(description.into())
+    .english(&[&title, &description])
+    .description(description)
 }
 
 /// An item that is drawn whole by `build` (a Kit row without its own name).
@@ -673,6 +699,7 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[&self.i18n.text("background_blur"), &self.i18n.text(hint)])
         .description(self.i18n.text(hint))
         .disabled(!supported)
     }
@@ -693,6 +720,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text("split_fonts"),
+            &self.i18n.text("split_fonts_hint"),
+        ])
         .description(self.i18n.text("split_fonts_hint"))
     }
 
@@ -725,6 +756,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &self.i18n.text("wallpaper_editing"),
+            &self.i18n.text("font_editing_hint"),
+        ])
         .description(self.i18n.text("font_editing_hint"))
     }
 }

@@ -8,7 +8,7 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 
 use crate::{
     SettingsTab, SettingsWindow, diagnostics, settings_items,
-    settings_kit::{element_item, field_item, footer_item, group, page},
+    settings_kit::{EnglishSearch as _, element_item, field_item, footer_item, group, page},
     settings_theme,
 };
 
@@ -98,6 +98,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &i18n.text("debug_logging"),
+            &i18n.text("debug_logging_hint"),
+        ])
         .description(i18n.text("debug_logging_hint"));
         let file = field_item(
             this,

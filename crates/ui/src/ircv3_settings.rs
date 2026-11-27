@@ -34,7 +34,7 @@ use crate::{
     input,
     session::PeerAvatarConnection,
     settings_items::TEXT_FIELD_WIDTH,
-    settings_kit::{element_item, field_item, group, page},
+    settings_kit::{EnglishSearch as _, element_item, field_item, group, page},
     settings_theme,
     tooltip::TextTooltip,
 };
@@ -200,6 +200,7 @@ impl SettingsWindow {
                     },
                 ),
             )
+            .english(&[&i18n.text("ircv3_server"), &i18n.text("ircv3_server_desc")])
             .description(i18n.text("ircv3_server_desc")),
         ]
     }
@@ -230,6 +231,7 @@ impl SettingsWindow {
                         },
                     ),
                 )
+                .english(&[&i18n.text(feature.label_key), &i18n.text(feature.hint_key)])
                 .description(i18n.text(feature.hint_key)),
             );
             if let Some(key) = (feature.warning)(&profile.ircv3) {

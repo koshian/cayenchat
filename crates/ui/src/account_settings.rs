@@ -9,7 +9,7 @@ use crate::{
     SettingsTab, SettingsWindow,
     os_text::WindowOsText,
     secrets, settings_file,
-    settings_kit::{element_item, field_item, footer_item, group, page},
+    settings_kit::{EnglishSearch as _, element_item, field_item, footer_item, group, page},
     settings_theme,
 };
 
@@ -275,6 +275,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &i18n.text("credential_location"),
+            &i18n.text("credential_location_hint"),
+        ])
         .description(i18n.text("credential_location_hint"));
         let notes = element_item(this, |this, _, cx| {
             let theme = settings_theme::palette(cx);
@@ -486,6 +490,10 @@ impl SettingsWindow {
                 },
             ),
         )
+        .english(&[
+            &i18n.text("image_provider"),
+            &i18n.text("image_provider_hint"),
+        ])
         .description(i18n.text("image_provider_hint"));
         let mut items = Vec::new();
         items.extend(self.avatar_return_item(this));

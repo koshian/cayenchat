@@ -886,9 +886,18 @@ pub(crate) fn kit_items(
     let mut out: Vec<SettingItem> = Vec::new();
     for item in table.iter().filter(|item| item.visible) {
         let disabled = !item.enabled(values);
-        let hint = |setting: SettingItem| match item.hint_key {
-            Some(key) => setting.description(i18n.text(key)),
-            None => setting,
+        let hint = |setting: SettingItem| {
+            use crate::settings_kit::EnglishSearch as _;
+            let name = i18n.text(item.label_key);
+            match item.hint_key {
+                Some(key) => {
+                    let description = i18n.text(key);
+                    setting
+                        .english(&[&name, &description])
+                        .description(description)
+                }
+                None => setting.english(&[&name]),
+            }
         };
         match &item.control {
             Control::Toggle { get, .. } => {
@@ -1197,6 +1206,47 @@ mod tests {
                 description: Some(_),
                 ..
             }
+        )));
+    }
+
+    #[test]
+    fn japanese_rows_are_also_found_by_their_english_names() {
+        use crate::localization::Localizer;
+        use cayenchat_storage::Language;
+        let rows = |language| {
+            kit_items(
+                NOTIFICATIONS_DESKTOP,
+                &Settings::default(),
+                &Localizer::new(language),
+                |_| None,
+                Rc::new(|_, _, _| {}),
+                Rc::new(|_, _, _| {}),
+                Rc::new(|_, _| gpui::IntoElement::into_any_element(gpui::div())),
+            )
+        };
+        let english = Localizer::new(Language::English);
+        let declared: Vec<_> = NOTIFICATIONS_DESKTOP
+            .iter()
+            .filter(|item| item.visible && matches!(item.control, Control::Toggle { .. }))
+            .collect();
+        let japanese_rows = rows(Language::Japanese);
+        assert_eq!(japanese_rows.len(), declared.len());
+        for (row, item) in japanese_rows.iter().zip(&declared) {
+            let SettingItem::Item { keywords, .. } = row else {
+                panic!("a toggle is an Item");
+            };
+            assert!(
+                keywords
+                    .iter()
+                    .any(|word| word.as_ref() == english.text(item.label_key)),
+                "{} lacks its English name",
+                item.id
+            );
+        }
+        // English mode shows English and adds nothing.
+        assert!(rows(Language::English).iter().all(|row| matches!(
+            row,
+            SettingItem::Item { keywords, .. } if keywords.is_empty()
         )));
     }
 }

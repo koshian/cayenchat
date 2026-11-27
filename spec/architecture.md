@@ -2667,6 +2667,29 @@ switch creates and removes its entry in the isolated HOME. Screenshots are on
 the `ghwatch/issue-622-shots` branch under `round5/`. Not checked: Windows,
 macOS, a real login and the native file dialogs (backends unchanged).
 
+### Settings search (#623)
+
+The search is the Kit's: the field above the sidebar filters pages, groups and
+rows by their shown name, description and `SettingItem::keywords`, shows the
+Kit's "no matching settings" state, and clears with its clear button. Nothing
+of ours is drawn over it, and a filter never changes a value (a row stays the
+same row, its setter is not called).
+
+In Japanese a row is also found by its English wording ("アバター" and
+"avatar" give the same rows). `settings_kit::EnglishSearch::english` puts the
+English counterparts of the shown name and description into the row's keywords;
+`localization::english_of` finds them by reading the bundled `ja.json` and
+`en.json` (Japanese text to English text of the same key, built once), so no
+second list of names exists. English mode adds nothing. Texts that are not a
+bundled Japanese catalog text have no counterpart: a formatted text (the font
+size row, which holds a font name) and a catalog edited on disk. Rows drawn by
+`element_item` (no name of their own) are not searchable, as in the Kit.
+
+Accepted limits of using the Kit as it is: the placeholder ("Search..."), the
+empty-result text and the keyboard handling are the Kit's English texts and
+behavior (the Kit has no Japanese catalog), and choosing a result does not
+scroll to the row or expand anything; the Kit shows the matching rows in place.
+
 ## Conversation logs (D044)
 
 `storage::chatlog` knows nothing of IRC: it takes `Record`s (network, scope,
